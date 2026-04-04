@@ -1,0 +1,7 @@
+node_modules/
+dist/
+release/
+client/dist/
+client/node_modules/
+*.js.map
+.openui-desktop/

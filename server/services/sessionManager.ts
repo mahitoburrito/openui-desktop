@@ -1,0 +1,355 @@
+import { execSync } from "child_process";
+import * as pty from "node-pty";
+import { existsSync, mkdirSync } from "fs";
+import { join, basename } from "path";
+import { homedir } from "os";
+import type { Session } from "../types";
+import { loadBuffer, loadState } from "./persistence";
+
+const QUIET = !!process.env.OPENUI_QUIET;
+const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
+const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
+
+// Get the OpenUI plugin directory path
+function getPluginDir(): string | null {
+  const homePluginDir = join(homedir(), ".openui", "claude-code-plugin");
+  const homePluginJson = join(homePluginDir, ".claude-plugin", "plugin.json");
+  if (existsSync(homePluginJson)) {
+    return homePluginDir;
+  }
+
+  // Check bundled plugin in app resources (for packaged Electron app)
+  const resourcesPlugin = join(__dirname, "..", "..", "claude-code-plugin");
+  const resourcesPluginJson = join(resourcesPlugin, ".claude-plugin", "plugin.json");
+  if (existsSync(resourcesPluginJson)) {
+    return resourcesPlugin;
+  }
+
+  return null;
+}
+
+// Inject --plugin-dir flag for Claude commands if plugin is available
+export function injectPluginDir(command: string, agentId: string): string {
+  if (agentId !== "claude") return command;
+
+  const pluginDir = getPluginDir();
+  if (!pluginDir) return command;
+
+  if (command.includes("--plugin-dir")) return command;
+
+  const parts = command.split(/\s+/);
+  if (parts[0] === "claude") {
+    parts.splice(1, 0, `--plugin-dir`, pluginDir);
+    const finalCmd = parts.join(" ");
+    log(`[plugin] Injecting plugin-dir: ${pluginDir}`);
+    return finalCmd;
+  }
+
+  return command;
+}
+
+// Get git branch for a directory
+function getGitBranch(cwd: string): string | null {
+  try {
+    const result = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return result.trim();
+  } catch {
+    return null;
+  }
+}
+
+// Get git root directory
+function getGitRoot(cwd: string): string | null {
+  try {
+    const result = execSync("git rev-parse --show-toplevel", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return result.trim();
+  } catch {
+    return null;
+  }
+}
+
+// Get the main worktree (mother repo) path
+function getMainWorktree(cwd: string): string | null {
+  try {
+    const result = execSync("git worktree list --porcelain", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const match = result.match(/^worktree (.+)$/m);
+    if (match) {
+      return match[1];
+    }
+  } catch {
+    // Not a git repo
+  }
+  return null;
+}
+
+// Create a git worktree for a branch
+export function createWorktree(params: {
+  cwd: string;
+  branchName: string;
+  baseBranch: string;
+}): { success: boolean; worktreePath?: string; error?: string } {
+  const { cwd, branchName, baseBranch } = params;
+  const gitRoot = getGitRoot(cwd);
+
+  if (!gitRoot) {
+    return { success: false, error: "Not a git repository" };
+  }
+
+  const repoName = basename(gitRoot);
+  const worktreesDir = join(gitRoot, "..", `${repoName}-worktrees`);
+
+  if (!existsSync(worktreesDir)) {
+    mkdirSync(worktreesDir, { recursive: true });
+  }
+
+  const dirName = branchName.replace(/\//g, "-");
+  const worktreePath = join(worktreesDir, dirName);
+
+  if (existsSync(worktreePath)) {
+    return { success: true, worktreePath };
+  }
+
+  try {
+    execSync("git fetch origin", { cwd: gitRoot, stdio: "pipe" });
+  } catch {
+    // Ignore fetch errors
+  }
+
+  try {
+    // Try local branch first
+    try {
+      execSync(`git rev-parse --verify ${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+      execSync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+    } catch {
+      // Try remote branch
+      try {
+        execSync(`git rev-parse --verify origin/${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+        execSync(`git worktree add --track -b ${branchName} "${worktreePath}" origin/${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+      } catch {
+        // Create new branch from base
+        execSync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, { cwd: gitRoot, stdio: "pipe" });
+      }
+    }
+
+    return { success: true, worktreePath };
+  } catch (e: any) {
+    logError("[worktree] Failed:", e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+const MAX_BUFFER_SIZE = 1000;
+
+export const sessions = new Map<string, Session>();
+
+export function createSession(params: {
+  sessionId: string;
+  agentId: string;
+  agentName: string;
+  command: string;
+  cwd: string;
+  nodeId: string;
+  customName?: string;
+  customColor?: string;
+  ticketId?: string;
+  ticketTitle?: string;
+  ticketUrl?: string;
+  branchName?: string;
+  baseBranch?: string;
+  createWorktreeFlag?: boolean;
+  ticketPromptTemplate?: string;
+}): { session: Session; cwd: string; gitBranch?: string } {
+  const {
+    sessionId,
+    agentId,
+    agentName,
+    command,
+    cwd: originalCwd,
+    nodeId,
+    customName,
+    customColor,
+    ticketId,
+    ticketTitle,
+    ticketUrl,
+    branchName,
+    baseBranch,
+    createWorktreeFlag,
+    ticketPromptTemplate,
+  } = params;
+
+  let workingDir = originalCwd;
+  let worktreePath: string | undefined;
+  let mainRepoPath: string | undefined;
+  let gitBranch: string | null = null;
+
+  if (createWorktreeFlag && branchName && baseBranch) {
+    const result = createWorktree({ cwd: originalCwd, branchName, baseBranch });
+    if (result.success && result.worktreePath) {
+      workingDir = result.worktreePath;
+      worktreePath = result.worktreePath;
+      mainRepoPath = originalCwd;
+      gitBranch = branchName;
+    }
+  }
+
+  if (!mainRepoPath) {
+    const detectedMainRepo = getMainWorktree(workingDir);
+    if (detectedMainRepo && detectedMainRepo !== workingDir) {
+      mainRepoPath = detectedMainRepo;
+    }
+  }
+
+  if (!gitBranch) {
+    gitBranch = getGitBranch(workingDir);
+  }
+
+  // Determine shell based on platform
+  const shell = process.platform === "win32" ? "powershell.exe" : "/bin/bash";
+
+  const ptyProcess = pty.spawn(shell, [], {
+    name: "xterm-256color",
+    cwd: workingDir,
+    env: {
+      ...process.env,
+      TERM: "xterm-256color",
+      OPENUI_SESSION_ID: sessionId,
+    } as Record<string, string>,
+    cols: 120,
+    rows: 30,
+  });
+
+  const now = Date.now();
+  const session: Session = {
+    pty: ptyProcess,
+    agentId,
+    agentName,
+    command,
+    cwd: workingDir,
+    originalCwd: mainRepoPath,
+    gitBranch: gitBranch || undefined,
+    worktreePath,
+    createdAt: new Date().toISOString(),
+    clients: new Set(),
+    outputBuffer: [],
+    status: "idle",
+    lastOutputTime: now,
+    lastInputTime: 0,
+    recentOutputSize: 0,
+    customName,
+    customColor,
+    nodeId,
+    isRestored: false,
+    ticketId,
+    ticketTitle,
+    ticketUrl,
+  };
+
+  sessions.set(sessionId, session);
+
+  // Output decay
+  const resetInterval = setInterval(() => {
+    if (!sessions.has(sessionId) || !session.pty) {
+      clearInterval(resetInterval);
+      return;
+    }
+    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
+  }, 500);
+
+  // PTY output handler
+  ptyProcess.onData((data: string) => {
+    session.outputBuffer.push(data);
+    if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
+      session.outputBuffer.shift();
+    }
+
+    session.lastOutputTime = Date.now();
+    session.recentOutputSize += data.length;
+
+    for (const client of session.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: "output", data }));
+      }
+    }
+  });
+
+  // Run the command
+  const finalCommand = injectPluginDir(command, agentId);
+  log(`[pty-write] Writing command: ${finalCommand}`);
+  setTimeout(() => {
+    ptyProcess.write(`${finalCommand}\r`);
+
+    if (ticketUrl) {
+      setTimeout(() => {
+        const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
+        const template = ticketPromptTemplate || defaultTemplate;
+        const ticketPrompt = template
+          .replace(/\{\{url\}\}/g, ticketUrl)
+          .replace(/\{\{id\}\}/g, ticketId || "")
+          .replace(/\{\{title\}\}/g, ticketTitle || "");
+        ptyProcess.write(ticketPrompt + "\r");
+      }, 2000);
+    }
+  }, 300);
+
+  log(`[session] Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}`);
+  return { session, cwd: workingDir, gitBranch: gitBranch || undefined };
+}
+
+export function deleteSession(sessionId: string) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+
+  if (session.pty) session.pty.kill();
+  if (session.stateTrackerPty) session.stateTrackerPty.kill();
+
+  sessions.delete(sessionId);
+  log(`[session] Killed ${sessionId}`);
+  return true;
+}
+
+export function restoreSessions() {
+  const state = loadState();
+
+  log(`[restore] Found ${state.nodes.length} saved sessions`);
+
+  for (const node of state.nodes) {
+    const buffer = loadBuffer(node.sessionId);
+    const gitBranch = getGitBranch(node.cwd);
+
+    const session: Session = {
+      pty: null,
+      agentId: node.agentId,
+      agentName: node.agentName,
+      command: node.command,
+      cwd: node.cwd,
+      gitBranch: gitBranch || undefined,
+      createdAt: node.createdAt,
+      clients: new Set(),
+      outputBuffer: buffer,
+      status: "disconnected",
+      lastOutputTime: 0,
+      lastInputTime: 0,
+      recentOutputSize: 0,
+      customName: node.customName,
+      customColor: node.customColor,
+      notes: node.notes,
+      nodeId: node.nodeId,
+      isRestored: true,
+    };
+
+    sessions.set(node.sessionId, session);
+    log(`[restore] Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || "none"}`);
+  }
+}

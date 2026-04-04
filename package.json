@@ -1,0 +1,63 @@
+{
+  "name": "openui-desktop",
+  "version": "1.0.0",
+  "description": "AI Agent Command Center — Desktop App",
+  "main": "dist/electron/electron/main.js",
+  "author": "mahitoburrito",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:electron\"",
+    "dev:client": "cd client && npx vite",
+    "dev:electron": "tsc -p tsconfig.electron.json && electron .",
+    "build:client": "cd client && npx vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build": "npm run build:client && npm run build:electron",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "postinstall": "cd client && npm install"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "hono": "^4.7.5",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/ws": "^8.5.14",
+    "concurrently": "^9.1.2",
+    "electron": "^35.1.2",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "com.openui.desktop",
+    "productName": "OpenUI",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "client/dist/**/*",
+      "claude-code-plugin/**/*",
+      "resources/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": ["dmg", "zip"]
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    },
+    "win": {
+      "target": ["nsis", "zip"]
+    },
+    "extraResources": [
+      {
+        "from": "claude-code-plugin",
+        "to": "claude-code-plugin"
+      }
+    ]
+  }
+}
