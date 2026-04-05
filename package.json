@@ -1,6 +1,6 @@
 {
   "name": "@mahitoburrito/openui-desktop",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "AI Agent Command Center — Desktop App",
   "main": "dist/electron/electron/main.js",
   "author": "mahitoburrito <mahitraj@gmail.com>",
