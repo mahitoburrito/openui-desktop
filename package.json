@@ -63,6 +63,7 @@
   "build": {
     "appId": "com.openui.desktop",
     "productName": "OpenUI",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
