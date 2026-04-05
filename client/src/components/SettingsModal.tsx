@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Key, Check, AlertCircle, Loader2, ExternalLink } from "lucide-react";
+import { X, Key, Check, AlertCircle, Loader2, ExternalLink, Bug } from "lucide-react";
+import { usePRBEStore } from "../stores/usePRBEStore";
 
 interface SettingsModalProps {
   open: boolean;
@@ -18,9 +19,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
+  // PRBE state
+  const prbeStore = usePRBEStore();
+  const [prbeApiKey, setPrbeApiKey] = useState("");
+  const [hasPrbeKey, setHasPrbeKey] = useState(false);
+  const [isPrbeValidating, setIsPrbeValidating] = useState(false);
+  const [prbeValidationResult, setPrbeValidationResult] = useState<{ valid: boolean; error?: string } | null>(null);
+
   // Load existing config
   useEffect(() => {
     if (open) {
+      // Load PRBE config
+      fetch("/api/prbe/config")
+        .then((res) => res.json())
+        .then((config) => {
+          setHasPrbeKey(config.hasApiKey);
+        })
+        .catch(console.error);
+
       fetch("/api/linear/config")
         .then((res) => res.json())
         .then((config) => {
@@ -97,6 +113,60 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       console.error("Failed to remove key:", e);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handlePrbeValidate = async () => {
+    if (!prbeApiKey.trim()) return;
+    setIsPrbeValidating(true);
+    setPrbeValidationResult(null);
+    try {
+      const res = await fetch("/api/prbe/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: prbeApiKey.trim() }),
+      });
+      const result = await res.json();
+      setPrbeValidationResult(result);
+    } catch {
+      setPrbeValidationResult({ valid: false, error: "Failed to validate" });
+    } finally {
+      setIsPrbeValidating(false);
+    }
+  };
+
+  const handlePrbeSave = async () => {
+    if (!prbeApiKey.trim() || !prbeValidationResult?.valid) return;
+    try {
+      await fetch("/api/prbe/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: prbeApiKey.trim() }),
+      });
+      setHasPrbeKey(true);
+      setPrbeApiKey("");
+      setPrbeValidationResult(null);
+      // Re-initialize the agent in the main process
+      if (window.electronAPI?.isElectron) {
+        await prbeStore.initialize();
+      }
+    } catch (e) {
+      console.error("Failed to save PRBE config:", e);
+    }
+  };
+
+  const handlePrbeRemoveKey = async () => {
+    try {
+      await fetch("/api/prbe/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "" }),
+      });
+      setHasPrbeKey(false);
+      setPrbeApiKey("");
+      setPrbeValidationResult(null);
+    } catch (e) {
+      console.error("Failed to remove PRBE key:", e);
     }
   };
 
@@ -279,6 +349,109 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors resize-none font-mono"
                     />
                   </div>
+                </div>
+
+                {/* PRBE Debugger */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-6 h-6 rounded bg-orange-500/20 flex items-center justify-center">
+                      <Bug className="w-4 h-4 text-orange-400" />
+                    </div>
+                    <h3 className="text-sm font-medium text-white">PRBE Debugger</h3>
+                  </div>
+
+                  {!window.electronAPI?.isElectron && (
+                    <div className="px-3 py-2 rounded-md bg-zinc-800/50 border border-border">
+                      <p className="text-xs text-zinc-500">
+                        PRBE debugging requires the OpenUI Desktop app. The browser version does not support this feature.
+                      </p>
+                    </div>
+                  )}
+
+                  {window.electronAPI?.isElectron && (
+                    <>
+                      {hasPrbeKey ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20">
+                            <Check className="w-4 h-4 text-green-500" />
+                            <span className="text-sm text-green-400">PRBE API key configured</span>
+                            <button
+                              onClick={handlePrbeRemoveKey}
+                              className="ml-auto text-xs text-zinc-500 hover:text-red-400 transition-colors"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <p className="text-xs text-zinc-500">
+                            You can use the PRBE debugger to investigate issues with your agents.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <p className="text-xs text-zinc-500">
+                            Connect PRBE for AI-powered debugging of your agent sessions.
+                          </p>
+
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                              <input
+                                type="password"
+                                value={prbeApiKey}
+                                onChange={(e) => {
+                                  setPrbeApiKey(e.target.value);
+                                  setPrbeValidationResult(null);
+                                }}
+                                placeholder="prbe_..."
+                                className="w-full pl-9 pr-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                              />
+                            </div>
+                            <button
+                              onClick={handlePrbeValidate}
+                              disabled={!prbeApiKey.trim() || isPrbeValidating}
+                              className="px-3 py-2 rounded-md bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                            >
+                              {isPrbeValidating ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                "Validate"
+                              )}
+                            </button>
+                          </div>
+
+                          {prbeValidationResult && (
+                            <div
+                              className={`flex items-center gap-2 px-3 py-2 rounded-md ${
+                                prbeValidationResult.valid
+                                  ? "bg-green-500/10 border border-green-500/20"
+                                  : "bg-red-500/10 border border-red-500/20"
+                              }`}
+                            >
+                              {prbeValidationResult.valid ? (
+                                <>
+                                  <Check className="w-4 h-4 text-green-500" />
+                                  <span className="text-sm text-green-400">Valid API key</span>
+                                  <button
+                                    onClick={handlePrbeSave}
+                                    className="ml-auto text-xs text-orange-400 hover:text-orange-300 font-medium transition-colors"
+                                  >
+                                    Save
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <AlertCircle className="w-4 h-4 text-red-500" />
+                                  <span className="text-sm text-red-400">
+                                    {prbeValidationResult.error}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
 

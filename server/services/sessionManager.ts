@@ -464,7 +464,15 @@ export function createSession(params: {
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
 
+    // Enable /careful for Claude Code sessions on startup
+    if (agentId === "claude") {
+      setTimeout(() => {
+        ptyProcess.write("/careful\r");
+      }, 2000);
+    }
+
     if (ticketUrl) {
+      const ticketDelay = agentId === "claude" ? 4000 : 2000;
       setTimeout(() => {
         const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
         const template = ticketPromptTemplate || defaultTemplate;
@@ -473,12 +481,13 @@ export function createSession(params: {
           .replace(/\{\{id\}\}/g, ticketId || "")
           .replace(/\{\{title\}\}/g, ticketTitle || "");
         ptyProcess.write(ticketPrompt + "\r");
-      }, 2000);
+      }, ticketDelay);
     }
 
     // If multi-repo worktrees were created, inject context
     if (worktreePaths && Object.keys(worktreePaths).length > 1) {
-      const delay = ticketUrl ? 4000 : 2000;
+      const baseDelay = agentId === "claude" ? 4000 : 2000;
+      const delay = ticketUrl ? baseDelay + 2000 : baseDelay;
       setTimeout(() => {
         const repoLines = Object.entries(worktreePaths!)
           .map(([name, path]) => `- ${name}: ${path}`)

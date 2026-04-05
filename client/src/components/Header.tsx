@@ -1,12 +1,15 @@
 import { useState } from "react";
-import { Plus, Folder, Settings } from "lucide-react";
+import { Plus, Folder, Settings, Bug } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
+import { usePRBEStore } from "../stores/usePRBEStore";
 import { SettingsModal } from "./SettingsModal";
 
 export function Header() {
   const { setAddAgentModalOpen, sessions, launchCwd } = useStore();
+  const { isAvailable: prbeAvailable, hasApiKey: prbeHasKey, isInvestigating: prbeInvestigating, pendingInteraction: prbeInteraction, setPanelOpen: setPrbePanelOpen } = usePRBEStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const showPrbeButton = prbeAvailable && prbeHasKey;
 
   return (
     <header className="h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark titlebar-drag">
@@ -57,6 +60,18 @@ export function Header() {
 
       {/* Right side buttons */}
       <div className="flex items-center gap-2 titlebar-no-drag">
+        {showPrbeButton && (
+          <button
+            onClick={() => setPrbePanelOpen(true)}
+            className="relative p-2 rounded-md text-zinc-400 hover:text-orange-400 hover:bg-surface-active transition-colors"
+            title="PRBE Debugger"
+          >
+            <Bug className="w-4 h-4" />
+            {(prbeInvestigating || prbeInteraction) && (
+              <div className="absolute top-1 right-1 w-2 h-2 rounded-full bg-orange-500" />
+            )}
+          </button>
+        )}
         <button
           onClick={() => setSettingsOpen(true)}
           className="p-2 rounded-md text-zinc-400 hover:text-white hover:bg-surface-active transition-colors"

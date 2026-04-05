@@ -20,6 +20,9 @@ import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
 import { UndoDeleteToast } from "./components/UndoDeleteToast";
+import { PRBEPanel } from "./components/PRBEPanel";
+import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
+import { usePRBEIPC } from "./hooks/usePRBEIPC";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -48,6 +51,9 @@ function AppContent() {
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
   const positionUpdateTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasRestoredRef = useRef(false);
+
+  // Initialize PRBE IPC listeners
+  usePRBEIPC();
 
   // Sync nodes with store
   useEffect(() => {
@@ -381,6 +387,7 @@ function AppContent() {
         )}
 
         <Sidebar />
+        <PRBEPanel />
       </div>
 
       <NewSessionModal
@@ -395,6 +402,7 @@ function AppContent() {
       />
 
       <UndoDeleteToast />
+      <PRBEInteractionDialog />
     </div>
   );
 }

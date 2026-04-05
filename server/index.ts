@@ -7,6 +7,7 @@ import { parse as parseUrl } from "url";
 import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { apiRoutes } from "./routes/api";
+import { prbeRoutes } from "./routes/prbe";
 import { sessions, restoreSessions } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 
@@ -18,6 +19,7 @@ const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 const app = new Hono();
 app.use("*", cors());
 app.route("/api", apiRoutes);
+app.route("/api/prbe", prbeRoutes);
 
 // Serve static files from client/dist in standalone (non-Electron) mode
 const CLIENT_DIST = join(__dirname, "..", "..", "..", "client", "dist");

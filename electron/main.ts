@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell, dialog } from "electron";
 import { join } from "path";
 import { startServer } from "../server/index";
 import { autoUpdater } from "electron-updater";
+import { initPRBE, cleanupPRBE } from "./prbe";
 
 let mainWindow: BrowserWindow | null = null;
 let serverPort = Number(process.env.PORT) || 6968;
@@ -62,6 +63,9 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  // Initialize PRBE debug agent
+  initPRBE(mainWindow!, serverPort);
+
   // Auto-update (only in packaged builds)
   if (!isDev) {
     autoUpdater.autoDownload = true;
@@ -111,6 +115,7 @@ app.on("window-all-closed", () => {
 
 // Cleanup before quit
 app.on("before-quit", () => {
+  cleanupPRBE();
   // Server cleanup is handled by its own SIGINT handler
   process.emit("SIGINT" as any);
 });
