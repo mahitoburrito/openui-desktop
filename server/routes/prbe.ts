@@ -5,7 +5,13 @@ export const prbeRoutes = new Hono();
 
 prbeRoutes.get("/config", (c) => {
   const config = loadPRBEConfig();
-  return c.json({ hasApiKey: !!config.apiKey });
+  // Check if there's a user-saved key (distinct from built-in env key)
+  const hasUserKey = !!config.apiKey && config.apiKey !== process.env.PRBE_API_KEY;
+  const hasBuiltInKey = !!process.env.PRBE_API_KEY;
+  return c.json({
+    hasApiKey: !!config.apiKey,
+    isBuiltIn: !hasUserKey && hasBuiltInKey,
+  });
 });
 
 prbeRoutes.post("/config", async (c) => {

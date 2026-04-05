@@ -23,6 +23,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const prbeStore = usePRBEStore();
   const [prbeApiKey, setPrbeApiKey] = useState("");
   const [hasPrbeKey, setHasPrbeKey] = useState(false);
+  const [isPrbeBuiltIn, setIsPrbeBuiltIn] = useState(false);
   const [isPrbeValidating, setIsPrbeValidating] = useState(false);
   const [prbeValidationResult, setPrbeValidationResult] = useState<{ valid: boolean; error?: string } | null>(null);
 
@@ -34,6 +35,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         .then((res) => res.json())
         .then((config) => {
           setHasPrbeKey(config.hasApiKey);
+          setIsPrbeBuiltIn(config.isBuiltIn ?? false);
         })
         .catch(console.error);
 
@@ -370,7 +372,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
                   {window.electronAPI?.isElectron && (
                     <>
-                      {hasPrbeKey ? (
+                      {hasPrbeKey && isPrbeBuiltIn ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20">
+                            <Check className="w-4 h-4 text-green-500" />
+                            <span className="text-sm text-green-400">PRBE debugger active</span>
+                          </div>
+                          <p className="text-xs text-zinc-500">
+                            Built-in debugging is enabled. You can investigate issues with your agents.
+                          </p>
+                        </div>
+                      ) : hasPrbeKey ? (
                         <div className="space-y-3">
                           <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20">
                             <Check className="w-4 h-4 text-green-500" />
@@ -383,7 +395,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                             </button>
                           </div>
                           <p className="text-xs text-zinc-500">
-                            You can use the PRBE debugger to investigate issues with your agents.
+                            Using a custom API key. You can use the PRBE debugger to investigate issues with your agents.
                           </p>
                         </div>
                       ) : (
