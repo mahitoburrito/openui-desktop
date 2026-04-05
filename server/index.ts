@@ -10,7 +10,7 @@ import { apiRoutes } from "./routes/api";
 import { sessions, restoreSessions } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 
-const PORT = Number(process.env.PORT) || 6968;
+const PREFERRED_PORT = Number(process.env.PORT) || 6968;
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 
@@ -52,21 +52,58 @@ if (existsSync(CLIENT_DIST)) {
   });
 }
 
-// Start server
-export function startServer(): Promise<number> {
+// Try to listen on a port, resolve with the port number or reject
+function tryListen(app: Hono, port: number): Promise<{ server: any; port: number }> {
   return new Promise((resolve, reject) => {
-    // Restore sessions on startup
-    restoreSessions();
-
-    // Use @hono/node-server's serve which returns the underlying http server
     const server = serve({
       fetch: app.fetch,
-      port: PORT,
+      port,
     }, (info) => {
-      log(`[server] Running on http://localhost:${info.port}`);
-      log(`[server] Launch directory: ${process.env.LAUNCH_CWD || process.cwd()}`);
+      resolve({ server, port: info.port });
     });
 
+    const httpServer = (server as any).server || server;
+    httpServer.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        httpServer.close();
+        reject(err);
+      } else {
+        reject(err);
+      }
+    });
+  });
+}
+
+// Start server, auto-resolving port conflicts
+export async function startServer(): Promise<number> {
+  restoreSessions();
+
+  const MAX_ATTEMPTS = 10;
+  let server: any;
+  let actualPort: number = PREFERRED_PORT;
+
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    const port = PREFERRED_PORT + i;
+    try {
+      const result = await tryListen(app, port);
+      server = result.server;
+      actualPort = result.port;
+      if (i > 0) {
+        log(`[server] Port ${PREFERRED_PORT} was in use, using ${actualPort} instead`);
+      }
+      break;
+    } catch (err: any) {
+      if (err.code === "EADDRINUSE" && i < MAX_ATTEMPTS - 1) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  log(`[server] Running on http://localhost:${actualPort}`);
+  log(`[server] Launch directory: ${process.env.LAUNCH_CWD || process.cwd()}`);
+
+  return new Promise((resolve) => {
     // Attach WebSocket server to the same HTTP server
     const httpServer = (server as any).server || server;
     const wss = new WebSocketServer({ server: httpServer });
@@ -184,7 +221,7 @@ export function startServer(): Promise<number> {
       process.exit(0);
     });
 
-    resolve(PORT);
+    resolve(actualPort);
   });
 }
 

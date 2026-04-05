@@ -4,7 +4,7 @@ import { startServer } from "../server/index";
 import { autoUpdater } from "electron-updater";
 
 let mainWindow: BrowserWindow | null = null;
-const PORT = Number(process.env.PORT) || 6968;
+let serverPort = Number(process.env.PORT) || 6968;
 const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 
 function createWindow() {
@@ -36,7 +36,7 @@ function createWindow() {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     // In production, load from the embedded server
-    mainWindow.loadURL(`http://localhost:${PORT}`);
+    mainWindow.loadURL(`http://localhost:${serverPort}`);
   }
 
   mainWindow.on("closed", () => {
@@ -50,8 +50,8 @@ app.whenReady().then(async () => {
 
   // Start the embedded server
   try {
-    const port = await startServer();
-    console.log(`[electron] Server started on port ${port}`);
+    serverPort = await startServer();
+    console.log(`[electron] Server started on port ${serverPort}`);
   } catch (err) {
     console.error("[electron] Failed to start server:", err);
     dialog.showErrorBox(

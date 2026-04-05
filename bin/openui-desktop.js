@@ -110,16 +110,18 @@ process.env.LAUNCH_CWD = LAUNCH_CWD;
 process.env.OPENUI_QUIET = IS_DEV ? "" : "1";
 
 const { startServer } = require(serverEntry);
-startServer();
+startServer().then((actualPort) => {
+  if (actualPort !== Number(PORT)) {
+    console.log(`\x1b[33m  Port ${PORT} was in use, using ${actualPort}\x1b[0m`);
+  }
 
-// Open browser after a short delay
-setTimeout(() => {
+  // Open browser
   const platform = process.platform;
   const cmd =
     platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
   try {
-    execSync(`${cmd} http://localhost:${PORT}`, { stdio: "pipe" });
+    execSync(`${cmd} http://localhost:${actualPort}`, { stdio: "pipe" });
   } catch {
     // Ignore if browser can't be opened
   }
-}, 1500);
+});
