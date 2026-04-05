@@ -1,0 +1,65 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+            targets: dmg zip
+          - os: macos-13
+            arch: x64
+            targets: dmg zip
+          - os: windows-latest
+            arch: x64
+            targets: nsis zip
+          - os: ubuntu-latest
+            arch: x64
+            targets: AppImage deb
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install client dependencies
+        run: cd client && npm install
+
+      - name: Build client
+        run: npm run build:client
+
+      - name: Build electron
+        run: npm run build:electron
+
+      - name: Build Electron app
+        run: npx electron-builder --${{ matrix.os == 'macos-latest' && 'mac' || matrix.os == 'macos-13' && 'mac' || matrix.os == 'windows-latest' && 'win' || 'linux' }} ${{ matrix.targets }} --${{ matrix.arch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
