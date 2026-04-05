@@ -393,10 +393,12 @@ export function createSession(params: {
     gitBranch = getGitBranch(workingDir);
   }
 
-  // Determine shell based on platform
-  const shell = process.platform === "win32" ? "powershell.exe" : "/bin/bash";
+  // Use the user's default shell and spawn as login shell to source their profile
+  const shell = process.platform === "win32"
+    ? "powershell.exe"
+    : process.env.SHELL || "/bin/zsh";
 
-  const ptyProcess = pty.spawn(shell, [], {
+  const ptyProcess = pty.spawn(shell, ["--login"], {
     name: "xterm-256color",
     cwd: workingDir,
     env: {
