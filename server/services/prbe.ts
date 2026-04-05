@@ -15,13 +15,21 @@ function getConfigFile(): string {
 }
 
 export function loadPRBEConfig(): PRBEConfig {
+  // 1. User-saved config takes priority
   try {
     if (existsSync(getConfigFile())) {
-      return JSON.parse(readFileSync(getConfigFile(), "utf-8"));
+      const config = JSON.parse(readFileSync(getConfigFile(), "utf-8"));
+      if (config.apiKey) return config;
     }
   } catch (e) {
     console.error("Failed to load PRBE config:", e);
   }
+
+  // 2. Fall back to build-time / environment key
+  if (process.env.PRBE_API_KEY) {
+    return { apiKey: process.env.PRBE_API_KEY };
+  }
+
   return {};
 }
 

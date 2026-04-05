@@ -1,8 +1,25 @@
 import { app, BrowserWindow, shell, dialog } from "electron";
 import { join } from "path";
+import { existsSync, readFileSync } from "fs";
 import { startServer } from "../server/index";
 import { autoUpdater } from "electron-updater";
 import { initPRBE, cleanupPRBE } from "./prbe";
+
+// Load built-in default config (bundled API keys for production)
+function loadDefaultConfig() {
+  try {
+    const configPath = join(app.getAppPath(), "resources", "default-config.json");
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      if (config.prbeApiKey && !process.env.PRBE_API_KEY) {
+        process.env.PRBE_API_KEY = config.prbeApiKey;
+      }
+    }
+  } catch (e) {
+    // Default config not available — user can still configure manually
+  }
+}
+loadDefaultConfig();
 
 let mainWindow: BrowserWindow | null = null;
 let serverPort = Number(process.env.PORT) || 6968;

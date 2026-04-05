@@ -96,6 +96,11 @@ jobs:
         run: pip install setuptools
         if: runner.os == 'Windows'
 
+      - name: Inject PRBE API key
+        run: echo '{"prbeApiKey":"'"$PRBE_API_KEY"'"}' > resources/default-config.json
+        env:
+          PRBE_API_KEY: ${{ secrets.PRBE_API_KEY }}
+
       - name: Set version from tag
         run: npm version ${{ needs.version.outputs.version }} --no-git-tag-version
 
