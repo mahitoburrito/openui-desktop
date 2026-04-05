@@ -342,14 +342,9 @@ export function createSession(params: {
   if (createWorktreeFlag && branchName && baseBranch) {
     if (additionalRepos && additionalRepos.length > 0 && multiRepoMode) {
       // Multi-repo worktree creation
-      const primaryName = basename(originalCwd);
-      const allRepos = [
-        { name: primaryName, path: originalCwd },
-        ...additionalRepos,
-      ];
-
+      // All repos come from additionalRepos — the session cwd stays at originalCwd
       const multiResult = createMultiRepoWorktrees({
-        repos: allRepos,
+        repos: additionalRepos,
         branchName,
         mode: multiRepoMode,
         baseBranch,
@@ -358,14 +353,10 @@ export function createSession(params: {
       worktreePaths = multiResult.worktreePaths;
       stashRefs = Object.keys(multiResult.stashRefs).length > 0 ? multiResult.stashRefs : undefined;
       worktreeMode = multiRepoMode;
+      gitBranch = branchName;
 
-      if (worktreePaths[primaryName]) {
-        workingDir = worktreePaths[primaryName];
-        worktreePath = worktreePaths[primaryName];
-        mainRepoPath = originalCwd;
-        gitBranch = branchName;
-        log(`[session] Multi-repo worktrees created: ${Object.keys(worktreePaths).join(', ')}`);
-      }
+      // Keep workingDir as originalCwd — don't migrate into a child repo
+      log(`[session] Multi-repo worktrees created: ${Object.keys(worktreePaths).join(', ')}`);
 
       for (const [repoName, error] of Object.entries(multiResult.errors)) {
         logError(`[session] Worktree failed for ${repoName}: ${error}`);

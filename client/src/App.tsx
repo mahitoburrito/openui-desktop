@@ -34,7 +34,6 @@ function AppContent() {
     setLaunchCwd,
     setSelectedNodeId,
     setSidebarOpen,
-    addSession,
     updateSession,
     agents,
     addAgentModalOpen,
@@ -131,6 +130,8 @@ function AppContent() {
         });
 
         // Restore agent sessions
+        const { addSession: storeAddSession, setNodes: storeSetNodes } = useStore.getState();
+
         sessions.forEach((session: any, index: number) => {
           const saved = savedNodes?.find((n: any) => n.sessionId === session.sessionId);
           const agent = agents.find((a) => a.id === session.agentId);
@@ -141,7 +142,7 @@ function AppContent() {
                 y: 100 + Math.floor(index / 5) * 150,
               };
 
-          addSession(session.nodeId, {
+          storeAddSession(session.nodeId, {
             id: session.nodeId,
             sessionId: session.sessionId,
             agentId: session.agentId,
@@ -177,10 +178,10 @@ function AppContent() {
 
         hasRestoredRef.current = true;
         setNodes(restoredNodes);
-        setStoreNodes(restoredNodes);
+        storeSetNodes(restoredNodes);
       })
       .catch(console.error);
-  }, [agents, addSession, setNodes, setStoreNodes]);
+  }, [agents]); // eslint-disable-line react-hooks/exhaustive-deps — store functions are stable via getState
 
   // Helper to save all positions - accepts nodes directly to avoid sync issues
   const saveAllPositions = useCallback((nodesToSave?: typeof nodes) => {
@@ -237,6 +238,53 @@ function AppContent() {
 
   // Save positions when nodes are moved or resized
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    // Intercept keyboard delete — confirm before removing, then do proper server cleanup
+    const removeChanges = changes.filter((c) => c.type === "remove");
+    if (removeChanges.length > 0) {
+      const confirmedRemoves: NodeChange[] = [];
+      changes = changes.filter((c) => c.type !== "remove");
+
+      for (const change of removeChanges) {
+        if ("id" in change) {
+          const nodeId = change.id;
+          const session = useStore.getState().sessions.get(nodeId);
+          const sessionName = session?.customName || session?.agentName || "Session";
+          const sessionId = session?.sessionId;
+
+          const confirmed = window.confirm(`Delete "${sessionName}"? You'll have 5 seconds to undo.`);
+          if (!confirmed) continue;
+
+          // Let React Flow process this removal
+          confirmedRemoves.push(change);
+
+          // Soft-delete on server
+          if (sessionId) {
+            fetch(`/api/sessions/${sessionId}/soft-delete`, { method: "POST" }).catch(console.error);
+          }
+
+          // Clean up store
+          const { removeSession, setDeleteToast } = useStore.getState();
+          removeSession(nodeId);
+          setSelectedNodeId(null);
+          setSidebarOpen(false);
+
+          // Show undo toast
+          const timeout = setTimeout(() => {
+            setDeleteToast(null);
+          }, 5000);
+          setDeleteToast({
+            sessionId: sessionId || "",
+            nodeId,
+            sessionName,
+            timeout,
+          });
+        }
+      }
+
+      // Re-add confirmed removes so React Flow actually removes the nodes
+      changes = [...changes, ...confirmedRemoves];
+    }
+
     onNodesChange(changes);
 
     const positionChanges = changes.filter(

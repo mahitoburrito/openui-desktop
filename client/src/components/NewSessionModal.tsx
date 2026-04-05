@@ -191,7 +191,7 @@ export function NewSessionModal({
   // Multi-repo detection state
   const [detectedRepos, setDetectedRepos] = useState<DetectedRepo[]>([]);
   const [selectedRepoPaths, setSelectedRepoPaths] = useState<Set<string>>(new Set());
-  const [multiRepoMode, setMultiRepoMode] = useState<'current' | 'main'>('current');
+  const [multiRepoMode, setMultiRepoMode] = useState<'current' | 'main'>('main');
   const [scanningRepos, setScanningRepos] = useState(false);
 
   // Directory picker state
@@ -241,8 +241,14 @@ export function NewSessionModal({
       setGithubError(null);
       setDetectedRepos([]);
       setSelectedRepoPaths(new Set());
-      setMultiRepoMode('current');
+      setMultiRepoMode('main');
       setInitialized(true);
+
+      // Scan for repos in the effective working directory
+      const effectiveCwd = existingSession?.cwd || launchCwd;
+      if (effectiveCwd) {
+        scanForRepos(effectiveCwd);
+      }
 
       // Check Linear config
       fetch("/api/linear/config")
@@ -429,12 +435,12 @@ export function NewSessionModal({
       // Build multi-repo params if applicable
       const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
       const isMultiRepo = createWorktree && selectedReposList.length > 1;
-      // When multi-repo, use first selected repo as primary cwd (parent dir isn't a git repo)
-      const effectiveWorkingDir = isMultiRepo ? selectedReposList[0].path : workingDir;
+      // Keep the user's chosen directory — worktrees are created from child repos
+      // but the session starts where the user pointed it
+      const effectiveWorkingDir = workingDir;
       const multiRepoParams = isMultiRepo ? {
         multiRepoMode,
         additionalRepos: selectedReposList
-          .slice(1) // Skip primary (first) repo — it becomes the cwd
           .map(r => ({ name: r.name, path: r.path, defaultBranch: r.defaultBranch })),
       } : {};
 
@@ -454,24 +460,23 @@ export function NewSessionModal({
             nodeId: existingNodeId,
             customName: customName || existingSession.customName,
             customColor: existingSession.customColor,
-            // Ticket info if selected (Linear or GitHub)
-            ...(selectedTicket && {
-              ticketId: selectedTicket.identifier,
-              ticketTitle: selectedTicket.title,
-              ticketUrl: selectedTicket.url,
+            // Worktree params (any tab)
+            ...(createWorktree && branchName && {
               branchName,
               baseBranch,
               createWorktree,
               ...multiRepoParams,
             }),
+            // Ticket info if selected (Linear or GitHub)
+            ...(selectedTicket && {
+              ticketId: selectedTicket.identifier,
+              ticketTitle: selectedTicket.title,
+              ticketUrl: selectedTicket.url,
+            }),
             ...(selectedGithubIssue && {
               ticketId: `#${selectedGithubIssue.number}`,
               ticketTitle: selectedGithubIssue.title,
               ticketUrl: selectedGithubIssue.url,
-              branchName,
-              baseBranch,
-              createWorktree,
-              ...multiRepoParams,
             }),
           }),
         });
@@ -522,24 +527,23 @@ export function NewSessionModal({
               cwd: effectiveWorkingDir,
               nodeId,
               customName: count > 1 ? agentName : customName || undefined,
-              // Ticket info if selected (only for first agent)
-              ...(i === 0 && selectedTicket && {
-                ticketId: selectedTicket.identifier,
-                ticketTitle: selectedTicket.title,
-                ticketUrl: selectedTicket.url,
+              // Worktree params (any tab, only for first agent)
+              ...(i === 0 && createWorktree && branchName && {
                 branchName,
                 baseBranch,
                 createWorktree,
                 ...multiRepoParams,
               }),
+              // Ticket info if selected (only for first agent)
+              ...(i === 0 && selectedTicket && {
+                ticketId: selectedTicket.identifier,
+                ticketTitle: selectedTicket.title,
+                ticketUrl: selectedTicket.url,
+              }),
               ...(i === 0 && selectedGithubIssue && {
                 ticketId: `#${selectedGithubIssue.number}`,
                 ticketTitle: selectedGithubIssue.title,
                 ticketUrl: selectedGithubIssue.url,
-                branchName,
-                baseBranch,
-                createWorktree,
-                ...multiRepoParams,
               }),
             }),
           });
@@ -823,17 +827,6 @@ export function NewSessionModal({
                             />
                           </div>
 
-                          <div>
-                            <label className="text-xs text-zinc-500 mb-1.5 block">Base branch</label>
-                            <input
-                              type="text"
-                              value={baseBranch}
-                              onChange={(e) => setBaseBranch(e.target.value)}
-                              placeholder="main"
-                              className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
-                            />
-                          </div>
-
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
@@ -844,12 +837,55 @@ export function NewSessionModal({
                             <span className="text-sm text-zinc-300">Create git worktree</span>
                           </label>
 
+                          {createWorktree && (
+                            <div className="space-y-2">
+                              <label className="text-xs text-zinc-500 mb-1 block">Branch off from</label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="linear-worktree-base"
+                                  checked={multiRepoMode === 'main'}
+                                  onChange={() => setMultiRepoMode('main')}
+                                  className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                                />
+                                <span className="text-sm text-zinc-300">A specific base branch</span>
+                              </label>
+                              {multiRepoMode === 'main' && (
+                                <input
+                                  type="text"
+                                  value={baseBranch}
+                                  onChange={(e) => setBaseBranch(e.target.value)}
+                                  placeholder="main"
+                                  className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors ml-5"
+                                  style={{ width: 'calc(100% - 1.25rem)' }}
+                                />
+                              )}
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="linear-worktree-base"
+                                  checked={multiRepoMode === 'current'}
+                                  onChange={() => setMultiRepoMode('current')}
+                                  className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                                />
+                                <div>
+                                  <span className="text-sm text-zinc-300">Each repo's current branch</span>
+                                  {detectedRepos.length > 0 && (
+                                    <p className="text-[10px] text-zinc-600">
+                                      {detectedRepos.filter(r => selectedRepoPaths.has(r.path)).map(r => `${r.name}: ${r.branch}`).join(', ')}
+                                    </p>
+                                  )}
+                                </div>
+                              </label>
+                            </div>
+                          )}
+
                           {/* Multi-repo detection */}
                           {createWorktree && detectedRepos.length > 1 && (
                             <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-3">
                               <div className="flex items-center justify-between">
                                 <p className="text-xs text-indigo-300 font-medium">
-                                  Found {detectedRepos.length} repos in {cwd.split("/").pop() || cwd}
+                                  Repos in {cwd.split("/").pop() || cwd}
                                 </p>
                                 {scanningRepos && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />}
                               </div>
@@ -875,32 +911,6 @@ export function NewSessionModal({
                                     )}
                                   </label>
                                 ))}
-                              </div>
-
-                              <div className="space-y-1.5">
-                                <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Branching mode</p>
-                                <div className="flex gap-3">
-                                  <label className="flex items-center gap-1.5 cursor-pointer">
-                                    <input
-                                      type="radio"
-                                      name="multiRepoMode-linear"
-                                      checked={multiRepoMode === 'current'}
-                                      onChange={() => setMultiRepoMode('current')}
-                                      className="w-3.5 h-3.5 text-indigo-600 border-zinc-600 bg-canvas focus:ring-indigo-500"
-                                    />
-                                    <span className="text-xs text-zinc-300">Branch off current</span>
-                                  </label>
-                                  <label className="flex items-center gap-1.5 cursor-pointer">
-                                    <input
-                                      type="radio"
-                                      name="multiRepoMode-linear"
-                                      checked={multiRepoMode === 'main'}
-                                      onChange={() => setMultiRepoMode('main')}
-                                      className="w-3.5 h-3.5 text-indigo-600 border-zinc-600 bg-canvas focus:ring-indigo-500"
-                                    />
-                                    <span className="text-xs text-zinc-300">Branch off main</span>
-                                  </label>
-                                </div>
                               </div>
 
                               {detectedRepos.some(r => r.dirty && selectedRepoPaths.has(r.path)) && (
@@ -1026,17 +1036,6 @@ export function NewSessionModal({
                             />
                           </div>
 
-                          <div>
-                            <label className="text-xs text-zinc-500 mb-1.5 block">Base branch</label>
-                            <input
-                              type="text"
-                              value={baseBranch}
-                              onChange={(e) => setBaseBranch(e.target.value)}
-                              placeholder="main"
-                              className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
-                            />
-                          </div>
-
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
@@ -1047,12 +1046,72 @@ export function NewSessionModal({
                             <span className="text-sm text-zinc-300">Create git worktree</span>
                           </label>
 
+                          {createWorktree && (
+                            <div className="space-y-2">
+                              <label className="text-xs text-zinc-500 mb-1 block">Branch off from</label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="github-worktree-base"
+                                  checked={multiRepoMode === 'current'}
+                                  onChange={() => setMultiRepoMode('current')}
+                                  className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                                />
+                                <div>
+                                  <span className="text-sm text-zinc-300">Each repo's current branch</span>
+                                  {detectedRepos.length > 0 && (
+                                    <p className="text-[10px] text-zinc-600">
+                                      {detectedRepos.filter(r => selectedRepoPaths.has(r.path)).map(r => `${r.name}: ${r.branch}`).join(', ')}
+                                    </p>
+                                  )}
+                                </div>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="github-worktree-base"
+                                  checked={multiRepoMode === 'main'}
+                                  onChange={() => setMultiRepoMode('main')}
+                                  className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                                />
+                                <span className="text-sm text-zinc-300">A specific base branch</span>
+                              </label>
+                              {multiRepoMode === 'main' && (
+                                <input
+                                  type="text"
+                                  value={baseBranch}
+                                  onChange={(e) => setBaseBranch(e.target.value)}
+                                  placeholder="main"
+                                  className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors ml-5"
+                                  style={{ width: 'calc(100% - 1.25rem)' }}
+                                />
+                              )}
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="radio"
+                                  name="github-worktree-base"
+                                  checked={multiRepoMode === 'current'}
+                                  onChange={() => setMultiRepoMode('current')}
+                                  className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                                />
+                                <div>
+                                  <span className="text-sm text-zinc-300">Each repo's current branch</span>
+                                  {detectedRepos.length > 0 && (
+                                    <p className="text-[10px] text-zinc-600">
+                                      {detectedRepos.filter(r => selectedRepoPaths.has(r.path)).map(r => `${r.name}: ${r.branch}`).join(', ')}
+                                    </p>
+                                  )}
+                                </div>
+                              </label>
+                            </div>
+                          )}
+
                           {/* Multi-repo detection */}
                           {createWorktree && detectedRepos.length > 1 && (
                             <div className="rounded-md border border-zinc-600/30 bg-zinc-700/20 p-3 space-y-3">
                               <div className="flex items-center justify-between">
                                 <p className="text-xs text-zinc-300 font-medium">
-                                  Found {detectedRepos.length} repos in {cwd.split("/").pop() || cwd}
+                                  Repos in {cwd.split("/").pop() || cwd}
                                 </p>
                                 {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
                               </div>
@@ -1078,32 +1137,6 @@ export function NewSessionModal({
                                     )}
                                   </label>
                                 ))}
-                              </div>
-
-                              <div className="space-y-1.5">
-                                <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Branching mode</p>
-                                <div className="flex gap-3">
-                                  <label className="flex items-center gap-1.5 cursor-pointer">
-                                    <input
-                                      type="radio"
-                                      name="multiRepoMode-github"
-                                      checked={multiRepoMode === 'current'}
-                                      onChange={() => setMultiRepoMode('current')}
-                                      className="w-3.5 h-3.5 text-indigo-600 border-zinc-600 bg-canvas focus:ring-indigo-500"
-                                    />
-                                    <span className="text-xs text-zinc-300">Branch off current</span>
-                                  </label>
-                                  <label className="flex items-center gap-1.5 cursor-pointer">
-                                    <input
-                                      type="radio"
-                                      name="multiRepoMode-github"
-                                      checked={multiRepoMode === 'main'}
-                                      onChange={() => setMultiRepoMode('main')}
-                                      className="w-3.5 h-3.5 text-indigo-600 border-zinc-600 bg-canvas focus:ring-indigo-500"
-                                    />
-                                    <span className="text-xs text-zinc-300">Branch off main</span>
-                                  </label>
-                                </div>
                               </div>
 
                               {detectedRepos.some(r => r.dirty && selectedRepoPaths.has(r.path)) && (
@@ -1292,6 +1325,119 @@ export function NewSessionModal({
                       </div>
                     )}
                   </div>
+
+                  {/* Worktree options (blank tab) */}
+                  {activeTab === "blank" && detectedRepos.length > 0 && (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <GitBranch className="w-3 h-3 text-zinc-500" />
+                        <span className="text-xs text-zinc-500">Git Worktree</span>
+                      </div>
+
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={createWorktree}
+                          onChange={(e) => setCreateWorktree(e.target.checked)}
+                          className="w-4 h-4 rounded border-zinc-600 bg-canvas text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0"
+                        />
+                        <span className="text-sm text-zinc-300">Create git worktree</span>
+                      </label>
+
+                      {createWorktree && (
+                        <>
+                          <div>
+                            <label className="text-xs text-zinc-500 flex items-center gap-1 mb-1.5">
+                              <GitBranch className="w-3 h-3" />
+                              New branch name
+                            </label>
+                            <input
+                              type="text"
+                              value={branchName}
+                              onChange={(e) => setBranchName(e.target.value)}
+                              placeholder="e.g. feat/my-feature"
+                              className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-xs text-zinc-500 mb-1 block">Branch off from</label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="blank-worktree-base"
+                                checked={multiRepoMode === 'main'}
+                                onChange={() => setMultiRepoMode('main')}
+                                className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                              />
+                              <span className="text-sm text-zinc-300">A specific base branch</span>
+                            </label>
+                            {multiRepoMode === 'main' && (
+                              <input
+                                type="text"
+                                value={baseBranch}
+                                onChange={(e) => setBaseBranch(e.target.value)}
+                                placeholder="main"
+                                className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm font-mono placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors ml-5"
+                                style={{ width: 'calc(100% - 1.25rem)' }}
+                              />
+                            )}
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="blank-worktree-base"
+                                checked={multiRepoMode === 'current'}
+                                onChange={() => setMultiRepoMode('current')}
+                                className="w-3.5 h-3.5 text-indigo-600 bg-canvas border-zinc-600"
+                              />
+                              <div>
+                                <span className="text-sm text-zinc-300">Each repo's current branch</span>
+                                {detectedRepos.length > 0 && (
+                                  <p className="text-[10px] text-zinc-600">
+                                    {detectedRepos.filter(r => selectedRepoPaths.has(r.path)).map(r => `${r.name}: ${r.branch}`).join(', ')}
+                                  </p>
+                                )}
+                              </div>
+                            </label>
+                          </div>
+
+                          {detectedRepos.length > 1 && (
+                            <div className="rounded-md border border-zinc-600/30 bg-zinc-700/20 p-3 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <p className="text-xs text-zinc-300 font-medium">
+                                  Repos in {(cwd || launchCwd || "").split("/").pop() || cwd || launchCwd}
+                                </p>
+                                {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                              </div>
+
+                              <div className="space-y-1.5">
+                                {detectedRepos.map((repo) => (
+                                  <label key={repo.path} className="flex items-center gap-2 cursor-pointer group">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedRepoPaths.has(repo.path)}
+                                      onChange={(e) => {
+                                        const next = new Set(selectedRepoPaths);
+                                        if (e.target.checked) next.add(repo.path);
+                                        else next.delete(repo.path);
+                                        setSelectedRepoPaths(next);
+                                      }}
+                                      className="w-3.5 h-3.5 rounded border-zinc-600 bg-canvas text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0"
+                                    />
+                                    <span className="text-xs text-zinc-300 group-hover:text-white transition-colors font-mono">
+                                      {repo.name}
+                                    </span>
+                                    <span className="text-[10px] text-zinc-600 font-mono">{repo.branch}</span>
+                                    {repo.dirty && <span className="text-[10px] text-amber-500">modified</span>}
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Footer */}

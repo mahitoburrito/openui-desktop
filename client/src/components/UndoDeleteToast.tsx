@@ -4,7 +4,7 @@ import { Undo2, X } from "lucide-react";
 import { useStore } from "../stores/useStore";
 
 export function UndoDeleteToast() {
-  const { deleteToast, setDeleteToast, addSession, addNode, sessions } = useStore();
+  const { deleteToast, setDeleteToast } = useStore();
   const [progress, setProgress] = useState(100);
 
   useEffect(() => {
