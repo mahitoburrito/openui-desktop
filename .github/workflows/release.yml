@@ -116,7 +116,78 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
+
+  publish:
+    needs: [version, build]
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Merge artifacts and build latest-mac.yml
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+
+          # Collect all files into a flat release dir
+          mkdir -p release
+          find artifacts -type f | while read f; do
+            cp "$f" "release/$(basename "$f")"
+          done
+
+          # Helper: sha512 in base64 (format electron-updater expects)
+          sha512b64() { sha512sum "$1" | awk '{print $1}' | xxd -r -p | base64 -w0; }
+
+          ARM64_ZIP_SHA=$(sha512b64 release/OpenUI-${VERSION}-arm64.zip)
+          ARM64_ZIP_SIZE=$(stat -c%s release/OpenUI-${VERSION}-arm64.zip)
+          ARM64_DMG_SHA=$(sha512b64 release/OpenUI-${VERSION}-arm64.dmg)
+          ARM64_DMG_SIZE=$(stat -c%s release/OpenUI-${VERSION}-arm64.dmg)
+          X64_ZIP_SHA=$(sha512b64 release/OpenUI-${VERSION}-x64.zip)
+          X64_ZIP_SIZE=$(stat -c%s release/OpenUI-${VERSION}-x64.zip)
+          X64_DMG_SHA=$(sha512b64 release/OpenUI-${VERSION}-x64.dmg)
+          X64_DMG_SIZE=$(stat -c%s release/OpenUI-${VERSION}-x64.dmg)
+
+          cat > release/latest-mac.yml << EOF
+          version: ${VERSION}
+          files:
+            - url: OpenUI-${VERSION}-arm64.zip
+              sha512: ${ARM64_ZIP_SHA}
+              size: ${ARM64_ZIP_SIZE}
+            - url: OpenUI-${VERSION}-arm64.dmg
+              sha512: ${ARM64_DMG_SHA}
+              size: ${ARM64_DMG_SIZE}
+            - url: OpenUI-${VERSION}-x64.zip
+              sha512: ${X64_ZIP_SHA}
+              size: ${X64_ZIP_SIZE}
+            - url: OpenUI-${VERSION}-x64.dmg
+              sha512: ${X64_DMG_SHA}
+              size: ${X64_DMG_SIZE}
+          path: OpenUI-${VERSION}-arm64.zip
+          sha512: ${ARM64_ZIP_SHA}
+          releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'
+          EOF
+
+          sed -i 's/^          //' release/latest-mac.yml
+
+          echo "=== Merged latest-mac.yml ==="
+          cat release/latest-mac.yml
+
+      - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
@@ -130,7 +201,7 @@ jobs:
             release/latest*.yml
 
   update-homebrew:
-    needs: [version, build]
+    needs: [version, publish]
     if: needs.version.outputs.version != ''
     runs-on: ubuntu-latest
     steps:
@@ -144,7 +215,7 @@ jobs:
           ARM64_SHA=$(curl -sL "$ARM64_URL" | sha256sum | awk '{print $1}')
 
           # Get SHA256 of x64 DMG
-          X64_URL="https://github.com/mahitoburrito/openui-desktop/releases/download/v${VERSION}/OpenUI-${VERSION}.dmg"
+          X64_URL="https://github.com/mahitoburrito/openui-desktop/releases/download/v${VERSION}/OpenUI-${VERSION}-x64.dmg"
           X64_SHA=$(curl -sL "$X64_URL" | sha256sum | awk '{print $1}')
 
           # Clone the tap repo
@@ -161,7 +232,7 @@ jobs:
               url "https://github.com/mahitoburrito/openui-desktop/releases/download/v#{version}/OpenUI-#{version}-arm64.dmg"
               sha256 "${ARM64_SHA}"
             else
-              url "https://github.com/mahitoburrito/openui-desktop/releases/download/v#{version}/OpenUI-#{version}.dmg"
+              url "https://github.com/mahitoburrito/openui-desktop/releases/download/v#{version}/OpenUI-#{version}-x64.dmg"
               sha256 "${X64_SHA}"
             end
 
