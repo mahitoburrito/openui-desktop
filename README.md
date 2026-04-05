@@ -16,7 +16,16 @@ This starts a local server and opens the UI at `http://localhost:6968`. Requires
 
 ### Desktop App
 
-#### Mac
+#### Mac (Homebrew)
+
+```bash
+brew tap mahitoburrito/tap
+brew install --cask openui-desktop
+```
+
+To update later: `brew upgrade --cask openui-desktop`
+
+#### Mac (manual)
 
 1. Go to the **[latest release](https://github.com/mahitoburrito/openui-desktop/releases/latest)**
 2. Download **`OpenUI-x.x.x-arm64.dmg`** (Apple Silicon) or **`OpenUI-x.x.x.dmg`** (Intel)
@@ -63,7 +72,11 @@ npm start
 
 ### Desktop App
 
-Check [GitHub Releases](https://github.com/mahitoburrito/openui-desktop/releases/latest) for new versions. Download the latest DMG/installer and replace the old app.
+The app checks for updates automatically on launch. When a new version is available, it downloads in the background and prompts you to restart.
+
+You can also update manually:
+- **Homebrew:** `brew upgrade --cask openui-desktop`
+- **Manual:** Download the latest from [GitHub Releases](https://github.com/mahitoburrito/openui-desktop/releases/latest) and replace the old app
 
 ### npx
 

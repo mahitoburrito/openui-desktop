@@ -123,3 +123,60 @@ jobs:
             release/*.deb
             release/*.blockmap
             release/latest*.yml
+
+  update-homebrew:
+    needs: [version, build]
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Homebrew cask
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Get SHA256 of arm64 DMG
+          ARM64_URL="https://github.com/mahitoburrito/openui-desktop/releases/download/v${VERSION}/OpenUI-${VERSION}-arm64.dmg"
+          ARM64_SHA=$(curl -sL "$ARM64_URL" | sha256sum | awk '{print $1}')
+
+          # Get SHA256 of x64 DMG
+          X64_URL="https://github.com/mahitoburrito/openui-desktop/releases/download/v${VERSION}/OpenUI-${VERSION}.dmg"
+          X64_SHA=$(curl -sL "$X64_URL" | sha256sum | awk '{print $1}')
+
+          # Clone the tap repo
+          git clone https://x-access-token:${GH_TOKEN}@github.com/mahitoburrito/homebrew-tap.git
+          cd homebrew-tap
+
+          # Write updated cask
+          cat > Casks/openui-desktop.rb << CASK
+          cask "openui-desktop" do
+            arch arm: "arm64", intel: "x64"
+            version "${VERSION}"
+
+            if Hardware::CPU.arm?
+              url "https://github.com/mahitoburrito/openui-desktop/releases/download/v#{version}/OpenUI-#{version}-arm64.dmg"
+              sha256 "${ARM64_SHA}"
+            else
+              url "https://github.com/mahitoburrito/openui-desktop/releases/download/v#{version}/OpenUI-#{version}.dmg"
+              sha256 "${X64_SHA}"
+            end
+
+            name "OpenUI Desktop"
+            desc "AI Agent Command Center — manage multiple coding agents on an infinite canvas"
+            homepage "https://github.com/mahitoburrito/openui-desktop"
+
+            app "OpenUI.app"
+
+            zap trash: [
+              "~/.openui-desktop",
+            ]
+          end
+          CASK
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' Casks/openui-desktop.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/openui-desktop.rb
+          git commit -m "Update openui-desktop to v${VERSION}" || true
+          git push

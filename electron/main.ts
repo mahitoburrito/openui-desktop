@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, dialog } from "electron";
 import { join } from "path";
 import { startServer } from "../server/index";
+import { autoUpdater } from "electron-updater";
 
 let mainWindow: BrowserWindow | null = null;
 const PORT = Number(process.env.PORT) || 6968;
@@ -60,6 +61,38 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+
+  // Auto-update (only in packaged builds)
+  if (!isDev) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on("update-available", (info) => {
+      console.log(`[updater] Update available: v${info.version}`);
+    });
+
+    autoUpdater.on("update-downloaded", (info) => {
+      const response = dialog.showMessageBoxSync(mainWindow!, {
+        type: "info",
+        title: "Update Ready",
+        message: `OpenUI v${info.version} has been downloaded.`,
+        detail: "Restart now to apply the update?",
+        buttons: ["Restart", "Later"],
+        defaultId: 0,
+      });
+      if (response === 0) {
+        autoUpdater.quitAndInstall();
+      }
+    });
+
+    autoUpdater.on("error", (err) => {
+      console.error("[updater] Error:", err.message);
+    });
+
+    autoUpdater.checkForUpdates().catch((err) => {
+      console.error("[updater] Check failed:", err.message);
+    });
+  }
 
   app.on("activate", () => {
     // macOS: re-create window when dock icon is clicked
