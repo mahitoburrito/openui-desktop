@@ -24,28 +24,30 @@ jobs:
         with:
           node-version: 20
 
-      - name: Check if release needed
-        id: check
+      - name: Determine next version and tag
+        id: bump
         run: |
-          # Skip if the last commit was a version bump (prevent infinite loop)
-          LAST_MSG=$(git log -1 --pretty=%s)
-          if [[ "$LAST_MSG" == chore:\ bump* ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          # Read current version from package.json
+          CURRENT=$(node -p "require('./package.json').version")
+          # Split into parts and bump patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          TAG="v${NEXT}"
+
+          # Skip if this tag already exists (e.g. re-run)
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+            exit 0
           fi
 
-      - name: Bump version and tag
-        id: bump
-        if: steps.check.outputs.skip == 'false'
-        run: |
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # Create a lightweight tag — no commit to main
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          NEW_VERSION=$(npm version patch -m "chore: bump v%s")
-          echo "version=${NEW_VERSION#v}" >> "$GITHUB_OUTPUT"
-          echo "tag=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          git push
-          git push --tags
+          git tag "$TAG"
+          git push origin "$TAG"
 
   build:
     needs: version
@@ -93,6 +95,9 @@ jobs:
       - name: Install Python setuptools (Windows)
         run: pip install setuptools
         if: runner.os == 'Windows'
+
+      - name: Set version from tag
+        run: npm version ${{ needs.version.outputs.version }} --no-git-tag-version
 
       - name: Install dependencies
         run: npm install
