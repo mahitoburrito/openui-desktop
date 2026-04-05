@@ -110,6 +110,14 @@ apiRoutes.get("/agents", (c) => {
       color: "#8B5CF6",
       icon: "brain",
     },
+    {
+      id: "codex",
+      name: "Codex",
+      command: "codex",
+      description: "OpenAI's coding agent CLI",
+      color: "#10A37F",
+      icon: "terminal",
+    },
   ];
   return c.json(agents);
 });

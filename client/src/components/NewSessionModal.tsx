@@ -29,6 +29,7 @@ const iconMap: Record<string, any> = {
   code: Code,
   cpu: Cpu,
   brain: Brain,
+  terminal: Terminal,
 };
 
 interface LinearTicket {
