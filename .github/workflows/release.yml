@@ -27,18 +27,18 @@ jobs:
       - name: Determine next version and tag
         id: bump
         run: |
-          # Read current version from package.json
-          CURRENT=$(node -p "require('./package.json').version")
-          # Split into parts and bump patch
+          # Get latest version from git tags (source of truth)
+          LATEST_TAG=$(git tag --list 'v*' --sort=-version:refname | head -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            CURRENT="0.0.0"
+          else
+            CURRENT="${LATEST_TAG#v}"
+          fi
+
+          # Bump patch
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
           TAG="v${NEXT}"
-
-          # Skip if this tag already exists (e.g. re-run)
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping"
-            exit 0
-          fi
 
           echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
