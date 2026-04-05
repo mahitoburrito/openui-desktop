@@ -131,7 +131,7 @@ jobs:
     steps:
       - name: Update Homebrew cask
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           # Get SHA256 of arm64 DMG
