@@ -23,7 +23,9 @@ import {
   parseGitHubUrl,
 } from "../services/github";
 
-const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
+function getLaunchCwd(): string {
+  return process.env.LAUNCH_CWD || homedir();
+}
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
@@ -31,12 +33,12 @@ const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 export const apiRoutes = new Hono();
 
 apiRoutes.get("/config", (c) => {
-  return c.json({ launchCwd: LAUNCH_CWD, dataDir: getDataDir() });
+  return c.json({ launchCwd: getLaunchCwd(), dataDir: getDataDir() });
 });
 
 // Browse directories for file picker
 apiRoutes.get("/browse", (c) => {
-  let path = c.req.query("path") || LAUNCH_CWD;
+  let path = c.req.query("path") || getLaunchCwd();
 
   if (path.startsWith("~")) {
     path = path.replace("~", homedir());
@@ -68,7 +70,7 @@ apiRoutes.get("/browse", (c) => {
 
 // Scan a directory for child git repositories
 apiRoutes.get("/scan-repos", (c) => {
-  let path = c.req.query("path") || LAUNCH_CWD;
+  let path = c.req.query("path") || getLaunchCwd();
 
   if (path.startsWith("~")) {
     path = path.replace("~", homedir());
@@ -193,7 +195,7 @@ apiRoutes.post("/sessions", async (c) => {
   } = body;
 
   const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const workingDir = cwd || LAUNCH_CWD;
+  const workingDir = cwd || getLaunchCwd();
 
   const linearConfig = loadConfig();
   const ticketPromptTemplate = linearConfig.ticketPromptTemplate;
@@ -452,8 +454,7 @@ apiRoutes.post("/categories", async (c) => {
   if (!state.categories) state.categories = [];
   state.categories.push(category);
 
-  const DATA_DIR = join(process.env.LAUNCH_CWD || process.cwd(), ".openui-desktop");
-  writeFileSync(join(DATA_DIR, "state.json"), JSON.stringify(state, null, 2));
+  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
 
   return c.json({ success: true });
 });
@@ -470,8 +471,7 @@ apiRoutes.patch("/categories/:categoryId", async (c) => {
 
   Object.assign(category, updates);
 
-  const DATA_DIR = join(process.env.LAUNCH_CWD || process.cwd(), ".openui-desktop");
-  writeFileSync(join(DATA_DIR, "state.json"), JSON.stringify(state, null, 2));
+  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
 
   return c.json({ success: true });
 });
@@ -487,8 +487,7 @@ apiRoutes.delete("/categories/:categoryId", (c) => {
 
   state.categories.splice(index, 1);
 
-  const DATA_DIR = join(process.env.LAUNCH_CWD || process.cwd(), ".openui-desktop");
-  writeFileSync(join(DATA_DIR, "state.json"), JSON.stringify(state, null, 2));
+  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
 
   return c.json({ success: true });
 });

@@ -2,14 +2,24 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import type { LinearTicket, LinearConfig } from "../types";
 
-const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
-const CONFIG_FILE = join(LAUNCH_CWD, ".openui-desktop", "config.json");
-const ENV_FILE = join(LAUNCH_CWD, ".openui-desktop", ".env");
+import { homedir } from "os";
+
+function getLaunchCwd(): string {
+  return process.env.LAUNCH_CWD || homedir();
+}
+
+function getConfigFile(): string {
+  return join(getLaunchCwd(), ".openui-desktop", "config.json");
+}
+
+function getEnvFile(): string {
+  return join(getLaunchCwd(), ".openui-desktop", ".env");
+}
 
 function loadEnvFile(): Record<string, string> {
   try {
-    if (existsSync(ENV_FILE)) {
-      const content = readFileSync(ENV_FILE, "utf-8");
+    if (existsSync(getEnvFile())) {
+      const content = readFileSync(getEnvFile(), "utf-8");
       const vars: Record<string, string> = {};
       for (const line of content.split("\n")) {
         const trimmed = line.trim();
@@ -35,14 +45,14 @@ function loadEnvFile(): Record<string, string> {
 
 function saveEnvFile(apiKey: string): void {
   try {
-    const dir = join(LAUNCH_CWD, ".openui-desktop");
+    const dir = join(getLaunchCwd(), ".openui-desktop");
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
 
     let content = "";
-    if (existsSync(ENV_FILE)) {
-      const existing = readFileSync(ENV_FILE, "utf-8");
+    if (existsSync(getEnvFile())) {
+      const existing = readFileSync(getEnvFile(), "utf-8");
       const lines = existing.split("\n").filter(line => !line.trim().startsWith("LINEAR_API_KEY="));
       content = lines.join("\n");
       if (content && !content.endsWith("\n")) content += "\n";
@@ -52,7 +62,7 @@ function saveEnvFile(apiKey: string): void {
       content += `LINEAR_API_KEY="${apiKey}"\n`;
     }
 
-    writeFileSync(ENV_FILE, content);
+    writeFileSync(getEnvFile(), content);
   } catch (e) {
     console.error("Failed to save .env file:", e);
   }
@@ -65,8 +75,8 @@ export function loadConfig(): LinearConfig {
   config.apiKey = envVars.LINEAR_API_KEY || process.env.LINEAR_API_KEY;
 
   try {
-    if (existsSync(CONFIG_FILE)) {
-      const fileConfig = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+    if (existsSync(getConfigFile())) {
+      const fileConfig = JSON.parse(readFileSync(getConfigFile(), "utf-8"));
       config.defaultTeamId = fileConfig.defaultTeamId;
       config.defaultBaseBranch = fileConfig.defaultBaseBranch;
       config.createWorktree = fileConfig.createWorktree;
@@ -85,7 +95,7 @@ export function saveConfig(config: LinearConfig): void {
   }
 
   try {
-    const dir = join(LAUNCH_CWD, ".openui-desktop");
+    const dir = join(getLaunchCwd(), ".openui-desktop");
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
@@ -95,7 +105,7 @@ export function saveConfig(config: LinearConfig): void {
       createWorktree: config.createWorktree,
       ticketPromptTemplate: config.ticketPromptTemplate,
     };
-    writeFileSync(CONFIG_FILE, JSON.stringify(fileConfig, null, 2));
+    writeFileSync(getConfigFile(), JSON.stringify(fileConfig, null, 2));
   } catch (e) {
     console.error("Failed to save config:", e);
   }

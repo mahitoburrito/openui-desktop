@@ -3,22 +3,36 @@ import { join } from "path";
 import type { PersistedState, Session } from "../types";
 
 // Use local .openui-desktop folder where user ran from
-const LAUNCH_CWD = process.env.LAUNCH_CWD || process.cwd();
-const DATA_DIR = join(LAUNCH_CWD, ".openui-desktop");
-const STATE_FILE = join(DATA_DIR, "state.json");
-const BUFFERS_DIR = join(DATA_DIR, "buffers");
+// Resolved lazily so LAUNCH_CWD env var is available after Electron app.whenReady()
+import { homedir } from "os";
+
+export function getDataDir(): string {
+  const launchCwd = process.env.LAUNCH_CWD || homedir();
+  return join(launchCwd, ".openui-desktop");
+}
+
+function getStateFile(): string {
+  return join(getDataDir(), "state.json");
+}
+
+function getBuffersDir(): string {
+  return join(getDataDir(), "buffers");
+}
 
 function ensureDirs() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  if (!existsSync(BUFFERS_DIR)) mkdirSync(BUFFERS_DIR, { recursive: true });
+  const dataDir = getDataDir();
+  const buffersDir = getBuffersDir();
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+  if (!existsSync(buffersDir)) mkdirSync(buffersDir, { recursive: true });
 }
 
 export function loadState(): PersistedState {
   ensureDirs();
   try {
-    if (existsSync(STATE_FILE)) {
-      const data = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
-      console.log(`[persistence] Loaded state from ${STATE_FILE}`);
+    const stateFile = getStateFile();
+    if (existsSync(stateFile)) {
+      const data = JSON.parse(readFileSync(stateFile, "utf-8"));
+      console.log(`[persistence] Loaded state from ${stateFile}`);
       return data;
     }
   } catch (e) {
@@ -59,7 +73,7 @@ export function saveState(sessions: Map<string, Session>) {
   }
 
   try {
-    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    writeFileSync(getStateFile(), JSON.stringify(state, null, 2));
   } catch (e) {
     console.error("Failed to save state:", e);
   }
@@ -80,7 +94,7 @@ export function savePositions(positions: Record<string, { x: number; y: number }
 
   if (updated > 0) {
     try {
-      writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+      writeFileSync(getStateFile(), JSON.stringify(state, null, 2));
     } catch (e) {
       console.error("Failed to save positions:", e);
     }
@@ -89,7 +103,7 @@ export function savePositions(positions: Record<string, { x: number; y: number }
 
 export function saveBuffer(sessionId: string, buffer: string[]) {
   ensureDirs();
-  const bufferFile = join(BUFFERS_DIR, `${sessionId}.txt`);
+  const bufferFile = join(getBuffersDir(), `${sessionId}.txt`);
   try {
     writeFileSync(bufferFile, buffer.join(""));
   } catch (e) {
@@ -99,7 +113,7 @@ export function saveBuffer(sessionId: string, buffer: string[]) {
 
 export function loadBuffer(sessionId: string): string[] {
   ensureDirs();
-  const bufferFile = join(BUFFERS_DIR, `${sessionId}.txt`);
+  const bufferFile = join(getBuffersDir(), `${sessionId}.txt`);
   try {
     if (existsSync(bufferFile)) {
       return [readFileSync(bufferFile, "utf-8")];
@@ -110,6 +124,3 @@ export function loadBuffer(sessionId: string): string[] {
   return [];
 }
 
-export function getDataDir() {
-  return DATA_DIR;
-}
