@@ -6,30 +6,39 @@ A standalone Electron application that packages the full [OpenUI](https://github
 
 ## Install
 
-### Desktop App (Electron)
-
-Download the latest release for your platform:
-
-**[Download from GitHub Releases](https://github.com/mahitoburrito/openui-desktop/releases/latest)**
-
-| Platform | Download |
-|----------|----------|
-| Mac (Apple Silicon) | `OpenUI-x.x.x-arm64.dmg` |
-| Mac (Intel) | `OpenUI-x.x.x-x64.dmg` |
-| Windows | `OpenUI-Setup-x.x.x.exe` |
-| Linux | `OpenUI-x.x.x.AppImage` or `.deb` |
-
-**Mac users:** The app is unsigned. On first launch, right-click the app → **Open** → **Open** to bypass Gatekeeper. You only need to do this once.
-
-### Browser (no install)
-
-Run it instantly in your browser with npx — no download required:
+### One-liner (browser, no install)
 
 ```bash
 npx openui-desktop
 ```
 
-This starts a local server and opens the UI at `http://localhost:6968`.
+This starts a local server and opens the UI at `http://localhost:6968`. Requires Node.js 18+.
+
+### Desktop App
+
+#### Mac
+
+1. Go to the **[latest release](https://github.com/mahitoburrito/openui-desktop/releases/latest)**
+2. Download **`OpenUI-x.x.x-arm64.dmg`** (Apple Silicon) or **`OpenUI-x.x.x.dmg`** (Intel)
+3. Open the `.dmg` file
+4. Drag **OpenUI** into the **Applications** folder
+5. Close the DMG window
+6. Open **Applications → OpenUI**
+7. First launch only: macOS will warn the app is unsigned — right-click → **Open** → click **Open**
+
+After that, OpenUI launches like any normal app (Spotlight, Dock, etc).
+
+#### Windows
+
+1. Download **`OpenUI.Setup.x.x.x.exe`** from the **[latest release](https://github.com/mahitoburrito/openui-desktop/releases/latest)**
+2. Run the installer
+3. Launch **OpenUI** from the Start menu
+
+#### Linux
+
+1. Download **`OpenUI-x.x.x.AppImage`** or **`openui-desktop_x.x.x_amd64.deb`** from the **[latest release](https://github.com/mahitoburrito/openui-desktop/releases/latest)**
+2. For AppImage: `chmod +x OpenUI-*.AppImage && ./OpenUI-*.AppImage`
+3. For deb: `sudo dpkg -i openui-desktop_*.deb` then launch from your app menu
 
 ### From Source
 
