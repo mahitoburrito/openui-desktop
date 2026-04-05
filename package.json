@@ -5,6 +5,33 @@
   "main": "dist/electron/electron/main.js",
   "author": "mahitoburrito",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mahitoburrito/openui-desktop.git"
+  },
+  "homepage": "https://github.com/mahitoburrito/openui-desktop#readme",
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "claude-code",
+    "openui",
+    "desktop",
+    "electron",
+    "terminal",
+    "canvas"
+  ],
+  "bin": {
+    "openui-desktop": "./bin/openui-desktop"
+  },
+  "files": [
+    "bin/",
+    "server/",
+    "client/dist/",
+    "claude-code-plugin/",
+    "dist/",
+    "tsconfig.electron.json",
+    "README.md"
+  ],
   "scripts": {
     "dev": "concurrently \"npm run dev:client\" \"npm run dev:electron\"",
     "dev:client": "cd client && npx vite",
@@ -12,8 +39,10 @@
     "build:client": "cd client && npx vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:client && npm run build:electron",
+    "start": "node bin/openui-desktop.js",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
+    "prepublishOnly": "npm run build",
     "postinstall": "cd client && npm install"
   },
   "dependencies": {

@@ -19,6 +19,39 @@ const app = new Hono();
 app.use("*", cors());
 app.route("/api", apiRoutes);
 
+// Serve static files from client/dist in standalone (non-Electron) mode
+const CLIENT_DIST = join(__dirname, "..", "..", "..", "client", "dist");
+if (existsSync(CLIENT_DIST)) {
+  app.get("/*", (c) => {
+    const reqPath = c.req.path === "/" ? "/index.html" : c.req.path;
+    const filePath = join(CLIENT_DIST, reqPath);
+    if (existsSync(filePath)) {
+      const content = readFileSync(filePath);
+      const ext = filePath.split(".").pop() || "";
+      const mimeTypes: Record<string, string> = {
+        html: "text/html",
+        js: "application/javascript",
+        css: "text/css",
+        svg: "image/svg+xml",
+        png: "image/png",
+        ico: "image/x-icon",
+        json: "application/json",
+      };
+      return new Response(content, {
+        headers: { "Content-Type": mimeTypes[ext] || "application/octet-stream" },
+      });
+    }
+    // SPA fallback — serve index.html for client-side routes
+    const indexPath = join(CLIENT_DIST, "index.html");
+    if (existsSync(indexPath)) {
+      return new Response(readFileSync(indexPath), {
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+    return c.notFound();
+  });
+}
+
 // Start server
 export function startServer(): Promise<number> {
   return new Promise((resolve, reject) => {
