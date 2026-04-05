@@ -73,8 +73,10 @@
       "claude-code-plugin/**/*",
       "resources/**/*"
     ],
+    "icon": "resources/icon",
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "resources/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -85,13 +87,15 @@
         "AppImage",
         "deb"
       ],
-      "category": "Development"
+      "category": "Development",
+      "icon": "resources/icon.png"
     },
     "win": {
       "target": [
         "nsis",
         "zip"
-      ]
+      ],
+      "icon": "resources/icon.ico"
     },
     "extraResources": [
       {
