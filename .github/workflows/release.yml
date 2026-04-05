@@ -11,18 +11,23 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
+            platform: mac
             arch: arm64
             targets: dmg zip
-          - os: macos-13
+          - os: macos-latest
+            platform: mac
             arch: x64
             targets: dmg zip
           - os: windows-latest
+            platform: win
             arch: x64
             targets: nsis zip
           - os: ubuntu-latest
+            platform: linux
             arch: x64
             targets: AppImage deb
 
@@ -34,6 +39,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Install Python setuptools (for node-gyp)
+        run: pip3 install setuptools
+        if: runner.os != 'Windows'
+
+      - name: Install Python setuptools (Windows)
+        run: pip install setuptools
+        if: runner.os == 'Windows'
 
       - name: Install dependencies
         run: npm install
@@ -48,7 +61,7 @@ jobs:
         run: npm run build:electron
 
       - name: Build Electron app
-        run: npx electron-builder --${{ matrix.os == 'macos-latest' && 'mac' || matrix.os == 'macos-13' && 'mac' || matrix.os == 'windows-latest' && 'win' || 'linux' }} ${{ matrix.targets }} --${{ matrix.arch }}
+        run: npx electron-builder --${{ matrix.platform }} ${{ matrix.targets }} --${{ matrix.arch }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

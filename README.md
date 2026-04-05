@@ -4,22 +4,80 @@
 
 A standalone Electron application that packages the full [OpenUI](https://github.com/mahitoburrito/openui) experience into a native desktop app. Manage multiple AI coding agents on an infinite canvas without needing a browser or Bun runtime.
 
-## Why Desktop?
+## Install
 
-- **No browser tab** — dedicated window with native OS integration
-- **No runtime dependency** — ships with everything bundled (no Bun required)
-- **Native titlebar** — draggable window with macOS traffic lights
-- **Single binary** — one app, double-click to launch
-- **Cross-platform** — macOS, Linux, and Windows
+### Desktop App (Electron)
+
+Download the latest release for your platform:
+
+**[Download from GitHub Releases](https://github.com/mahitoburrito/openui-desktop/releases/latest)**
+
+| Platform | Download |
+|----------|----------|
+| Mac (Apple Silicon) | `OpenUI-x.x.x-arm64.dmg` |
+| Mac (Intel) | `OpenUI-x.x.x-x64.dmg` |
+| Windows | `OpenUI-Setup-x.x.x.exe` |
+| Linux | `OpenUI-x.x.x.AppImage` or `.deb` |
+
+**Mac users:** The app is unsigned. On first launch, right-click the app → **Open** → **Open** to bypass Gatekeeper. You only need to do this once.
+
+### Browser (no install)
+
+Run it instantly in your browser with npx — no download required:
+
+```bash
+npx openui-desktop
+```
+
+This starts a local server and opens the UI at `http://localhost:6968`.
+
+### From Source
+
+```bash
+git clone https://github.com/mahitoburrito/openui-desktop.git
+cd openui-desktop
+npm install
+
+# Run as desktop app (Electron)
+npm run dev
+
+# Or run as browser app
+npm start
+```
+
+## Requirements
+
+- **Desktop app:** Just download and run — everything is bundled
+- **npx / source:** Node.js 18+, plus one of: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), OpenCode, or Ralph Loop installed globally
+
+## Updating
+
+### Desktop App
+
+Check [GitHub Releases](https://github.com/mahitoburrito/openui-desktop/releases/latest) for new versions. Download the latest DMG/installer and replace the old app.
+
+### npx
+
+Always runs the latest version automatically:
+
+```bash
+npx openui-desktop@latest
+```
+
+### From Source
+
+```bash
+git pull
+npm install
+npm run dev
+```
 
 ## Features
 
-Everything from OpenUI, running natively:
-
 - **Infinite canvas** with drag-and-drop agent nodes
 - **Real-time status** — Running, Idle, Needs Input, Tool Calling
-- **Built-in terminal** with resizable sidebar (drag the left edge)
-- **Auto-naming** — sessions are named from your first prompt
+- **Built-in terminal** with resizable sidebar
+- **Auto-naming** — sessions named from your first prompt
 - **Agent support** — Claude Code, OpenCode, Ralph Loop
 - **Linear integration** — start sessions from tickets
 - **GitHub integration** — browse and start from issues
@@ -28,45 +86,20 @@ Everything from OpenUI, running natively:
 - **Persistent layout** — everything saved across restarts
 - **Claude Code plugin** — precise status via hooks (auto-injected)
 
-## Installation
-
-### From Source
-
-```bash
-git clone https://github.com/mahitoburrito/openui.git
-cd openui-desktop
-
-# Install dependencies
-npm install
-
-# Run in development mode
-npm run dev
-
-# Build distributable
-npm run dist
-```
-
-### Requirements
-
-- Node.js 18+
-- npm or yarn
-- One of: Claude Code, OpenCode, or Ralph Loop installed globally
-
 ## Development
 
 ```bash
-# Install all dependencies (root + client)
 npm install
-
-# Run dev mode (Vite dev server + Electron)
 npm run dev
 ```
 
 In dev mode:
-- The React client runs on `http://localhost:5173` via Vite
-- The embedded server runs on port `6968`
+- React client runs on `http://localhost:5173` via Vite
+- Embedded server runs on port `6968`
 - Vite proxies `/api` and `/ws` to the server
 - Electron loads from the Vite dev server with DevTools open
+
+Use `PORT=7968 npm run dev` to run on a different port (useful if the browser version is already running).
 
 ## Build & Package
 
@@ -83,32 +116,38 @@ npm run dist
 
 Output goes to `release/`.
 
+## Releasing a New Version
+
+Releases are built automatically by GitHub Actions for all platforms.
+
+```bash
+# Bump version
+npm version patch    # or minor, or major
+
+# Push the tag — CI builds Mac, Windows, and Linux
+git push && git push --tags
+```
+
+The workflow builds and uploads binaries to the GitHub Release automatically.
+
 ## Architecture
 
 ```
 openui-desktop/
+├── bin/                  # CLI entry point for npx
 ├── electron/
-│   ├── main.ts           # Electron main process — creates window, starts server
+│   ├── main.ts           # Electron main process
 │   └── preload.ts        # Context bridge for renderer
-├── server/               # Embedded Node.js server (ported from Bun)
-│   ├── index.ts          # HTTP + WebSocket server (Hono + ws + node-pty)
-│   ├── routes/api.ts     # REST API endpoints
-│   ├── services/
-│   │   ├── sessionManager.ts  # PTY lifecycle, plugin injection
-│   │   ├── persistence.ts     # State save/load to .openui-desktop/
-│   │   ├── linear.ts          # Linear API integration
-│   │   └── github.ts          # GitHub Issues API
-│   └── types/index.ts    # TypeScript interfaces
-├── client/               # React frontend (identical to web version)
-│   └── src/
-│       ├── App.tsx        # ReactFlow canvas
-│       ├── components/    # UI components
-│       └── stores/        # Zustand state
+├── server/               # Embedded Node.js server
+│   ├── index.ts          # HTTP + WebSocket (Hono + ws + node-pty)
+│   ├── routes/api.ts     # REST API
+│   └── services/         # Session, persistence, Linear, GitHub
+├── client/               # React frontend (ReactFlow canvas)
 ├── claude-code-plugin/   # Status reporter plugin for Claude Code
-└── package.json          # Electron + electron-builder config
+└── package.json
 ```
 
-### Key Differences from Web Version
+### Web vs Desktop
 
 | Aspect | Web (openui) | Desktop (openui-desktop) |
 |--------|-------------|------------------------|
@@ -116,17 +155,9 @@ openui-desktop/
 | PTY | bun-pty | node-pty |
 | WebSocket | Bun native WS | ws library |
 | HTTP | Bun.serve + Hono | @hono/node-server |
-| Entry | CLI (`openui`) | Electron app |
+| Entry | CLI (`openui`) | Electron app or `npx` |
 | Window | Browser tab | Native BrowserWindow |
 | Data dir | `.openui/` | `.openui-desktop/` |
-
-## Data Storage
-
-State is saved to `.openui-desktop/` in the launch directory (defaults to home):
-- `state.json` — node positions, session metadata, categories
-- `buffers/*.txt` — terminal output history per session
-- `config.json` — Linear settings
-- `.env` — Linear API key
 
 ## License
 
