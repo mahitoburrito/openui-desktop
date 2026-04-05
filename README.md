@@ -118,17 +118,13 @@ Output goes to `release/`.
 
 ## Releasing a New Version
 
-Releases are built automatically by GitHub Actions for all platforms.
+Every push to `main` automatically:
+1. Bumps the patch version
+2. Creates a git tag
+3. Builds Mac (arm64 + x64), Windows, and Linux binaries
+4. Publishes them to a GitHub Release
 
-```bash
-# Bump version
-npm version patch    # or minor, or major
-
-# Push the tag — CI builds Mac, Windows, and Linux
-git push && git push --tags
-```
-
-The workflow builds and uploads binaries to the GitHub Release automatically.
+Just push your code — that's it.
 
 ## Architecture
 
