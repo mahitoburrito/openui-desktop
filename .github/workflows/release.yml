@@ -41,8 +41,12 @@ jobs:
           node-version: 20
 
       - name: Install Python setuptools (for node-gyp)
+        run: pip3 install --break-system-packages setuptools
+        if: runner.os == 'macOS'
+
+      - name: Install Python setuptools (Linux)
         run: pip3 install setuptools
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
 
       - name: Install Python setuptools (Windows)
         run: pip install setuptools
