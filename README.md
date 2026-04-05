@@ -34,6 +34,10 @@ To update later: `brew upgrade --cask openui-desktop`
 5. Close the DMG window
 6. Open **Applications → OpenUI**
 7. First launch only: macOS will warn the app is unsigned — right-click → **Open** → click **Open**
+8. If you see **"OpenUI is damaged"**, run this in Terminal and try again:
+   ```bash
+   xattr -cr /Applications/OpenUI.app
+   ```
 
 After that, OpenUI launches like any normal app (Spotlight, Dock, etc).
 
