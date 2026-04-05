@@ -3,7 +3,7 @@ import * as pty from "node-pty";
 import { existsSync, mkdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
-import type { Session } from "../types";
+import type { Session, DetectedRepo } from "../types";
 import { loadBuffer, loadState } from "./persistence";
 
 const QUIET = !!process.env.OPENUI_QUIET;
@@ -150,6 +150,143 @@ export function createWorktree(params: {
   }
 }
 
+// Preserve working state by stashing uncommitted changes
+function preserveWorkingState(gitRoot: string): { method: 'stash' | 'commit' | 'clean'; stashRef?: string } {
+  try {
+    const statusOutput = execSync("git status --porcelain", {
+      cwd: gitRoot,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+
+    if (!statusOutput) {
+      return { method: 'clean' };
+    }
+
+    // Try to stash
+    const stashMsg = `openui-preserve-${Date.now()}`;
+    try {
+      execSync(`git stash push -m "${stashMsg}" --include-untracked`, {
+        cwd: gitRoot,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      log(`[worktree] Stashed changes in ${gitRoot}: ${stashMsg}`);
+      return { method: 'stash', stashRef: stashMsg };
+    } catch {
+      // Fallback: auto-commit
+      try {
+        execSync('git add -A', { cwd: gitRoot, stdio: "pipe" });
+        execSync('git commit -am "openui: preserve WIP [skip ci]"', { cwd: gitRoot, stdio: "pipe" });
+        log(`[worktree] Auto-committed changes in ${gitRoot}`);
+        return { method: 'commit' };
+      } catch {
+        logError(`[worktree] Failed to preserve state in ${gitRoot}`);
+        return { method: 'clean' };
+      }
+    }
+  } catch {
+    return { method: 'clean' };
+  }
+}
+
+// Scan a directory for child git repositories
+export function scanReposInDirectory(dirPath: string): DetectedRepo[] {
+  const repos: DetectedRepo[] = [];
+
+  try {
+    const { readdirSync, existsSync: fsExists } = require("fs");
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || entry.name === "node_modules") continue;
+
+      const entryPath = join(dirPath, entry.name);
+      const gitPath = join(entryPath, ".git");
+
+      if (!fsExists(gitPath)) continue;
+
+      const name = entry.name;
+      const branch = getGitBranch(entryPath) || "unknown";
+
+      // Check dirty status
+      let dirty = false;
+      try {
+        const statusOutput = execSync("git status --porcelain", {
+          cwd: entryPath,
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        dirty = statusOutput.length > 0;
+      } catch {}
+
+      // Detect default branch
+      let defaultBranch = "main";
+      try {
+        const ref = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
+          cwd: entryPath,
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "pipe"],
+        }).trim();
+        defaultBranch = ref.replace("refs/remotes/origin/", "");
+      } catch {}
+
+      repos.push({ name, path: entryPath, branch, dirty, defaultBranch });
+    }
+  } catch (e) {
+    logError(`[scan] Failed to scan ${dirPath}:`, e);
+  }
+
+  return repos;
+}
+
+// Create worktrees across multiple repos
+export function createMultiRepoWorktrees(params: {
+  repos: { name: string; path: string; defaultBranch?: string }[];
+  branchName: string;
+  mode: 'current' | 'main';
+  baseBranch: string;
+}): {
+  worktreePaths: Record<string, string>;
+  stashRefs: Record<string, string>;
+  errors: Record<string, string>;
+} {
+  const { repos, branchName, mode, baseBranch } = params;
+  const worktreePaths: Record<string, string> = {};
+  const stashRefs: Record<string, string> = {};
+  const errors: Record<string, string> = {};
+
+  for (const repo of repos) {
+    const preserveResult = preserveWorkingState(repo.path);
+    if (preserveResult.stashRef) {
+      stashRefs[repo.name] = preserveResult.stashRef;
+    }
+
+    let repoBaseBranch: string;
+    if (mode === 'current') {
+      repoBaseBranch = getGitBranch(repo.path) || baseBranch;
+    } else {
+      repoBaseBranch = repo.defaultBranch || baseBranch;
+    }
+
+    const result = createWorktree({
+      cwd: repo.path,
+      branchName,
+      baseBranch: repoBaseBranch,
+    });
+
+    if (result.success && result.worktreePath) {
+      worktreePaths[repo.name] = result.worktreePath;
+      log(`[multi-worktree] Created worktree for ${repo.name}: ${result.worktreePath}`);
+    } else {
+      errors[repo.name] = result.error || "Unknown error";
+      logError(`[multi-worktree] Failed for ${repo.name}: ${result.error}`);
+    }
+  }
+
+  return { worktreePaths, stashRefs, errors };
+}
+
 const MAX_BUFFER_SIZE = 1000;
 
 export const sessions = new Map<string, Session>();
@@ -170,6 +307,9 @@ export function createSession(params: {
   baseBranch?: string;
   createWorktreeFlag?: boolean;
   ticketPromptTemplate?: string;
+  // Multi-repo worktree options
+  multiRepoMode?: 'current' | 'main';
+  additionalRepos?: { name: string; path: string; defaultBranch?: string }[];
 }): { session: Session; cwd: string; gitBranch?: string } {
   const {
     sessionId,
@@ -187,20 +327,58 @@ export function createSession(params: {
     baseBranch,
     createWorktreeFlag,
     ticketPromptTemplate,
+    multiRepoMode,
+    additionalRepos,
   } = params;
 
   let workingDir = originalCwd;
   let worktreePath: string | undefined;
   let mainRepoPath: string | undefined;
   let gitBranch: string | null = null;
+  let worktreePaths: Record<string, string> | undefined;
+  let stashRefs: Record<string, string> | undefined;
+  let worktreeMode: 'current' | 'main' | undefined;
 
   if (createWorktreeFlag && branchName && baseBranch) {
-    const result = createWorktree({ cwd: originalCwd, branchName, baseBranch });
-    if (result.success && result.worktreePath) {
-      workingDir = result.worktreePath;
-      worktreePath = result.worktreePath;
-      mainRepoPath = originalCwd;
-      gitBranch = branchName;
+    if (additionalRepos && additionalRepos.length > 0 && multiRepoMode) {
+      // Multi-repo worktree creation
+      const primaryName = basename(originalCwd);
+      const allRepos = [
+        { name: primaryName, path: originalCwd },
+        ...additionalRepos,
+      ];
+
+      const multiResult = createMultiRepoWorktrees({
+        repos: allRepos,
+        branchName,
+        mode: multiRepoMode,
+        baseBranch,
+      });
+
+      worktreePaths = multiResult.worktreePaths;
+      stashRefs = Object.keys(multiResult.stashRefs).length > 0 ? multiResult.stashRefs : undefined;
+      worktreeMode = multiRepoMode;
+
+      if (worktreePaths[primaryName]) {
+        workingDir = worktreePaths[primaryName];
+        worktreePath = worktreePaths[primaryName];
+        mainRepoPath = originalCwd;
+        gitBranch = branchName;
+        log(`[session] Multi-repo worktrees created: ${Object.keys(worktreePaths).join(', ')}`);
+      }
+
+      for (const [repoName, error] of Object.entries(multiResult.errors)) {
+        logError(`[session] Worktree failed for ${repoName}: ${error}`);
+      }
+    } else {
+      // Single repo worktree creation (existing behavior)
+      const result = createWorktree({ cwd: originalCwd, branchName, baseBranch });
+      if (result.success && result.worktreePath) {
+        workingDir = result.worktreePath;
+        worktreePath = result.worktreePath;
+        mainRepoPath = originalCwd;
+        gitBranch = branchName;
+      }
     }
   }
 
@@ -240,6 +418,9 @@ export function createSession(params: {
     originalCwd: mainRepoPath,
     gitBranch: gitBranch || undefined,
     worktreePath,
+    worktreePaths,
+    worktreeMode,
+    stashRefs,
     createdAt: new Date().toISOString(),
     clients: new Set(),
     outputBuffer: [],
@@ -301,6 +482,18 @@ export function createSession(params: {
         ptyProcess.write(ticketPrompt + "\r");
       }, 2000);
     }
+
+    // If multi-repo worktrees were created, inject context
+    if (worktreePaths && Object.keys(worktreePaths).length > 1) {
+      const delay = ticketUrl ? 4000 : 2000;
+      setTimeout(() => {
+        const repoLines = Object.entries(worktreePaths!)
+          .map(([name, path]) => `- ${name}: ${path}`)
+          .join("\n");
+        const contextPrompt = `This session has worktrees across multiple repos:\n${repoLines}\n\nAll repos are on branch: ${branchName}\nCoordinate changes across all repos as needed.`;
+        ptyProcess.write(contextPrompt + "\r");
+      }, delay);
+    }
   }, 300);
 
   log(`[session] Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}`);
@@ -347,6 +540,7 @@ export function restoreSessions() {
       notes: node.notes,
       nodeId: node.nodeId,
       isRestored: true,
+      worktreePaths: node.worktreePaths,
     };
 
     sessions.set(node.sessionId, session);

@@ -55,7 +55,7 @@ function ensurePluginInstalled() {
 async function checkForUpdates() {
   try {
     const res = await fetch(
-      "https://registry.npmjs.org/openui-desktop/latest",
+      "https://registry.npmjs.org/@mahitoburrito%2fopenui-desktop/latest",
       { signal: AbortSignal.timeout(3000) }
     );
     if (!res.ok) return;
@@ -65,7 +65,7 @@ async function checkForUpdates() {
         `\x1b[33m  Update available: ${CURRENT_VERSION} → ${data.version}\x1b[0m`
       );
       console.log(
-        `\x1b[38;5;245m  Run: npx openui-desktop@latest\x1b[0m\n`
+        `\x1b[38;5;245m  Run: npx @mahitoburrito/openui-desktop@latest\x1b[0m\n`
       );
     }
   } catch {

@@ -67,6 +67,7 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
           gitBranch={session?.gitBranch}
           ticketId={session?.ticketId}
           ticketTitle={session?.ticketTitle}
+          worktreePaths={session?.worktreePaths}
         />
       </motion.div>
 

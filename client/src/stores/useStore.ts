@@ -33,6 +33,8 @@ export interface AgentSession {
   ticketTitle?: string;
   // Current tool being used (from plugin)
   currentTool?: string;
+  // Multi-repo worktree paths
+  worktreePaths?: Record<string, string>;
 }
 
 export interface DeleteToast {

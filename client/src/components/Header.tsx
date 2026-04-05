@@ -13,9 +13,29 @@ export function Header() {
       {/* Logo */}
       <div className="flex items-center gap-3 pl-16">
         <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-md bg-gradient-to-br from-violet-500 to-orange-500 flex items-center justify-center">
-            <div className="w-2 h-2 rounded-full bg-white" />
-          </div>
+          <svg className="w-6 h-6" viewBox="0 0 280 280" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="header-logo-g" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#ffd89b"/>
+                <stop offset="50%" stopColor="#f78c3a"/>
+                <stop offset="100%" stopColor="#c45a10"/>
+              </linearGradient>
+            </defs>
+            <rect x="52" y="52" width="176" height="176" rx="44" fill="#f78c3a" opacity="0.15"/>
+            <rect x="45" y="45" width="176" height="176" rx="44" fill="url(#header-logo-g)"/>
+            <g fill="none" stroke="#fff" strokeWidth="5" strokeLinecap="round" opacity="0.85">
+              <line x1="133" y1="82" x2="133" y2="195"/>
+              <line x1="76" y1="138" x2="190" y2="138"/>
+              <line x1="93" y1="99" x2="173" y2="179"/>
+              <line x1="173" y1="99" x2="93" y2="179"/>
+            </g>
+            <g fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="188" y1="60" x2="188" y2="90"/>
+              <line x1="173" y1="75" x2="203" y2="75"/>
+              <line x1="177" y1="64" x2="199" y2="86"/>
+              <line x1="199" y1="64" x2="177" y2="86"/>
+            </g>
+          </svg>
           <span className="text-sm font-semibold text-white">OpenUI Desktop</span>
         </div>
         

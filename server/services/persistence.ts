@@ -52,6 +52,7 @@ export function saveState(sessions: Map<string, Session>) {
       notes: session.notes,
       icon: session.icon,
       position: session.position || existingNode?.position || { x: 0, y: 0 },
+      worktreePaths: session.worktreePaths,
     });
 
     saveBuffer(sessionId, session.outputBuffer);

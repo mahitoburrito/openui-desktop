@@ -12,6 +12,9 @@ export interface Session {
   originalCwd?: string;
   gitBranch?: string;
   worktreePath?: string;
+  worktreePaths?: Record<string, string>;   // repo name → worktree path (multi-repo)
+  worktreeMode?: 'current' | 'main';
+  stashRefs?: Record<string, string>;       // repo name → stash ref
   createdAt: string;
   clients: Set<WebSocket>;
   outputBuffer: string[];
@@ -81,6 +84,7 @@ export interface PersistedNode {
   notes?: string;
   icon?: string;
   position: { x: number; y: number };
+  worktreePaths?: Record<string, string>;
 }
 
 export interface PersistedCategory {
@@ -108,4 +112,12 @@ export interface Agent {
 
 export interface WebSocketData {
   sessionId: string;
+}
+
+export interface DetectedRepo {
+  name: string;
+  path: string;
+  branch: string;
+  dirty: boolean;
+  defaultBranch: string;
 }

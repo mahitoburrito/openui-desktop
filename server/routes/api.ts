@@ -4,7 +4,7 @@ import { readdirSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, injectPluginDir } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, injectPluginDir, scanReposInDirectory } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadConfig,
@@ -66,6 +66,24 @@ apiRoutes.get("/browse", (c) => {
   }
 });
 
+// Scan a directory for child git repositories
+apiRoutes.get("/scan-repos", (c) => {
+  let path = c.req.query("path") || LAUNCH_CWD;
+
+  if (path.startsWith("~")) {
+    path = path.replace("~", homedir());
+  }
+
+  path = resolve(path);
+
+  try {
+    const repos = scanReposInDirectory(path);
+    return c.json({ repos });
+  } catch (e: any) {
+    return c.json({ error: e.message, repos: [] }, 400);
+  }
+});
+
 apiRoutes.get("/agents", (c) => {
   const agents: Agent[] = [
     {
@@ -114,6 +132,7 @@ apiRoutes.get("/sessions", (c) => {
     isRestored: session.isRestored,
     ticketId: session.ticketId,
     ticketTitle: session.ticketTitle,
+    worktreePaths: session.worktreePaths,
   }));
   return c.json(sessionList);
 });
@@ -161,6 +180,8 @@ apiRoutes.post("/sessions", async (c) => {
     agentId, agentName, command, cwd, nodeId, customName, customColor,
     ticketId, ticketTitle, ticketUrl, branchName, baseBranch,
     createWorktree: createWorktreeFlag,
+    multiRepoMode,
+    additionalRepos,
   } = body;
 
   const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -173,6 +194,7 @@ apiRoutes.post("/sessions", async (c) => {
     sessionId, agentId, agentName, command, cwd: workingDir, nodeId,
     customName, customColor, ticketId, ticketTitle, ticketUrl,
     branchName, baseBranch, createWorktreeFlag, ticketPromptTemplate,
+    multiRepoMode, additionalRepos,
   });
 
   saveState(sessions);

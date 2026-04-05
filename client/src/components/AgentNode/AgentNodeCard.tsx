@@ -1,4 +1,4 @@
-import { MessageSquare, WifiOff, GitBranch, Folder, Wrench } from "lucide-react";
+import { MessageSquare, WifiOff, GitBranch, Folder, Wrench, Layers } from "lucide-react";
 import { AgentStatus } from "../../stores/useStore";
 
 // Status config with visual priority levels
@@ -39,6 +39,7 @@ interface AgentNodeCardProps {
   gitBranch?: string;
   ticketId?: string;
   ticketTitle?: string;
+  worktreePaths?: Record<string, string>;
 }
 
 export function AgentNodeCard({
@@ -54,6 +55,7 @@ export function AgentNodeCard({
   gitBranch,
   ticketId,
   ticketTitle,
+  worktreePaths,
 }: AgentNodeCardProps) {
   // agentId is available for future use if needed
   void agentId;
@@ -185,7 +187,7 @@ export function AgentNodeCard({
         )}
 
         {/* Repo & Branch */}
-        {(dirName || gitBranch) && (
+        {(dirName || gitBranch || (worktreePaths && Object.keys(worktreePaths).length > 1)) && (
           <div className="mt-2 space-y-1">
             {dirName && (
               <div className="flex items-center gap-1.5">
@@ -197,6 +199,12 @@ export function AgentNodeCard({
               <div className="flex items-center gap-1.5">
                 <GitBranch className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
                 <span className="text-[11px] text-purple-400 font-mono truncate">{gitBranch}</span>
+              </div>
+            )}
+            {worktreePaths && Object.keys(worktreePaths).length > 1 && (
+              <div className="flex items-center gap-1.5" title={Object.entries(worktreePaths).map(([n, p]) => `${n}: ${p}`).join('\n')}>
+                <Layers className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
+                <span className="text-[10px] text-cyan-400 font-medium">{Object.keys(worktreePaths).length} repos</span>
               </div>
             )}
           </div>

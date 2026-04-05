@@ -9,7 +9,7 @@ A standalone Electron application that packages the full [OpenUI](https://github
 ### One-liner (browser, no install)
 
 ```bash
-npx openui-desktop
+npx @mahitoburrito/openui-desktop
 ```
 
 This starts a local server and opens the UI at `http://localhost:6968`. Requires Node.js 18+.
@@ -70,20 +70,24 @@ npm start
 
 ## Updating
 
-### Desktop App
+### Desktop App (manual install)
 
-The app checks for updates automatically on launch. When a new version is available, it downloads in the background and prompts you to restart.
+If you downloaded the app directly from GitHub Releases, it checks for updates automatically on launch. When a new version is available, it downloads in the background and prompts you to restart.
 
-You can also update manually:
-- **Homebrew:** `brew upgrade --cask openui-desktop`
-- **Manual:** Download the latest from [GitHub Releases](https://github.com/mahitoburrito/openui-desktop/releases/latest) and replace the old app
+### Desktop App (Homebrew)
+
+Homebrew-installed apps don't auto-update. Run this to get the latest version:
+
+```bash
+brew upgrade --cask openui-desktop
+```
 
 ### npx
 
 Always runs the latest version automatically:
 
 ```bash
-npx openui-desktop@latest
+npx @mahitoburrito/openui-desktop@latest
 ```
 
 ### From Source
