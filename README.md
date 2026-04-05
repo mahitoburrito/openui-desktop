@@ -2,6 +2,7 @@
 
 **Your AI Agent Command Center — as a native desktop app.**
 
+
 A standalone Electron application that packages the full [OpenUI](https://github.com/mahitoburrito/openui) experience into a native desktop app. Manage multiple AI coding agents on an infinite canvas without needing a browser or Bun runtime.
 
 ## Install
