@@ -291,6 +291,10 @@ const MAX_BUFFER_SIZE = 1000;
 
 export const sessions = new Map<string, Session>();
 
+// Actual port the server is listening on — set by setServerPort() after bind
+let serverPort: number = 6968;
+export function setServerPort(port: number) { serverPort = port; }
+
 export function createSession(params: {
   sessionId: string;
   agentId: string;
@@ -396,6 +400,7 @@ export function createSession(params: {
       ...process.env,
       TERM: "xterm-256color",
       OPENUI_SESSION_ID: sessionId,
+      OPENUI_PORT: String(serverPort),
     } as Record<string, string>,
     cols: 120,
     rows: 30,

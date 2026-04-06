@@ -5,7 +5,7 @@
 
 # Don't use strict mode - we want to always exit 0
 STATUS="${1:-}"
-OPENUI_PORT="${OPENUI_PORT:-6969}"
+OPENUI_PORT="${OPENUI_PORT:-6968}"
 OPENUI_HOST="${OPENUI_HOST:-localhost}"
 DEBUG_LOG="/tmp/openui-plugin-debug.log"
 

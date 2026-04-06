@@ -8,7 +8,7 @@ import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { apiRoutes } from "./routes/api";
 import { prbeRoutes } from "./routes/prbe";
-import { sessions, restoreSessions } from "./services/sessionManager";
+import { sessions, restoreSessions, setServerPort } from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 
 const PREFERRED_PORT = Number(process.env.PORT) || 6968;
@@ -102,6 +102,7 @@ export async function startServer(): Promise<number> {
     }
   }
 
+  setServerPort(actualPort);
   log(`[server] Running on http://localhost:${actualPort}`);
   log(`[server] Launch directory: ${process.env.LAUNCH_CWD || process.cwd()}`);
 
