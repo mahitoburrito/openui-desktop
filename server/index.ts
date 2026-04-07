@@ -221,7 +221,12 @@ export async function startServer(): Promise<number> {
         if (session.pty) session.pty.kill();
         if (session.stateTrackerPty) session.stateTrackerPty.kill();
       }
-      process.exit(0);
+      // Only call process.exit when running standalone (not embedded in Electron).
+      // When embedded, Electron manages the process lifecycle — calling process.exit()
+      // here kills the process before electron-updater can install and relaunch.
+      if (require.main === module) {
+        process.exit(0);
+      }
     });
 
     resolve(actualPort);

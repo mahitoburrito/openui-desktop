@@ -4,7 +4,7 @@ import { readdirSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, injectPluginDir, scanReposInDirectory } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, injectPluginDir, scanReposInDirectory, getServerPort } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadConfig,
@@ -221,15 +221,16 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   if (!session) return c.json({ error: "Session not found" }, 404);
   if (session.pty) return c.json({ error: "Session already running" }, 400);
 
-  const shell = process.platform === "win32" ? "powershell.exe" : "/bin/bash";
+  const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/zsh";
 
-  const ptyProcess = pty.spawn(shell, [], {
+  const ptyProcess = pty.spawn(shell, ["--login"], {
     name: "xterm-256color",
     cwd: session.cwd,
     env: {
       ...process.env,
       TERM: "xterm-256color",
       OPENUI_SESSION_ID: sessionId,
+      OPENUI_PORT: String(getServerPort()),
     } as Record<string, string>,
     cols: 120,
     rows: 30,
@@ -247,6 +248,19 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     }
     session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
   }, 500);
+
+  // PTY exit handler for restarted sessions
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    log(`[session] Restarted PTY exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
+    session.status = "disconnected";
+    session.pty = null;
+
+    for (const client of session.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: "exit", exitCode, signal }));
+      }
+    }
+  });
 
   ptyProcess.onData((data: string) => {
     session.outputBuffer.push(data);

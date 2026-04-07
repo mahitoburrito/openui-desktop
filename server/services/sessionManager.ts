@@ -117,8 +117,26 @@ export function createWorktree(params: {
   const dirName = branchName.replace(/\//g, "-");
   const worktreePath = join(worktreesDir, dirName);
 
+  // Validate existing worktree directory is on the expected branch before reusing.
+  // If the directory exists but is corrupted or on a different branch, skip reuse
+  // and let git worktree add handle it (which may require manual cleanup).
   if (existsSync(worktreePath)) {
-    return { success: true, worktreePath };
+    try {
+      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      if (currentBranch === branchName) {
+        return { success: true, worktreePath };
+      }
+      // Branch mismatch — directory exists but is on a wrong branch.
+      // Return error rather than silently reusing or failing on git worktree add.
+      return { success: false, error: `Worktree directory already exists at ${worktreePath} but is on branch '${currentBranch}', not '${branchName}'` };
+    } catch {
+      // Directory exists but isn't a valid git worktree — return error for manual cleanup
+      return { success: false, error: `Worktree directory exists at ${worktreePath} but is not a valid git worktree` };
+    }
   }
 
   try {
@@ -294,6 +312,7 @@ export const sessions = new Map<string, Session>();
 // Actual port the server is listening on — set by setServerPort() after bind
 let serverPort: number = 6968;
 export function setServerPort(port: number) { serverPort = port; }
+export function getServerPort(): number { return serverPort; }
 
 export function createSession(params: {
   sessionId: string;
@@ -446,6 +465,19 @@ export function createSession(params: {
     session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
   }, 500);
 
+  // PTY exit handler — detect when Claude goes offline
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    log(`[session] PTY exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
+    session.status = "disconnected";
+    session.pty = null;
+
+    for (const client of session.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: "exit", exitCode, signal }));
+      }
+    }
+  });
+
   // PTY output handler
   ptyProcess.onData((data: string) => {
     session.outputBuffer.push(data);
@@ -534,6 +566,7 @@ export function restoreSessions() {
       agentName: node.agentName,
       command: node.command,
       cwd: node.cwd,
+      originalCwd: node.originalCwd,
       gitBranch: gitBranch || undefined,
       createdAt: node.createdAt,
       clients: new Set(),

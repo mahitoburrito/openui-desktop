@@ -102,7 +102,7 @@ app.whenReady().then(async () => {
         defaultId: 0,
       });
       if (response === 0) {
-        autoUpdater.quitAndInstall();
+        autoUpdater.quitAndInstall(false, true);
       }
     });
 

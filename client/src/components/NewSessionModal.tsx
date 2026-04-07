@@ -216,10 +216,11 @@ export function NewSessionModal({
   useEffect(() => {
     if (open && !initialized) {
       if (existingSession) {
-        // Pre-fill from existing session
+        // Pre-fill from existing session — use originalCwd (mother repo) when available
+        // to avoid pre-filling the worktree path as the working directory
         const agent = agents.find((a) => a.id === existingSession.agentId);
         setSelectedAgent(agent || null);
-        setCwd(existingSession.cwd);
+        setCwd(existingSession.originalCwd || existingSession.cwd);
         setCustomName(existingSession.customName || "");
         setCommandArgs(agent?.id === "claude" ? "--dangerously-skip-permissions" : "");
         setCount(1);
@@ -244,8 +245,8 @@ export function NewSessionModal({
       setMultiRepoMode('main');
       setInitialized(true);
 
-      // Scan for repos in the effective working directory
-      const effectiveCwd = existingSession?.cwd || launchCwd;
+      // Scan for repos in the effective working directory — prefer originalCwd to avoid scanning worktree dirs
+      const effectiveCwd = existingSession?.originalCwd || existingSession?.cwd || launchCwd;
       if (effectiveCwd) {
         scanForRepos(effectiveCwd);
       }
