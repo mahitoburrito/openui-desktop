@@ -186,7 +186,8 @@ export function NewSessionModal({
   const [selectedTicket, setSelectedTicket] = useState<LinearTicket | null>(null);
   const [branchName, setBranchName] = useState("");
   const [baseBranch, setBaseBranch] = useState("main");
-  const [createWorktree, setCreateWorktree] = useState(true);
+  const [createWorktree, setCreateWorktree] = useState(false);
+  const [configCreateWorktree, setConfigCreateWorktree] = useState(true);
 
   // Multi-repo detection state
   const [detectedRepos, setDetectedRepos] = useState<DetectedRepo[]>([]);
@@ -256,7 +257,7 @@ export function NewSessionModal({
         .then((config) => {
           setLinearConfigured(config.hasApiKey);
           setBaseBranch(config.defaultBaseBranch || "main");
-          setCreateWorktree(config.createWorktree ?? true);
+          setConfigCreateWorktree(config.createWorktree ?? true);
         })
         .catch(() => setLinearConfigured(false));
     } else if (!open) {
@@ -639,6 +640,7 @@ export function NewSessionModal({
                       setActiveTab("blank");
                       setSelectedTicket(null);
                       setSelectedGithubIssue(null);
+                      setCreateWorktree(false);
                     }}
                     className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
                       activeTab === "blank"
@@ -652,6 +654,7 @@ export function NewSessionModal({
                     onClick={() => {
                       setActiveTab("linear");
                       setSelectedGithubIssue(null);
+                      setCreateWorktree(configCreateWorktree);
                     }}
                     disabled={linearConfigured === false}
                     className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
@@ -669,6 +672,7 @@ export function NewSessionModal({
                     onClick={() => {
                       setActiveTab("github");
                       setSelectedTicket(null);
+                      setCreateWorktree(configCreateWorktree);
                     }}
                     className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
                       activeTab === "github"
