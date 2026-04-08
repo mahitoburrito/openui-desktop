@@ -81,6 +81,7 @@ export function loadConfig(): LinearConfig {
       config.defaultBaseBranch = fileConfig.defaultBaseBranch;
       config.createWorktree = fileConfig.createWorktree;
       config.ticketPromptTemplate = fileConfig.ticketPromptTemplate;
+      config.autoCareful = fileConfig.autoCareful;
     }
   } catch (e) {
     console.error("Failed to load config:", e);
@@ -104,6 +105,7 @@ export function saveConfig(config: LinearConfig): void {
       defaultBaseBranch: config.defaultBaseBranch,
       createWorktree: config.createWorktree,
       ticketPromptTemplate: config.ticketPromptTemplate,
+      autoCareful: config.autoCareful,
     };
     writeFileSync(getConfigFile(), JSON.stringify(fileConfig, null, 2));
   } catch (e) {

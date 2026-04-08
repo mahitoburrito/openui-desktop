@@ -330,6 +330,7 @@ export function createSession(params: {
   baseBranch?: string;
   createWorktreeFlag?: boolean;
   ticketPromptTemplate?: string;
+  autoCareful?: boolean;
   // Multi-repo worktree options
   multiRepoMode?: 'current' | 'main';
   additionalRepos?: { name: string; path: string; defaultBranch?: string }[];
@@ -350,6 +351,7 @@ export function createSession(params: {
     baseBranch,
     createWorktreeFlag,
     ticketPromptTemplate,
+    autoCareful,
     multiRepoMode,
     additionalRepos,
   } = params;
@@ -407,23 +409,35 @@ export function createSession(params: {
     gitBranch = getGitBranch(workingDir);
   }
 
+  // Validate working directory exists before spawning
+  if (!existsSync(workingDir)) {
+    log(`[session] Working directory does not exist: ${workingDir}, falling back to home`);
+    workingDir = homedir();
+  }
+
   // Use the user's default shell and spawn as login shell to source their profile
   const shell = process.platform === "win32"
     ? "powershell.exe"
     : process.env.SHELL || "/bin/zsh";
 
-  const ptyProcess = pty.spawn(shell, ["--login"], {
-    name: "xterm-256color",
-    cwd: workingDir,
-    env: {
-      ...process.env,
-      TERM: "xterm-256color",
-      OPENUI_SESSION_ID: sessionId,
-      OPENUI_PORT: String(serverPort),
-    } as Record<string, string>,
-    cols: 120,
-    rows: 30,
-  });
+  let ptyProcess: pty.IPty;
+  try {
+    ptyProcess = pty.spawn(shell, ["--login"], {
+      name: "xterm-256color",
+      cwd: workingDir,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+        OPENUI_PORT: String(serverPort),
+      } as Record<string, string>,
+      cols: 120,
+      rows: 30,
+    });
+  } catch (e: any) {
+    logError(`[session] Failed to spawn PTY (shell=${shell}, cwd=${workingDir}): ${e.message}`);
+    throw new Error(`Failed to spawn terminal: ${e.message}. Shell: ${shell}, CWD: ${workingDir}`);
+  }
 
   const now = Date.now();
   const session: Session = {
@@ -501,8 +515,8 @@ export function createSession(params: {
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
 
-    // Enable /careful for Claude Code sessions on startup
-    if (agentId === "claude") {
+    // Enable /careful for Claude Code sessions on startup (if enabled in settings)
+    if (agentId === "claude" && autoCareful !== false) {
       setTimeout(() => {
         ptyProcess.write("/careful\r");
       }, 2000);

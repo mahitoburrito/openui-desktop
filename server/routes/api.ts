@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import * as pty from "node-pty";
-import { readdirSync, statSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import type { Agent } from "../types";
@@ -199,13 +199,20 @@ apiRoutes.post("/sessions", async (c) => {
 
   const linearConfig = loadConfig();
   const ticketPromptTemplate = linearConfig.ticketPromptTemplate;
+  const autoCareful = linearConfig.autoCareful;
 
-  const result = createSession({
-    sessionId, agentId, agentName, command, cwd: workingDir, nodeId,
-    customName, customColor, ticketId, ticketTitle, ticketUrl,
-    branchName, baseBranch, createWorktreeFlag, ticketPromptTemplate,
-    multiRepoMode, additionalRepos,
-  });
+  let result;
+  try {
+    result = createSession({
+      sessionId, agentId, agentName, command, cwd: workingDir, nodeId,
+      customName, customColor, ticketId, ticketTitle, ticketUrl,
+      branchName, baseBranch, createWorktreeFlag, ticketPromptTemplate,
+      autoCareful, multiRepoMode, additionalRepos,
+    });
+  } catch (e: any) {
+    logError(`[api] Failed to create session: ${e.message}`);
+    return c.json({ error: e.message }, 500);
+  }
 
   saveState(sessions);
   return c.json({
@@ -222,19 +229,26 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   if (session.pty) return c.json({ error: "Session already running" }, 400);
 
   const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/zsh";
+  const cwd = existsSync(session.cwd) ? session.cwd : homedir();
 
-  const ptyProcess = pty.spawn(shell, ["--login"], {
-    name: "xterm-256color",
-    cwd: session.cwd,
-    env: {
-      ...process.env,
-      TERM: "xterm-256color",
-      OPENUI_SESSION_ID: sessionId,
-      OPENUI_PORT: String(getServerPort()),
-    } as Record<string, string>,
-    cols: 120,
-    rows: 30,
-  });
+  let ptyProcess: pty.IPty;
+  try {
+    ptyProcess = pty.spawn(shell, ["--login"], {
+      name: "xterm-256color",
+      cwd,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+        OPENUI_PORT: String(getServerPort()),
+      } as Record<string, string>,
+      cols: 120,
+      rows: 30,
+    });
+  } catch (e: any) {
+    logError(`[session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);
+    return c.json({ error: `Failed to spawn terminal: ${e.message}` }, 500);
+  }
 
   session.pty = ptyProcess;
   session.isRestored = false;
@@ -517,6 +531,7 @@ apiRoutes.get("/linear/config", (c) => {
     defaultTeamId: config.defaultTeamId,
     defaultBaseBranch: config.defaultBaseBranch || "main",
     createWorktree: config.createWorktree ?? true,
+    autoCareful: config.autoCareful ?? true,
     ticketPromptTemplate: config.ticketPromptTemplate || DEFAULT_TICKET_PROMPT,
   });
 });
@@ -529,6 +544,7 @@ apiRoutes.post("/linear/config", async (c) => {
   if (body.defaultTeamId !== undefined) config.defaultTeamId = body.defaultTeamId;
   if (body.defaultBaseBranch !== undefined) config.defaultBaseBranch = body.defaultBaseBranch;
   if (body.createWorktree !== undefined) config.createWorktree = body.createWorktree;
+  if (body.autoCareful !== undefined) config.autoCareful = body.autoCareful;
   if (body.ticketPromptTemplate !== undefined) config.ticketPromptTemplate = body.ticketPromptTemplate;
 
   saveConfig(config);

@@ -17,6 +17,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [defaultBaseBranch, setDefaultBaseBranch] = useState("main");
   const [createWorktree, setCreateWorktree] = useState(true);
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
+  const [autoCareful, setAutoCareful] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
   // PRBE state
@@ -45,6 +46,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           setHasExistingKey(config.hasApiKey);
           setDefaultBaseBranch(config.defaultBaseBranch || "main");
           setCreateWorktree(config.createWorktree ?? true);
+          setAutoCareful(config.autoCareful ?? true);
           setTicketPromptTemplate(config.ticketPromptTemplate || "");
         })
         .catch(console.error);
@@ -83,6 +85,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           apiKey: apiKey.trim() || undefined,
           defaultBaseBranch,
           createWorktree,
+          autoCareful,
           ticketPromptTemplate: ticketPromptTemplate || undefined,
         }),
       });
@@ -332,6 +335,21 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     </label>
                     <p className="text-xs text-zinc-600 ml-6">
                       Each ticket gets an isolated working directory
+                    </p>
+
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoCareful}
+                        onChange={(e) => setAutoCareful(e.target.checked)}
+                        className="w-4 h-4 rounded border-zinc-600 bg-canvas text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0"
+                      />
+                      <span className="text-sm text-zinc-300">
+                        Auto-enable /careful for Claude Code sessions
+                      </span>
+                    </label>
+                    <p className="text-xs text-zinc-600 ml-6">
+                      Warns before destructive commands (rm -rf, force push, etc.)
                     </p>
                   </div>
                 </div>
