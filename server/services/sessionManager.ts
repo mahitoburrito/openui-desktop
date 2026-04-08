@@ -431,8 +431,8 @@ export function createSession(params: {
         OPENUI_SESSION_ID: sessionId,
         OPENUI_PORT: String(serverPort),
       } as Record<string, string>,
-      cols: 120,
-      rows: 30,
+      cols: 80,
+      rows: 24,
     });
   } catch (e: any) {
     logError(`[session] Failed to spawn PTY (shell=${shell}, cwd=${workingDir}): ${e.message}`);

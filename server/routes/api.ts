@@ -242,8 +242,8 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
         OPENUI_SESSION_ID: sessionId,
         OPENUI_PORT: String(getServerPort()),
       } as Record<string, string>,
-      cols: 120,
-      rows: 30,
+      cols: 80,
+      rows: 24,
     });
   } catch (e: any) {
     logError(`[session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);

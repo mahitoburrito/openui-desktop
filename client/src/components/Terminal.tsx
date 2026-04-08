@@ -78,10 +78,13 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     // Reset all terminal attributes before receiving buffered content
     term.write("\x1b[0m\x1b[?25h");
     
-    setTimeout(() => fitAddon.fit(), 50);
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
+
+    // Fit after the sidebar spring animation has settled (~250ms)
+    // and re-fit shortly after to catch any remaining layout shifts
+    const fit1 = setTimeout(() => fitAddon.fit(), 250);
+    const fit2 = setTimeout(() => fitAddon.fit(), 500);
 
     // Connect WebSocket with small delay to allow session to be ready
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -89,6 +92,46 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
 
     let ws: WebSocket | null = null;
     let isFirstMessage = true;
+
+    // Kitty keyboard protocol: apps (e.g. Claude Code) push/pop/query
+    // enhanced keyboard modes via escape sequences in their output.
+    // We track the mode stack and respond to queries so the app knows
+    // we support CSI u key encoding (needed for Shift+Enter, etc.).
+    const kittyModeStack: number[] = [0];
+
+    const sendInput = (data: string) => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    };
+
+    const processOutput = (data: string): string => {
+      let result = data;
+
+      // Query (\x1b[?u) — respond with current flags
+      if (result.includes("\x1b[?u")) {
+        result = result.split("\x1b[?u").join("");
+        const flags = kittyModeStack[kittyModeStack.length - 1] || 0;
+        sendInput(`\x1b[?${flags}u`);
+      }
+
+      // Push mode (\x1b[>Xu)
+      result = result.replace(/\x1b\[>(\d+)u/g, (_, f) => {
+        kittyModeStack.push(parseInt(f, 10));
+        return "";
+      });
+
+      // Pop mode (\x1b[<u or \x1b[<Nu)
+      result = result.replace(/\x1b\[<(\d*)u/g, (_, n) => {
+        const count = n ? parseInt(n, 10) : 1;
+        for (let i = 0; i < count && kittyModeStack.length > 1; i++) {
+          kittyModeStack.pop();
+        }
+        return "";
+      });
+
+      return result;
+    };
 
     const connectWs = () => {
       if (!mountedRef.current) return;
@@ -106,22 +149,19 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === "output") {
-            // On first message (buffered history), reset terminal state first
+            const output = processOutput(msg.data);
             if (isFirstMessage) {
               isFirstMessage = false;
-              // Clear screen, reset attributes, move cursor home
               term.write("\x1b[2J\x1b[H\x1b[0m");
             }
-            term.write(msg.data);
+            term.write(output);
           } else if (msg.type === "status") {
-            // Handle status updates from plugin hooks
             updateSession(nodeId, {
               status: msg.status as AgentStatus,
               isRestored: msg.isRestored,
               currentTool: msg.currentTool,
             });
           } else if (msg.type === "nameGenerated") {
-            // Auto-name session from first query
             updateSession(nodeId, { customName: msg.name });
           }
         } catch (e) {
@@ -129,17 +169,35 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
         }
       };
 
-      ws.onerror = () => {
-        // Silently handle errors - don't spam the terminal
-      };
-
-      ws.onclose = () => {
-        // Only show if not intentionally closed
-      };
+      ws.onerror = () => {};
+      ws.onclose = () => {};
     };
 
     // Small delay to let server session be ready
     const connectTimeout = setTimeout(connectWs, 100);
+
+    // Shift+Enter: insert a newline via bracketed paste so the app
+    // treats it as literal text, not as a key press.  This mirrors how
+    // Warp handles multi-line input and works in every input mode
+    // (initial prompt, edit-previous-message, etc.).
+    // Other modifier+Enter combos use CSI u encoding.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown" || e.key !== "Enter") return true;
+
+      if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        sendInput("\x1b[200~\n\x1b[201~");
+        return false;
+      }
+      if (e.ctrlKey || e.altKey) {
+        let mod = 1;
+        if (e.shiftKey) mod += 1;
+        if (e.altKey) mod += 2;
+        if (e.ctrlKey) mod += 4;
+        sendInput(`\x1b[13;${mod}u`);
+        return false;
+      }
+      return true;
+    });
 
     term.onData((data) => {
       if (ws?.readyState === WebSocket.OPEN) {
@@ -147,8 +205,10 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
       }
     });
 
+    let resizeTimer: ReturnType<typeof setTimeout>;
     const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
         if (fitAddonRef.current) {
           fitAddonRef.current.fit();
         }
@@ -159,7 +219,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
             rows: xtermRef.current.rows
           }));
         }
-      });
+      }, 100);
     });
 
     resizeObserver.observe(terminalRef.current);
@@ -167,6 +227,9 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
     return () => {
       mountedRef.current = false;
       clearTimeout(connectTimeout);
+      clearTimeout(fit1);
+      clearTimeout(fit2);
+      clearTimeout(resizeTimer);
       resizeObserver.disconnect();
       ws?.close();
       term.dispose();
