@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useStore, AgentSession } from "../../stores/useStore";
+import { destroyCachedTerminal } from "../Terminal";
 
 interface AgentNodeData {
   sessionId: string;
@@ -49,6 +50,11 @@ export function useAgentNodeState(
     // Soft-delete on the server
     if (sessionId) {
       await fetch(`/api/sessions/${sessionId}/soft-delete`, { method: "POST" });
+    }
+
+    // Clean up cached terminal instance
+    if (sessionId) {
+      destroyCachedTerminal(sessionId);
     }
 
     // Remove from UI immediately

@@ -322,7 +322,7 @@ export function createMultiRepoWorktrees(params: {
   return { worktreePaths, stashRefs, errors };
 }
 
-const MAX_BUFFER_SIZE = 1000;
+const MAX_BUFFER_SIZE = 5000;
 
 export const sessions = new Map<string, Session>();
 

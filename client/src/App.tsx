@@ -23,6 +23,7 @@ import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
 import { usePRBEIPC } from "./hooks/usePRBEIPC";
+import { destroyCachedTerminal } from "./components/Terminal";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -263,9 +264,10 @@ function AppContent() {
           // Let React Flow process this removal
           confirmedRemoves.push(change);
 
-          // Soft-delete on server
+          // Soft-delete on server and clean up cached terminal
           if (sessionId) {
             fetch(`/api/sessions/${sessionId}/soft-delete`, { method: "POST" }).catch(console.error);
+            destroyCachedTerminal(sessionId);
           }
 
           // Clean up store

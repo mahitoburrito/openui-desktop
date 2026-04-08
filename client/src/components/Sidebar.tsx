@@ -366,7 +366,7 @@ export function Sidebar() {
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 bg-[#0d0d0d]">
+            <div className="flex-1 min-h-0 bg-[#0d0d0d] overflow-hidden">
               <Terminal
                 key={`${session.sessionId}-${terminalKey}`}
                 sessionId={session.sessionId}
