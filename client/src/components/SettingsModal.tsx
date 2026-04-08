@@ -3,9 +3,11 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Key, Check, AlertCircle, Loader2, ExternalLink, Bug,
-  SlidersHorizontal, Puzzle,
+  SlidersHorizontal, Puzzle, BellRing,
 } from "lucide-react";
 import { usePRBEStore } from "../stores/usePRBEStore";
+
+const NOTIF_STORAGE_KEY = "openui-desktop-notifications";
 
 type SettingsTab = "general" | "integrations";
 
@@ -83,6 +85,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [createWorktree, setCreateWorktree] = useState(true);
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
   const [autoCareful, setAutoCareful] = useState(true);
+  const [desktopNotifications, setDesktopNotifications] = useState(
+    () => localStorage.getItem(NOTIF_STORAGE_KEY) === "true",
+  );
+  const [notifPermission, setNotifPermission] = useState(Notification.permission);
   const [isSaving, setIsSaving] = useState(false);
 
   const prbeStore = usePRBEStore();
@@ -269,6 +275,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       setCreateWorktree={setCreateWorktree}
                       autoCareful={autoCareful}
                       setAutoCareful={setAutoCareful}
+                      desktopNotifications={desktopNotifications}
+                      notifPermission={notifPermission}
+                      onToggleNotifications={async (enabled) => {
+                        if (enabled && Notification.permission === "default") {
+                          const result = await Notification.requestPermission();
+                          setNotifPermission(result);
+                          if (result !== "granted") return;
+                        }
+                        if (enabled && Notification.permission === "denied") return;
+                        setDesktopNotifications(enabled);
+                        localStorage.setItem(NOTIF_STORAGE_KEY, String(enabled));
+                      }}
                     />}
                     {tab === "integrations" && <IntegrationsTab
                       apiKey={apiKey}
@@ -327,6 +345,9 @@ function GeneralTab({
   setCreateWorktree,
   autoCareful,
   setAutoCareful,
+  desktopNotifications,
+  notifPermission,
+  onToggleNotifications,
 }: {
   defaultBaseBranch: string;
   setDefaultBaseBranch: (v: string) => void;
@@ -334,9 +355,33 @@ function GeneralTab({
   setCreateWorktree: (v: boolean) => void;
   autoCareful: boolean;
   setAutoCareful: (v: boolean) => void;
+  desktopNotifications: boolean;
+  notifPermission: NotificationPermission;
+  onToggleNotifications: (v: boolean) => void;
 }) {
   return (
     <>
+      <SectionHeader title="Notifications" />
+      <div className="rounded-lg border border-border bg-canvas/40">
+        <div className="px-4">
+          <SettingRow
+            title="Desktop notifications"
+            description="Notify when a session finishes or needs input (only when window is unfocused)"
+            last
+          >
+            <div className="flex items-center gap-2">
+              {notifPermission === "denied" && (
+                <span className="text-xs text-red-400">Blocked by browser</span>
+              )}
+              <Toggle
+                checked={desktopNotifications && notifPermission === "granted"}
+                onChange={onToggleNotifications}
+              />
+            </div>
+          </SettingRow>
+        </div>
+      </div>
+
       <SectionHeader title="Git" />
       <div className="rounded-lg border border-border bg-canvas/40">
         <div className="px-4">

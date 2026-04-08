@@ -23,6 +23,7 @@ import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
 import { usePRBEIPC } from "./hooks/usePRBEIPC";
+import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
 import { destroyCachedTerminal } from "./components/Terminal";
 
 const nodeTypes = {
@@ -55,6 +56,9 @@ function AppContent() {
 
   // Initialize PRBE IPC listeners
   usePRBEIPC();
+
+  // Desktop notifications when sessions need attention and window is unfocused
+  useDesktopNotifications();
 
   // Sync nodes with store
   useEffect(() => {
