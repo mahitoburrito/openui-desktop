@@ -4,7 +4,7 @@ import { existsSync, readdirSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import type { Agent } from "../types";
-import { sessions, createSession, deleteSession, injectPluginDir, scanReposInDirectory, getServerPort } from "../services/sessionManager";
+import { sessions, createSession, deleteSession, injectPluginDir, scanReposInDirectory, getServerPort, DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadConfig,
@@ -242,8 +242,8 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
         OPENUI_SESSION_ID: sessionId,
         OPENUI_PORT: String(getServerPort()),
       } as Record<string, string>,
-      cols: 80,
-      rows: 24,
+      cols: DEFAULT_PTY_COLS,
+      rows: DEFAULT_PTY_ROWS,
     });
   } catch (e: any) {
     logError(`[session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);

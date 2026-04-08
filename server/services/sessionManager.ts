@@ -10,6 +10,9 @@ const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 
+export const DEFAULT_PTY_COLS = 80;
+export const DEFAULT_PTY_ROWS = 24;
+
 // Get the OpenUI plugin directory path
 function getPluginDir(): string | null {
   const homePluginDir = join(homedir(), ".openui", "claude-code-plugin");
@@ -18,11 +21,25 @@ function getPluginDir(): string | null {
     return homePluginDir;
   }
 
-  // Check bundled plugin in app resources (for packaged Electron app)
-  const resourcesPlugin = join(__dirname, "..", "..", "claude-code-plugin");
-  const resourcesPluginJson = join(resourcesPlugin, ".claude-plugin", "plugin.json");
-  if (existsSync(resourcesPluginJson)) {
-    return resourcesPlugin;
+  // Packaged Electron app: extraResources copies plugin to process.resourcesPath
+  try {
+    const resourcesPlugin = join(process.resourcesPath, "claude-code-plugin");
+    const resourcesPluginJson = join(resourcesPlugin, ".claude-plugin", "plugin.json");
+    if (existsSync(resourcesPluginJson)) {
+      return resourcesPlugin;
+    }
+  } catch {
+    // process.resourcesPath may not exist outside Electron
+  }
+
+  // Dev mode / npm package: walk up from compiled output to find project root
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    dir = join(dir, "..");
+    const candidate = join(dir, "claude-code-plugin", ".claude-plugin", "plugin.json");
+    if (existsSync(candidate)) {
+      return join(dir, "claude-code-plugin");
+    }
   }
 
   return null;
@@ -431,8 +448,8 @@ export function createSession(params: {
         OPENUI_SESSION_ID: sessionId,
         OPENUI_PORT: String(serverPort),
       } as Record<string, string>,
-      cols: 80,
-      rows: 24,
+      cols: DEFAULT_PTY_COLS,
+      rows: DEFAULT_PTY_ROWS,
     });
   } catch (e: any) {
     logError(`[session] Failed to spawn PTY (shell=${shell}, cwd=${workingDir}): ${e.message}`);

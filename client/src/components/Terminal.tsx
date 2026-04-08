@@ -199,11 +199,7 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
       return true;
     });
 
-    term.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
-      }
-    });
+    term.onData(sendInput);
 
     let resizeTimer: ReturnType<typeof setTimeout>;
     const resizeObserver = new ResizeObserver(() => {
