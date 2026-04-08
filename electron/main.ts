@@ -50,7 +50,8 @@ function createWindow() {
 
   if (isDev) {
     // In dev mode, load from Vite dev server
-    mainWindow.loadURL(`http://localhost:5173`);
+    const vitePort = process.env.VITE_PORT || 5173;
+    mainWindow.loadURL(`http://localhost:${vitePort}`);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     // In production, load from the embedded server

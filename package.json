@@ -33,9 +33,9 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "SERVER_PORT=6968 concurrently \"npm run dev:client\" \"npm run dev:electron\"",
-    "dev:client": "cd client && SERVER_PORT=${SERVER_PORT:-6968} npx vite",
-    "dev:electron": "tsc -p tsconfig.electron.json && PORT=${SERVER_PORT:-6968} electron .",
+    "dev": "VITE_PORT=5173 SERVER_PORT=6968 concurrently \"npm run dev:client\" \"npm run dev:electron\"",
+    "dev:client": "cd client && SERVER_PORT=${SERVER_PORT:-6968} npx vite --port ${VITE_PORT:-5173} --strictPort",
+    "dev:electron": "tsc -p tsconfig.electron.json && VITE_PORT=${VITE_PORT:-5173} PORT=${SERVER_PORT:-6968} electron .",
     "build:client": "cd client && npx vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:client && npm run build:electron",
