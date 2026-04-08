@@ -69,7 +69,7 @@ apiRoutes.get("/browse", (c) => {
 });
 
 // Scan a directory for child git repositories
-apiRoutes.get("/scan-repos", (c) => {
+apiRoutes.get("/scan-repos", async (c) => {
   let path = c.req.query("path") || getLaunchCwd();
 
   if (path.startsWith("~")) {
@@ -79,7 +79,7 @@ apiRoutes.get("/scan-repos", (c) => {
   path = resolve(path);
 
   try {
-    const repos = scanReposInDirectory(path);
+    const repos = await scanReposInDirectory(path);
     return c.json({ repos });
   } catch (e: any) {
     return c.json({ error: e.message, repos: [] }, 400);
@@ -203,7 +203,7 @@ apiRoutes.post("/sessions", async (c) => {
 
   let result;
   try {
-    result = createSession({
+    result = await createSession({
       sessionId, agentId, agentName, command, cwd: workingDir, nodeId,
       customName, customColor, ticketId, ticketTitle, ticketUrl,
       branchName, baseBranch, createWorktreeFlag, ticketPromptTemplate,

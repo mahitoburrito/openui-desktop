@@ -1,10 +1,13 @@
-import { execSync } from "child_process";
+import { exec as execCb } from "child_process";
+import { promisify } from "util";
 import * as pty from "node-pty";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session, DetectedRepo } from "../types";
 import { loadBuffer, loadState } from "./persistence";
+
+const execAsync = promisify(execCb);
 
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
@@ -66,42 +69,30 @@ export function injectPluginDir(command: string, agentId: string): string {
 }
 
 // Get git branch for a directory
-function getGitBranch(cwd: string): string | null {
+async function getGitBranch(cwd: string): Promise<string | null> {
   try {
-    const result = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return result.trim();
+    const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd });
+    return stdout.trim();
   } catch {
     return null;
   }
 }
 
 // Get git root directory
-function getGitRoot(cwd: string): string | null {
+async function getGitRoot(cwd: string): Promise<string | null> {
   try {
-    const result = execSync("git rev-parse --show-toplevel", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return result.trim();
+    const { stdout } = await execAsync("git rev-parse --show-toplevel", { cwd });
+    return stdout.trim();
   } catch {
     return null;
   }
 }
 
 // Get the main worktree (mother repo) path
-function getMainWorktree(cwd: string): string | null {
+async function getMainWorktree(cwd: string): Promise<string | null> {
   try {
-    const result = execSync("git worktree list --porcelain", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const match = result.match(/^worktree (.+)$/m);
+    const { stdout } = await execAsync("git worktree list --porcelain", { cwd });
+    const match = stdout.match(/^worktree (.+)$/m);
     if (match) {
       return match[1];
     }
@@ -112,13 +103,13 @@ function getMainWorktree(cwd: string): string | null {
 }
 
 // Create a git worktree for a branch
-export function createWorktree(params: {
+export async function createWorktree(params: {
   cwd: string;
   branchName: string;
   baseBranch: string;
-}): { success: boolean; worktreePath?: string; error?: string } {
+}): Promise<{ success: boolean; worktreePath?: string; error?: string }> {
   const { cwd, branchName, baseBranch } = params;
-  const gitRoot = getGitRoot(cwd);
+  const gitRoot = await getGitRoot(cwd);
 
   if (!gitRoot) {
     return { success: false, error: "Not a git repository" };
@@ -134,30 +125,21 @@ export function createWorktree(params: {
   const dirName = branchName.replace(/\//g, "-");
   const worktreePath = join(worktreesDir, dirName);
 
-  // Validate existing worktree directory is on the expected branch before reusing.
-  // If the directory exists but is corrupted or on a different branch, skip reuse
-  // and let git worktree add handle it (which may require manual cleanup).
   if (existsSync(worktreePath)) {
     try {
-      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-        cwd: worktreePath,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: worktreePath });
+      const currentBranch = stdout.trim();
       if (currentBranch === branchName) {
         return { success: true, worktreePath };
       }
-      // Branch mismatch — directory exists but is on a wrong branch.
-      // Return error rather than silently reusing or failing on git worktree add.
       return { success: false, error: `Worktree directory already exists at ${worktreePath} but is on branch '${currentBranch}', not '${branchName}'` };
     } catch {
-      // Directory exists but isn't a valid git worktree — return error for manual cleanup
       return { success: false, error: `Worktree directory exists at ${worktreePath} but is not a valid git worktree` };
     }
   }
 
   try {
-    execSync("git fetch origin", { cwd: gitRoot, stdio: "pipe" });
+    await execAsync("git fetch origin", { cwd: gitRoot });
   } catch {
     // Ignore fetch errors
   }
@@ -165,16 +147,16 @@ export function createWorktree(params: {
   try {
     // Try local branch first
     try {
-      execSync(`git rev-parse --verify ${branchName}`, { cwd: gitRoot, stdio: "pipe" });
-      execSync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+      await execAsync(`git rev-parse --verify ${branchName}`, { cwd: gitRoot });
+      await execAsync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: gitRoot });
     } catch {
       // Try remote branch
       try {
-        execSync(`git rev-parse --verify origin/${branchName}`, { cwd: gitRoot, stdio: "pipe" });
-        execSync(`git worktree add --track -b ${branchName} "${worktreePath}" origin/${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+        await execAsync(`git rev-parse --verify origin/${branchName}`, { cwd: gitRoot });
+        await execAsync(`git worktree add --track -b ${branchName} "${worktreePath}" origin/${branchName}`, { cwd: gitRoot });
       } catch {
         // Create new branch from base
-        execSync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, { cwd: gitRoot, stdio: "pipe" });
+        await execAsync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, { cwd: gitRoot });
       }
     }
 
@@ -186,33 +168,24 @@ export function createWorktree(params: {
 }
 
 // Preserve working state by stashing uncommitted changes
-function preserveWorkingState(gitRoot: string): { method: 'stash' | 'commit' | 'clean'; stashRef?: string } {
+async function preserveWorkingState(gitRoot: string): Promise<{ method: 'stash' | 'commit' | 'clean'; stashRef?: string }> {
   try {
-    const statusOutput = execSync("git status --porcelain", {
-      cwd: gitRoot,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
+    const { stdout } = await execAsync("git status --porcelain", { cwd: gitRoot });
+    const statusOutput = stdout.trim();
 
     if (!statusOutput) {
       return { method: 'clean' };
     }
 
-    // Try to stash
     const stashMsg = `openui-preserve-${Date.now()}`;
     try {
-      execSync(`git stash push -m "${stashMsg}" --include-untracked`, {
-        cwd: gitRoot,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      await execAsync(`git stash push -m "${stashMsg}" --include-untracked`, { cwd: gitRoot });
       log(`[worktree] Stashed changes in ${gitRoot}: ${stashMsg}`);
       return { method: 'stash', stashRef: stashMsg };
     } catch {
-      // Fallback: auto-commit
       try {
-        execSync('git add -A', { cwd: gitRoot, stdio: "pipe" });
-        execSync('git commit -am "openui: preserve WIP [skip ci]"', { cwd: gitRoot, stdio: "pipe" });
+        await execAsync('git add -A', { cwd: gitRoot });
+        await execAsync('git commit -am "openui: preserve WIP [skip ci]"', { cwd: gitRoot });
         log(`[worktree] Auto-committed changes in ${gitRoot}`);
         return { method: 'commit' };
       } catch {
@@ -226,11 +199,10 @@ function preserveWorkingState(gitRoot: string): { method: 'stash' | 'commit' | '
 }
 
 // Scan a directory for child git repositories
-export function scanReposInDirectory(dirPath: string): DetectedRepo[] {
+export async function scanReposInDirectory(dirPath: string): Promise<DetectedRepo[]> {
   const repos: DetectedRepo[] = [];
 
   try {
-    const { readdirSync, existsSync: fsExists } = require("fs");
     const entries = readdirSync(dirPath, { withFileTypes: true });
 
     for (const entry of entries) {
@@ -239,31 +211,21 @@ export function scanReposInDirectory(dirPath: string): DetectedRepo[] {
       const entryPath = join(dirPath, entry.name);
       const gitPath = join(entryPath, ".git");
 
-      if (!fsExists(gitPath)) continue;
+      if (!existsSync(gitPath)) continue;
 
       const name = entry.name;
-      const branch = getGitBranch(entryPath) || "unknown";
+      const branch = (await getGitBranch(entryPath)) || "unknown";
 
-      // Check dirty status
       let dirty = false;
       try {
-        const statusOutput = execSync("git status --porcelain", {
-          cwd: entryPath,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
-        dirty = statusOutput.length > 0;
+        const { stdout } = await execAsync("git status --porcelain", { cwd: entryPath });
+        dirty = stdout.trim().length > 0;
       } catch {}
 
-      // Detect default branch
       let defaultBranch = "main";
       try {
-        const ref = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
-          cwd: entryPath,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
-        defaultBranch = ref.replace("refs/remotes/origin/", "");
+        const { stdout } = await execAsync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: entryPath });
+        defaultBranch = stdout.trim().replace("refs/remotes/origin/", "");
       } catch {}
 
       repos.push({ name, path: entryPath, branch, dirty, defaultBranch });
@@ -276,35 +238,35 @@ export function scanReposInDirectory(dirPath: string): DetectedRepo[] {
 }
 
 // Create worktrees across multiple repos
-export function createMultiRepoWorktrees(params: {
+export async function createMultiRepoWorktrees(params: {
   repos: { name: string; path: string; defaultBranch?: string }[];
   branchName: string;
   mode: 'current' | 'main';
   baseBranch: string;
-}): {
+}): Promise<{
   worktreePaths: Record<string, string>;
   stashRefs: Record<string, string>;
   errors: Record<string, string>;
-} {
+}> {
   const { repos, branchName, mode, baseBranch } = params;
   const worktreePaths: Record<string, string> = {};
   const stashRefs: Record<string, string> = {};
   const errors: Record<string, string> = {};
 
   for (const repo of repos) {
-    const preserveResult = preserveWorkingState(repo.path);
+    const preserveResult = await preserveWorkingState(repo.path);
     if (preserveResult.stashRef) {
       stashRefs[repo.name] = preserveResult.stashRef;
     }
 
     let repoBaseBranch: string;
     if (mode === 'current') {
-      repoBaseBranch = getGitBranch(repo.path) || baseBranch;
+      repoBaseBranch = (await getGitBranch(repo.path)) || baseBranch;
     } else {
       repoBaseBranch = repo.defaultBranch || baseBranch;
     }
 
-    const result = createWorktree({
+    const result = await createWorktree({
       cwd: repo.path,
       branchName,
       baseBranch: repoBaseBranch,
@@ -331,7 +293,15 @@ let serverPort: number = 6968;
 export function setServerPort(port: number) { serverPort = port; }
 export function getServerPort(): number { return serverPort; }
 
-export function createSession(params: {
+export function getActiveSessionCount(): number {
+  let count = 0;
+  for (const [, session] of sessions) {
+    if (session.pty) count++;
+  }
+  return count;
+}
+
+export async function createSession(params: {
   sessionId: string;
   agentId: string;
   agentName: string;
@@ -348,10 +318,9 @@ export function createSession(params: {
   createWorktreeFlag?: boolean;
   ticketPromptTemplate?: string;
   autoCareful?: boolean;
-  // Multi-repo worktree options
   multiRepoMode?: 'current' | 'main';
   additionalRepos?: { name: string; path: string; defaultBranch?: string }[];
-}): { session: Session; cwd: string; gitBranch?: string } {
+}): Promise<{ session: Session; cwd: string; gitBranch?: string }> {
   const {
     sessionId,
     agentId,
@@ -383,9 +352,7 @@ export function createSession(params: {
 
   if (createWorktreeFlag && branchName && baseBranch) {
     if (additionalRepos && additionalRepos.length > 0 && multiRepoMode) {
-      // Multi-repo worktree creation
-      // All repos come from additionalRepos — the session cwd stays at originalCwd
-      const multiResult = createMultiRepoWorktrees({
+      const multiResult = await createMultiRepoWorktrees({
         repos: additionalRepos,
         branchName,
         mode: multiRepoMode,
@@ -397,15 +364,13 @@ export function createSession(params: {
       worktreeMode = multiRepoMode;
       gitBranch = branchName;
 
-      // Keep workingDir as originalCwd — don't migrate into a child repo
       log(`[session] Multi-repo worktrees created: ${Object.keys(worktreePaths).join(', ')}`);
 
       for (const [repoName, error] of Object.entries(multiResult.errors)) {
         logError(`[session] Worktree failed for ${repoName}: ${error}`);
       }
     } else {
-      // Single repo worktree creation (existing behavior)
-      const result = createWorktree({ cwd: originalCwd, branchName, baseBranch });
+      const result = await createWorktree({ cwd: originalCwd, branchName, baseBranch });
       if (result.success && result.worktreePath) {
         workingDir = result.worktreePath;
         worktreePath = result.worktreePath;
@@ -416,14 +381,14 @@ export function createSession(params: {
   }
 
   if (!mainRepoPath) {
-    const detectedMainRepo = getMainWorktree(workingDir);
+    const detectedMainRepo = await getMainWorktree(workingDir);
     if (detectedMainRepo && detectedMainRepo !== workingDir) {
       mainRepoPath = detectedMainRepo;
     }
   }
 
   if (!gitBranch) {
-    gitBranch = getGitBranch(workingDir);
+    gitBranch = await getGitBranch(workingDir);
   }
 
   // Validate working directory exists before spawning
@@ -582,14 +547,14 @@ export function deleteSession(sessionId: string) {
   return true;
 }
 
-export function restoreSessions() {
+export async function restoreSessions() {
   const state = loadState();
 
   log(`[restore] Found ${state.nodes.length} saved sessions`);
 
   for (const node of state.nodes) {
     const buffer = loadBuffer(node.sessionId);
-    const gitBranch = getGitBranch(node.cwd);
+    const gitBranch = await getGitBranch(node.cwd);
 
     const session: Session = {
       pty: null,

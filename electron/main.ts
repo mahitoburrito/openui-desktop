@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell, dialog } from "electron";
 import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { startServer } from "../server/index";
+import { getActiveSessionCount } from "../server/services/sessionManager";
 import { autoUpdater } from "electron-updater";
 import { initPRBE, cleanupPRBE } from "./prbe";
 
@@ -58,7 +59,23 @@ function createWindow() {
     mainWindow.loadURL(`http://localhost:${serverPort}`);
   }
 
-  mainWindow.on("closed", () => {
+  mainWindow.on("close", (e) => {
+    const activeCount = getActiveSessionCount();
+    if (activeCount > 0) {
+      const choice = dialog.showMessageBoxSync(mainWindow!, {
+        type: "warning",
+        title: "Quit OpenUI?",
+        message: `You have ${activeCount} active session${activeCount === 1 ? "" : "s"} running.`,
+        detail: "Quitting will stop all sessions and shut down the server.",
+        buttons: ["Quit", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (choice === 1) {
+        e.preventDefault();
+        return;
+      }
+    }
     mainWindow = null;
   });
 }
@@ -124,16 +141,11 @@ app.whenReady().then(async () => {
   });
 });
 
-// Quit when all windows are closed (except on macOS)
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  app.quit();
 });
 
-// Cleanup before quit
-app.on("before-quit", () => {
+app.on("will-quit", () => {
   cleanupPRBE();
-  // Server cleanup is handled by its own SIGINT handler
   process.emit("SIGINT" as any);
 });

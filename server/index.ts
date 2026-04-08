@@ -78,7 +78,7 @@ function tryListen(app: Hono, port: number): Promise<{ server: any; port: number
 
 // Start server, auto-resolving port conflicts
 export async function startServer(): Promise<number> {
-  restoreSessions();
+  await restoreSessions();
 
   const MAX_ATTEMPTS = 10;
   let server: any;

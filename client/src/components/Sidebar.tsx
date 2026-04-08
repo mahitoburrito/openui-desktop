@@ -16,11 +16,13 @@ import {
   Brain,
   Wand2,
   GitBranch,
+  Loader2,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
+  creating: { label: "Creating...", color: "#818CF8" },
   running: { label: "Running", color: "#22C55E" },
   waiting_input: { label: "Waiting for input", color: "#FBBF24" },
   tool_calling: { label: "Tool Calling", color: "#8B5CF6" },
@@ -367,12 +369,19 @@ export function Sidebar() {
             </div>
 
             <div className="flex-1 min-h-0 bg-[#0d0d0d] overflow-hidden">
-              <Terminal
-                key={`${session.sessionId}-${terminalKey}`}
-                sessionId={session.sessionId}
-                color={displayColor}
-                nodeId={selectedNodeId!}
-              />
+              {session.status === "creating" ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3">
+                  <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+                  <span className="text-sm text-zinc-500">Setting up session...</span>
+                </div>
+              ) : (
+                <Terminal
+                  key={`${session.sessionId}-${terminalKey}`}
+                  sessionId={session.sessionId}
+                  color={displayColor}
+                  nodeId={selectedNodeId!}
+                />
+              )}
             </div>
 
           </div>

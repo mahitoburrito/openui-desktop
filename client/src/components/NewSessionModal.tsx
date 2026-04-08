@@ -172,7 +172,6 @@ export function NewSessionModal({
   const [customName, setCustomName] = useState("");
   const [commandArgs, setCommandArgs] = useState("");
   const [count, setCount] = useState(1);
-  const [isCreating, setIsCreating] = useState(false);
 
   // Tab state
   const [activeTab, setActiveTab] = useState<TabType>("blank");
@@ -422,101 +421,34 @@ export function NewSessionModal({
     onClose();
   };
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
     if (!selectedAgent) return;
 
-    setIsCreating(true);
+    const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
+    const fullCommand = selectedAgent.command
+      ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
+      : commandArgs;
 
-    try {
-      const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
-      const fullCommand = selectedAgent.command
-        ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
-        : commandArgs;
+    const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
+    const isMultiRepo = createWorktree && selectedReposList.length > 1;
+    const effectiveWorkingDir = workingDir;
+    const multiRepoParams = isMultiRepo ? {
+      multiRepoMode,
+      additionalRepos: selectedReposList
+        .map(r => ({ name: r.name, path: r.path, defaultBranch: r.defaultBranch })),
+    } : {};
 
-      // Build multi-repo params if applicable
-      const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
-      const isMultiRepo = createWorktree && selectedReposList.length > 1;
-      // Keep the user's chosen directory — worktrees are created from child repos
-      // but the session starts where the user pointed it
-      const effectiveWorkingDir = workingDir;
-      const multiRepoParams = isMultiRepo ? {
-        multiRepoMode,
-        additionalRepos: selectedReposList
-          .map(r => ({ name: r.name, path: r.path, defaultBranch: r.defaultBranch })),
-      } : {};
+    // Close modal immediately so the UI stays responsive
+    handleClose();
 
-      // If replacing existing session, delete it first
-      if (isReplacing && existingSession && existingNodeId) {
-        await fetch(`/api/sessions/${existingSession.sessionId}`, { method: "DELETE" });
+    if (isReplacing && existingSession && existingNodeId) {
+      // Show creating state on the existing node
+      updateSession(existingNodeId, { status: "creating" });
 
-        // Create the replacement session
-        const res = await fetch("/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            agentId: selectedAgent.id,
-            agentName: selectedAgent.name,
-            command: fullCommand,
-            cwd: effectiveWorkingDir,
-            nodeId: existingNodeId,
-            customName: customName || existingSession.customName,
-            customColor: existingSession.customColor,
-            // Worktree params (any tab)
-            ...(createWorktree && branchName && {
-              branchName,
-              baseBranch,
-              createWorktree,
-              ...multiRepoParams,
-            }),
-            // Ticket info if selected (Linear or GitHub)
-            ...(selectedTicket && {
-              ticketId: selectedTicket.identifier,
-              ticketTitle: selectedTicket.title,
-              ticketUrl: selectedTicket.url,
-            }),
-            ...(selectedGithubIssue && {
-              ticketId: `#${selectedGithubIssue.number}`,
-              ticketTitle: selectedGithubIssue.title,
-              ticketUrl: selectedGithubIssue.url,
-            }),
-          }),
-        });
-
-        if (res.ok) {
-          const { sessionId: newSessionId, gitBranch, cwd: newCwd } = await res.json();
-          updateSession(existingNodeId, {
-            sessionId: newSessionId,
-            agentId: selectedAgent.id,
-            agentName: selectedAgent.name,
-            command: fullCommand,
-            cwd: newCwd || effectiveWorkingDir,
-            status: "idle",
-            isRestored: false,
-            ticketId: selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined),
-            ticketTitle: selectedTicket?.title || selectedGithubIssue?.title,
-            gitBranch: gitBranch || branchName || undefined,
-          });
-        }
-      } else {
-        // Creating new agent(s)
-        // Get the center of the current viewport
-        const viewport = reactFlowInstance.getViewport();
-        const viewportBounds = document.querySelector('.react-flow')?.getBoundingClientRect();
-        const viewportWidth = viewportBounds?.width || window.innerWidth;
-        const viewportHeight = viewportBounds?.height || window.innerHeight;
-
-        // Convert viewport center to flow coordinates
-        const centerX = (-viewport.x + viewportWidth / 2) / viewport.zoom;
-        const centerY = (-viewport.y + viewportHeight / 2) / viewport.zoom;
-
-        // Find free positions near viewport center for all new agents
-        const freePositions = findFreePosition(centerX, centerY, nodes, count);
-
-        for (let i = 0; i < count; i++) {
-          const nodeId = `node-${Date.now()}-${i}`;
-          const agentName = count > 1
-            ? `${customName || selectedAgent.name} ${i + 1}`
-            : customName || selectedAgent.name;
+      // Fire replacement in the background
+      (async () => {
+        try {
+          await fetch(`/api/sessions/${existingSession.sessionId}`, { method: "DELETE" });
 
           const res = await fetch("/api/sessions", {
             method: "POST",
@@ -526,22 +458,21 @@ export function NewSessionModal({
               agentName: selectedAgent.name,
               command: fullCommand,
               cwd: effectiveWorkingDir,
-              nodeId,
-              customName: count > 1 ? agentName : customName || undefined,
-              // Worktree params (any tab, only for first agent)
-              ...(i === 0 && createWorktree && branchName && {
+              nodeId: existingNodeId,
+              customName: customName || existingSession.customName,
+              customColor: existingSession.customColor,
+              ...(createWorktree && branchName && {
                 branchName,
                 baseBranch,
                 createWorktree,
                 ...multiRepoParams,
               }),
-              // Ticket info if selected (only for first agent)
-              ...(i === 0 && selectedTicket && {
+              ...(selectedTicket && {
                 ticketId: selectedTicket.identifier,
                 ticketTitle: selectedTicket.title,
                 ticketUrl: selectedTicket.url,
               }),
-              ...(i === 0 && selectedGithubIssue && {
+              ...(selectedGithubIssue && {
                 ticketId: `#${selectedGithubIssue.number}`,
                 ticketTitle: selectedGithubIssue.title,
                 ticketUrl: selectedGithubIssue.url,
@@ -549,46 +480,129 @@ export function NewSessionModal({
             }),
           });
 
-          const { sessionId, gitBranch, cwd: newCwd } = await res.json();
-
-          const { x, y } = freePositions[i];
-
-          addNode({
-            id: nodeId,
-            type: "agent",
-            position: { x, y },
-            data: {
-              label: agentName,
+          if (res.ok) {
+            const { sessionId: newSessionId, gitBranch, cwd: newCwd } = await res.json();
+            updateSession(existingNodeId, {
+              sessionId: newSessionId,
               agentId: selectedAgent.id,
-              color: selectedAgent.color,
-              icon: selectedAgent.icon,
-              sessionId,
-            },
-          });
-
-          addSession(nodeId, {
-            id: nodeId,
-            sessionId,
-            agentId: selectedAgent.id,
-            agentName: selectedAgent.name,
-            command: fullCommand,
-            color: selectedAgent.color,
-            createdAt: new Date().toISOString(),
-            cwd: newCwd || effectiveWorkingDir,
-            gitBranch: gitBranch || branchName || undefined,
-            status: "idle",
-            customName: count > 1 ? agentName : customName || undefined,
-            ticketId: i === 0 ? (selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined)) : undefined,
-            ticketTitle: i === 0 ? (selectedTicket?.title || selectedGithubIssue?.title) : undefined,
-          });
+              agentName: selectedAgent.name,
+              command: fullCommand,
+              cwd: newCwd || effectiveWorkingDir,
+              status: "idle",
+              isRestored: false,
+              ticketId: selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined),
+              ticketTitle: selectedTicket?.title || selectedGithubIssue?.title,
+              gitBranch: gitBranch || branchName || undefined,
+            });
+          } else {
+            updateSession(existingNodeId, { status: "error" });
+          }
+        } catch (error) {
+          console.error("Failed to create session:", error);
+          updateSession(existingNodeId, { status: "error" });
         }
-      }
+      })();
+    } else {
+      // Creating new agent(s) — add nodes immediately with "creating" status
+      const viewport = reactFlowInstance.getViewport();
+      const viewportBounds = document.querySelector('.react-flow')?.getBoundingClientRect();
+      const viewportWidth = viewportBounds?.width || window.innerWidth;
+      const viewportHeight = viewportBounds?.height || window.innerHeight;
 
-      handleClose();
-    } catch (error) {
-      console.error("Failed to create session:", error);
-    } finally {
-      setIsCreating(false);
+      const centerX = (-viewport.x + viewportWidth / 2) / viewport.zoom;
+      const centerY = (-viewport.y + viewportHeight / 2) / viewport.zoom;
+
+      const freePositions = findFreePosition(centerX, centerY, nodes, count);
+
+      for (let i = 0; i < count; i++) {
+        const nodeId = `node-${Date.now()}-${i}`;
+        const agentName = count > 1
+          ? `${customName || selectedAgent.name} ${i + 1}`
+          : customName || selectedAgent.name;
+        const placeholderSessionId = `pending-${nodeId}`;
+
+        const { x, y } = freePositions[i];
+
+        // Add node and session immediately with "creating" status
+        addNode({
+          id: nodeId,
+          type: "agent",
+          position: { x, y },
+          data: {
+            label: agentName,
+            agentId: selectedAgent.id,
+            color: selectedAgent.color,
+            icon: selectedAgent.icon,
+            sessionId: placeholderSessionId,
+          },
+        });
+
+        addSession(nodeId, {
+          id: nodeId,
+          sessionId: placeholderSessionId,
+          agentId: selectedAgent.id,
+          agentName: selectedAgent.name,
+          command: fullCommand,
+          color: selectedAgent.color,
+          createdAt: new Date().toISOString(),
+          cwd: effectiveWorkingDir || "",
+          gitBranch: branchName || undefined,
+          status: "creating",
+          customName: count > 1 ? agentName : customName || undefined,
+          ticketId: i === 0 ? (selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined)) : undefined,
+          ticketTitle: i === 0 ? (selectedTicket?.title || selectedGithubIssue?.title) : undefined,
+        });
+
+        // Fire the session creation in the background
+        const agentIndex = i;
+        (async () => {
+          try {
+            const res = await fetch("/api/sessions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                agentId: selectedAgent.id,
+                agentName: selectedAgent.name,
+                command: fullCommand,
+                cwd: effectiveWorkingDir,
+                nodeId,
+                customName: count > 1 ? agentName : customName || undefined,
+                ...(agentIndex === 0 && createWorktree && branchName && {
+                  branchName,
+                  baseBranch,
+                  createWorktree,
+                  ...multiRepoParams,
+                }),
+                ...(agentIndex === 0 && selectedTicket && {
+                  ticketId: selectedTicket.identifier,
+                  ticketTitle: selectedTicket.title,
+                  ticketUrl: selectedTicket.url,
+                }),
+                ...(agentIndex === 0 && selectedGithubIssue && {
+                  ticketId: `#${selectedGithubIssue.number}`,
+                  ticketTitle: selectedGithubIssue.title,
+                  ticketUrl: selectedGithubIssue.url,
+                }),
+              }),
+            });
+
+            if (res.ok) {
+              const { sessionId, gitBranch, cwd: newCwd } = await res.json();
+              updateSession(nodeId, {
+                sessionId,
+                cwd: newCwd || effectiveWorkingDir,
+                gitBranch: gitBranch || branchName || undefined,
+                status: "idle",
+              });
+            } else {
+              updateSession(nodeId, { status: "error" });
+            }
+          } catch (error) {
+            console.error("Failed to create session:", error);
+            updateSession(nodeId, { status: "error" });
+          }
+        })();
+      }
     }
   };
 
@@ -1487,12 +1501,10 @@ export function NewSessionModal({
                   </button>
                   <button
                     onClick={handleCreate}
-                    disabled={!selectedAgent || isCreating || (!selectedAgent?.command && !commandArgs) || (activeTab === "linear" && !selectedTicket) || (activeTab === "github" && !selectedGithubIssue)}
+                    disabled={!selectedAgent || (!selectedAgent?.command && !commandArgs) || (activeTab === "linear" && !selectedTicket) || (activeTab === "github" && !selectedGithubIssue)}
                     className="px-4 py-1.5 rounded-md text-sm font-medium text-canvas bg-white hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    {isCreating
-                      ? "Creating..."
-                      : isReplacing
+                    {isReplacing
                       ? "Start Session"
                       : count > 1
                       ? `Create ${count} Agents`
