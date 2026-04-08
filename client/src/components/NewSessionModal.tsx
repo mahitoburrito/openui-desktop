@@ -885,10 +885,22 @@ export function NewSessionModal({
                           {createWorktree && detectedRepos.length > 1 && (
                             <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs text-indigo-300 font-medium">
-                                  Repos in {cwd.split("/").pop() || cwd}
-                                </p>
-                                {scanningRepos && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />}
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-indigo-300 font-medium">
+                                    Repos in {cwd.split("/").pop() || cwd}
+                                  </p>
+                                  {scanningRepos && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allSelected = detectedRepos.every(r => selectedRepoPaths.has(r.path));
+                                    setSelectedRepoPaths(allSelected ? new Set() : new Set(detectedRepos.map(r => r.path)));
+                                  }}
+                                  className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                                >
+                                  {detectedRepos.every(r => selectedRepoPaths.has(r.path)) ? "Deselect all" : "Select all"}
+                                </button>
                               </div>
 
                               <div className="space-y-1.5">
@@ -1111,10 +1123,22 @@ export function NewSessionModal({
                           {createWorktree && detectedRepos.length > 1 && (
                             <div className="rounded-md border border-zinc-600/30 bg-zinc-700/20 p-3 space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs text-zinc-300 font-medium">
-                                  Repos in {cwd.split("/").pop() || cwd}
-                                </p>
-                                {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-zinc-300 font-medium">
+                                    Repos in {cwd.split("/").pop() || cwd}
+                                  </p>
+                                  {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allSelected = detectedRepos.every(r => selectedRepoPaths.has(r.path));
+                                    setSelectedRepoPaths(allSelected ? new Set() : new Set(detectedRepos.map(r => r.path)));
+                                  }}
+                                  className="text-[10px] text-zinc-400 hover:text-zinc-300 transition-colors"
+                                >
+                                  {detectedRepos.every(r => selectedRepoPaths.has(r.path)) ? "Deselect all" : "Select all"}
+                                </button>
                               </div>
 
                               <div className="space-y-1.5">
@@ -1405,10 +1429,22 @@ export function NewSessionModal({
                           {detectedRepos.length > 1 && (
                             <div className="rounded-md border border-zinc-600/30 bg-zinc-700/20 p-3 space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs text-zinc-300 font-medium">
-                                  Repos in {(cwd || launchCwd || "").split("/").pop() || cwd || launchCwd}
-                                </p>
-                                {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-zinc-300 font-medium">
+                                    Repos in {(cwd || launchCwd || "").split("/").pop() || cwd || launchCwd}
+                                  </p>
+                                  {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allSelected = detectedRepos.every(r => selectedRepoPaths.has(r.path));
+                                    setSelectedRepoPaths(allSelected ? new Set() : new Set(detectedRepos.map(r => r.path)));
+                                  }}
+                                  className="text-[10px] text-zinc-400 hover:text-zinc-300 transition-colors"
+                                >
+                                  {detectedRepos.every(r => selectedRepoPaths.has(r.path)) ? "Deselect all" : "Select all"}
+                                </button>
                               </div>
 
                               <div className="space-y-1.5">
