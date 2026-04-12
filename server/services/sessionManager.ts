@@ -456,6 +456,20 @@ export function createSession(params: {
     session.lastOutputTime = Date.now();
     session.recentOutputSize += data.length;
 
+    // Auto-detect running status from PTY output when plugin hasn't reported yet
+    if (session.status === "idle" && !session.pluginReportedStatus) {
+      session.status = "running";
+      for (const client of session.clients) {
+        if (client.readyState === 1) {
+          client.send(JSON.stringify({
+            type: "status",
+            status: "running",
+            isRestored: session.isRestored,
+          }));
+        }
+      }
+    }
+
     for (const client of session.clients) {
       if (client.readyState === 1) {
         client.send(JSON.stringify({ type: "output", data }));

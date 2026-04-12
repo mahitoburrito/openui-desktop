@@ -16,6 +16,8 @@ import {
   Brain,
   Wand2,
   GitBranch,
+  ImagePlus,
+  Loader2,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
@@ -68,6 +70,13 @@ export function Sidebar() {
   const [editIcon, setEditIcon] = useState("");
   const [terminalKey, setTerminalKey] = useState(0);
 
+  // Image attachment state
+  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [lastImagePath, setLastImagePath] = useState<string | null>(null);
+  const sendInputRef = useRef<((text: string) => void) | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(512);
   const isResizing = useRef(false);
@@ -107,6 +116,8 @@ export function Sidebar() {
       setEditIcon(typeof nodeIcon === 'string' ? nodeIcon : "cpu");
     }
     setIsEditing(false);
+    setLastImagePath(null);
+    sendInputRef.current = null;
     // Force terminal recreation when session changes
     setTerminalKey(k => k + 1);
   }, [session?.sessionId]); // Removed nodes and selectedNodeId to prevent closing on updates
@@ -123,6 +134,66 @@ export function Sidebar() {
       setNewSessionModalOpen(true);
     }
   };
+
+  const handleTerminalReady = useCallback((sendInput: (text: string) => void) => {
+    sendInputRef.current = sendInput;
+  }, []);
+
+  const handleImageUpload = useCallback(async (file: File) => {
+    if (!session) return;
+
+    const allowedTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+    if (!allowedTypes.includes(file.type)) return;
+
+    setIsUploading(true);
+    setLastImagePath(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+
+      const res = await fetch(`/api/sessions/${session.sessionId}/upload-image`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        const { filePath } = await res.json();
+        setLastImagePath(filePath);
+        // Type the file path into the terminal so the agent can reference it
+        if (sendInputRef.current) {
+          sendInputRef.current(filePath);
+        }
+      }
+    } catch (e) {
+      console.error("Image upload failed:", e);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [session]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingImage(false);
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith("image/")) {
+      handleImageUpload(file);
+    }
+  }, [handleImageUpload]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("Files")) {
+      setIsDraggingImage(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only hide if we're leaving the container (not entering a child)
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDraggingImage(false);
+    }
+  }, []);
 
   const displayColor = editColor || session?.customColor || session?.color || "#888";
   const statusInfo = statusConfig[session?.status || "idle"];
@@ -353,18 +424,69 @@ export function Sidebar() {
           </AnimatePresence>
 
           {/* Terminal */}
-          <div className="flex-1 flex flex-col min-h-0">
+          <div
+            className="flex-1 flex flex-col min-h-0 relative"
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+          >
             <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <TerminalIcon className="w-3.5 h-3.5 text-zinc-500" />
                 <span className="text-xs text-zinc-500">Terminal</span>
               </div>
-              <div className="flex items-center gap-1">
-                <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
-                <div className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
-                <div className="w-2.5 h-2.5 rounded-full bg-[#27CA40]" />
+              <div className="flex items-center gap-2">
+                {/* Image attach button */}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-active transition-colors"
+                  title="Attach image"
+                >
+                  <ImagePlus className="w-3.5 h-3.5" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleImageUpload(file);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex items-center gap-1">
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#FF5F56]" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#FFBD2E]" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#27CA40]" />
+                </div>
               </div>
             </div>
+
+            {/* Image upload status bar */}
+            {(isUploading || lastImagePath) && (
+              <div className="flex-shrink-0 px-3 py-1.5 border-b border-border bg-[#111] flex items-center gap-2">
+                {isUploading ? (
+                  <>
+                    <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+                    <span className="text-[10px] text-blue-400">Uploading image...</span>
+                  </>
+                ) : lastImagePath ? (
+                  <>
+                    <ImagePlus className="w-3 h-3 text-green-400" />
+                    <span className="text-[10px] text-green-400 truncate flex-1 font-mono">
+                      {lastImagePath.split("/").pop()}
+                    </span>
+                    <button
+                      onClick={() => setLastImagePath(null)}
+                      className="text-zinc-500 hover:text-zinc-300"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            )}
 
             <div className="flex-1 min-h-0 bg-[#0d0d0d]">
               <Terminal
@@ -372,9 +494,20 @@ export function Sidebar() {
                 sessionId={session.sessionId}
                 color={displayColor}
                 nodeId={selectedNodeId!}
+                onReady={handleTerminalReady}
               />
             </div>
 
+            {/* Drag overlay */}
+            {isDraggingImage && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500/50 rounded-lg backdrop-blur-sm">
+                <div className="text-center">
+                  <ImagePlus className="w-8 h-8 text-blue-400 mx-auto mb-2" />
+                  <p className="text-sm text-blue-300 font-medium">Drop image here</p>
+                  <p className="text-[10px] text-blue-400/70 mt-1">PNG, JPG, GIF, WebP, SVG</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Details */}

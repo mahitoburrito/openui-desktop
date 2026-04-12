@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import * as pty from "node-pty";
-import { readdirSync, statSync, writeFileSync } from "fs";
+import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import type { Agent } from "../types";
 import { sessions, createSession, deleteSession, injectPluginDir, scanReposInDirectory } from "../services/sessionManager";
 import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
@@ -248,6 +248,9 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
     session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
   }, 500);
 
+  // Reset plugin status tracking for fresh session
+  session.pluginReportedStatus = false;
+
   ptyProcess.onData((data: string) => {
     session.outputBuffer.push(data);
     if (session.outputBuffer.length > 1000) {
@@ -256,6 +259,20 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
 
     session.lastOutputTime = Date.now();
     session.recentOutputSize += data.length;
+
+    // Auto-detect running status from PTY output when plugin hasn't reported yet
+    if (session.status === "idle" && !session.pluginReportedStatus) {
+      session.status = "running";
+      for (const client of session.clients) {
+        if (client.readyState === 1) {
+          client.send(JSON.stringify({
+            type: "status",
+            status: "running",
+            isRestored: session.isRestored,
+          }));
+        }
+      }
+    }
 
     for (const client of session.clients) {
       if (client.readyState === 1) {
@@ -439,6 +456,41 @@ apiRoutes.post("/status-update", async (c) => {
   }
 
   return c.json({ success: true, warning: "No matching session found" });
+});
+
+// Image upload endpoint - saves image to temp dir and returns the path
+apiRoutes.post("/sessions/:sessionId/upload-image", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+
+  const body = await c.req.parseBody();
+  const file = body["image"];
+
+  if (!file || !(file instanceof File)) {
+    return c.json({ error: "No image file provided" }, 400);
+  }
+
+  const allowedTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+  if (!allowedTypes.includes(file.type)) {
+    return c.json({ error: "Unsupported image type" }, 400);
+  }
+
+  // Save to a session-specific temp directory
+  const uploadDir = join(tmpdir(), "openui-uploads", sessionId);
+  if (!existsSync(uploadDir)) {
+    mkdirSync(uploadDir, { recursive: true });
+  }
+
+  const ext = file.name.split(".").pop() || "png";
+  const safeName = `image-${Date.now()}.${ext}`;
+  const filePath = join(uploadDir, safeName);
+
+  const arrayBuffer = await file.arrayBuffer();
+  writeFileSync(filePath, Buffer.from(arrayBuffer));
+
+  log(`[upload] Saved image for ${sessionId}: ${filePath}`);
+  return c.json({ success: true, filePath });
 });
 
 // Categories

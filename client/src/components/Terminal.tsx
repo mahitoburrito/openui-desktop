@@ -9,9 +9,10 @@ interface TerminalProps {
   sessionId: string;
   color: string;
   nodeId: string;
+  onReady?: (sendInput: (text: string) => void) => void;
 }
 
-export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
+export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -100,6 +101,11 @@ export function Terminal({ sessionId, color, nodeId }: TerminalProps) {
         if (xtermRef.current) {
           ws?.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
         }
+        onReady?.((text: string) => {
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: text }));
+          }
+        });
       };
 
       ws.onmessage = (event) => {
