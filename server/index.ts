@@ -18,6 +18,11 @@ const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 // Hono app for HTTP routes
 const app = new Hono();
 app.use("*", cors());
+app.onError((err, c) => {
+  // Probe Agent Error Log Trigger
+  console.error("[PRBE_ERROR_SkYp7h] Hono Error:", err);
+  return c.json({ error: err.message }, 500);
+});
 app.route("/api", apiRoutes);
 app.route("/api/prbe", prbeRoutes);
 

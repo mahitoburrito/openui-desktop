@@ -22,7 +22,8 @@ export function loadPRBEConfig(): PRBEConfig {
       if (config.apiKey) return config;
     }
   } catch (e) {
-    console.error("Failed to load PRBE config:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_hOI7Qk] Failed to load PRBE config:", e);
   }
 
   // 2. Fall back to build-time / environment key
@@ -41,6 +42,7 @@ export function savePRBEConfig(config: PRBEConfig): void {
     }
     writeFileSync(getConfigFile(), JSON.stringify(config, null, 2));
   } catch (e) {
-    console.error("Failed to save PRBE config:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_GcDmV2] Failed to save PRBE config:", e);
   }
 }

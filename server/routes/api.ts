@@ -484,7 +484,12 @@ apiRoutes.post("/categories", async (c) => {
   if (!state.categories) state.categories = [];
   state.categories.push(category);
 
-  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  try {
+    writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  } catch (e) {
+    // Probe Agent Error Log Trigger
+    logError("[PRBE_ERROR_e36kvt] Failed to save categories:", e);
+  }
 
   return c.json({ success: true });
 });
@@ -501,7 +506,12 @@ apiRoutes.patch("/categories/:categoryId", async (c) => {
 
   Object.assign(category, updates);
 
-  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  try {
+    writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  } catch (e) {
+    // Probe Agent Error Log Trigger
+    logError("[PRBE_ERROR_iE216W] Failed to update category:", e);
+  }
 
   return c.json({ success: true });
 });
