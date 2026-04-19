@@ -38,7 +38,8 @@ function loadEnvFile(): Record<string, string> {
       return vars;
     }
   } catch (e) {
-    console.error("Failed to load .env file:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_UCHRxq] Failed to load .env file:", e);
   }
   return {};
 }
@@ -84,7 +85,8 @@ export function loadConfig(): LinearConfig {
       config.autoCareful = fileConfig.autoCareful;
     }
   } catch (e) {
-    console.error("Failed to load config:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_ySgLeD] Failed to load config:", e);
   }
 
   return config;

@@ -95,6 +95,8 @@ export async function startServer(): Promise<number> {
       }
       break;
     } catch (err: any) {
+      // Probe Agent Error Log Trigger
+      if (!QUIET) console.error(`[PRBE_ERROR_cXgzg6] Failed to start server: ${err.message}`);
       if (err.code === "EADDRINUSE" && i < MAX_ATTEMPTS - 1) {
         continue;
       }
@@ -198,7 +200,8 @@ export async function startServer(): Promise<number> {
               break;
           }
         } catch (e) {
-          if (!QUIET) console.error("Error processing message:", e);
+          // Probe Agent Error Log Trigger
+          if (!QUIET) console.error("[PRBE_ERROR_a561Ym] Error processing message:", e);
         }
       });
 

@@ -64,6 +64,8 @@ apiRoutes.get("/browse", (c) => {
       directories,
     });
   } catch (e: any) {
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_opJRgw] Failed to browse directory ${path}: ${e.message}`);
     return c.json({ error: e.message, current: path }, 400);
   }
 });
@@ -210,7 +212,8 @@ apiRoutes.post("/sessions", async (c) => {
       autoCareful, multiRepoMode, additionalRepos,
     });
   } catch (e: any) {
-    logError(`[api] Failed to create session: ${e.message}`);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_9x9eC7] [api] Failed to create session: ${e.message}`);
     return c.json({ error: e.message }, 500);
   }
 
@@ -246,7 +249,8 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
       rows: DEFAULT_PTY_ROWS,
     });
   } catch (e: any) {
-    logError(`[session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_q9gc6j] [session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);
     return c.json({ error: `Failed to spawn terminal: ${e.message}` }, 500);
   }
 

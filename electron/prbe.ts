@@ -181,7 +181,8 @@ export function initPRBE(mainWindow: BrowserWindow, serverPort: number) {
     try {
       // Run investigation (non-blocking — we don't await it)
       agent.investigate(query).catch((err) => {
-        console.error("[prbe] Investigation error:", err);
+        // Probe Agent Error Log Trigger
+        console.error("[PRBE_ERROR_piQHkh] [prbe] Investigation error:", err);
       });
       return { success: true };
     } catch (e: any) {
