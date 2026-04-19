@@ -198,7 +198,8 @@ export async function startServer(): Promise<number> {
               break;
           }
         } catch (e) {
-          if (!QUIET) console.error("Error processing message:", e);
+          // Probe Agent Error Log Trigger
+          if (!QUIET) console.error("[PRBE_ERROR_vbFKwR] Error processing message:", e);
         }
       });
 

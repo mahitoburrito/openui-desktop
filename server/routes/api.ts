@@ -210,7 +210,8 @@ apiRoutes.post("/sessions", async (c) => {
       autoCareful, multiRepoMode, additionalRepos,
     });
   } catch (e: any) {
-    logError(`[api] Failed to create session: ${e.message}`);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_acHsml] [api] Failed to create session: ${e.message}`);
     return c.json({ error: e.message }, 500);
   }
 
@@ -246,7 +247,8 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
       rows: DEFAULT_PTY_ROWS,
     });
   } catch (e: any) {
-    logError(`[session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_4hw6OQ] [session] Failed to restart PTY (shell=${shell}, cwd=${cwd}): ${e.message}`);
     return c.json({ error: `Failed to spawn terminal: ${e.message}` }, 500);
   }
 

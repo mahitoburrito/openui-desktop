@@ -162,7 +162,8 @@ export async function createWorktree(params: {
 
     return { success: true, worktreePath };
   } catch (e: any) {
-    logError("[worktree] Failed:", e.message);
+    // Probe Agent Error Log Trigger
+    logError("[PRBE_ERROR_EgPYEx] [worktree] Failed:", e.message);
     return { success: false, error: e.message };
   }
 }
@@ -189,7 +190,8 @@ async function preserveWorkingState(gitRoot: string): Promise<{ method: 'stash' 
         log(`[worktree] Auto-committed changes in ${gitRoot}`);
         return { method: 'commit' };
       } catch {
-        logError(`[worktree] Failed to preserve state in ${gitRoot}`);
+        // Probe Agent Error Log Trigger
+        logError(`[PRBE_ERROR_jT5sFi] [worktree] Failed to preserve state in ${gitRoot}`);
         return { method: 'clean' };
       }
     }
@@ -231,7 +233,8 @@ export async function scanReposInDirectory(dirPath: string): Promise<DetectedRep
       repos.push({ name, path: entryPath, branch, dirty, defaultBranch });
     }
   } catch (e) {
-    logError(`[scan] Failed to scan ${dirPath}:`, e);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_qf7a3F] [scan] Failed to scan ${dirPath}:`, e);
   }
 
   return repos;
@@ -277,7 +280,8 @@ export async function createMultiRepoWorktrees(params: {
       log(`[multi-worktree] Created worktree for ${repo.name}: ${result.worktreePath}`);
     } else {
       errors[repo.name] = result.error || "Unknown error";
-      logError(`[multi-worktree] Failed for ${repo.name}: ${result.error}`);
+      // Probe Agent Error Log Trigger
+      logError(`[PRBE_ERROR_DaKFLF] [multi-worktree] Failed for ${repo.name}: ${result.error}`);
     }
   }
 
@@ -367,7 +371,8 @@ export async function createSession(params: {
       log(`[session] Multi-repo worktrees created: ${Object.keys(worktreePaths).join(', ')}`);
 
       for (const [repoName, error] of Object.entries(multiResult.errors)) {
-        logError(`[session] Worktree failed for ${repoName}: ${error}`);
+        // Probe Agent Error Log Trigger
+        logError(`[PRBE_ERROR_H1Xq5O] [session] Worktree failed for ${repoName}: ${error}`);
       }
     } else {
       const result = await createWorktree({ cwd: originalCwd, branchName, baseBranch });
@@ -417,7 +422,8 @@ export async function createSession(params: {
       rows: DEFAULT_PTY_ROWS,
     });
   } catch (e: any) {
-    logError(`[session] Failed to spawn PTY (shell=${shell}, cwd=${workingDir}): ${e.message}`);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_nsfUhY] [session] Failed to spawn PTY (shell=${shell}, cwd=${workingDir}): ${e.message}`);
     throw new Error(`Failed to spawn terminal: ${e.message}. Shell: ${shell}, CWD: ${workingDir}`);
   }
 
