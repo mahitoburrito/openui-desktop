@@ -89,7 +89,8 @@ app.whenReady().then(async () => {
     serverPort = await startServer();
     console.log(`[electron] Server started on port ${serverPort}`);
   } catch (err) {
-    console.error("[electron] Failed to start server:", err);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_5di1QF] [electron] Failed to start server:", err);
     dialog.showErrorBox(
       "Server Error",
       "Failed to start the embedded server. The application may not work correctly."
@@ -125,11 +126,13 @@ app.whenReady().then(async () => {
     });
 
     autoUpdater.on("error", (err) => {
-      console.error("[updater] Error:", err.message);
+      // Probe Agent Error Log Trigger
+      console.error("[PRBE_ERROR_2BweaS] [updater] Error:", err.message);
     });
 
     autoUpdater.checkForUpdates().catch((err) => {
-      console.error("[updater] Check failed:", err.message);
+      // Probe Agent Error Log Trigger
+      console.error("[PRBE_ERROR_uzkINF] [updater] Check failed:", err.message);
     });
   }
 
