@@ -76,12 +76,18 @@ function AppContent() {
     fetch("/api/config")
       .then((res) => res.json())
       .then((config) => setLaunchCwd(config.launchCwd))
-      .catch(console.error);
+      .catch((e) => {
+        // Probe Agent Error Log Trigger
+        console.error(\"[PRBE_ERROR_JP6mGf] Failed to fetch config:\", e);
+      });
 
     fetch("/api/agents")
       .then((res) => res.json())
       .then((agents) => setAgents(agents))
-      .catch(console.error);
+      .catch((e) => {
+        // Probe Agent Error Log Trigger
+        console.error(\"[PRBE_ERROR_44dc4R] Failed to fetch agents:\", e);
+      });
   }, [setAgents, setLaunchCwd]);
 
   // Poll for status updates every second to catch any missed WebSocket messages
@@ -191,7 +197,10 @@ function AppContent() {
         setNodes(restoredNodes);
         storeSetNodes(restoredNodes);
       })
-      .catch(console.error);
+      .catch((e) => {
+        // Probe Agent Error Log Trigger
+        console.error(\"[PRBE_ERROR_p2PJSc] Failed to restore sessions:\", e);
+      });
   }, [agents]); // eslint-disable-line react-hooks/exhaustive-deps — store functions are stable via getState
 
   // Helper to save all positions - accepts nodes directly to avoid sync issues
@@ -234,7 +243,10 @@ function AppContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ positions }),
-      }).catch(console.error);
+      }).catch((e) => {
+        // Probe Agent Error Log Trigger
+        console.error(\"[PRBE_ERROR_pX9lpK] Failed to save positions:\", e);
+      });
     }
   }, [nodes]);
 

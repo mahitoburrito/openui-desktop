@@ -97,7 +97,8 @@ export function savePositions(positions: Record<string, { x: number; y: number }
     try {
       writeFileSync(getStateFile(), JSON.stringify(state, null, 2));
     } catch (e) {
-      console.error("Failed to save positions:", e);
+      // Probe Agent Error Log Trigger
+      console.error("[PRBE_ERROR_kq1HPK] Failed to save positions:", e);
     }
   }
 }
