@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { Node } from "@xyflow/react";
 
+// localStorage keys for crash-resilient UI state
+const STORAGE_KEY = "openui-desktop-ui-state";
+
 export interface Agent {
   id: string;
   name: string;
@@ -44,6 +47,9 @@ export interface DeleteToast {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+export type ViewMode = "canvas" | "focus";
+export type StatusFilter = AgentStatus | "all";
+
 interface AppState {
   // Config
   launchCwd: string;
@@ -78,10 +84,52 @@ interface AppState {
   newSessionForNodeId: string | null;
   setNewSessionForNodeId: (nodeId: string | null) => void;
 
+  // Session List Panel
+  sessionListOpen: boolean;
+  setSessionListOpen: (open: boolean) => void;
+  statusFilter: StatusFilter;
+  setStatusFilter: (filter: StatusFilter) => void;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
+
+  // Focus Mode (multi-terminal view)
+  viewMode: ViewMode;
+  setViewMode: (mode: ViewMode) => void;
+  focusedSessionIds: string[]; // nodeIds pinned in focus mode
+  addFocusedSession: (nodeId: string) => void;
+  removeFocusedSession: (nodeId: string) => void;
+  setFocusedSessions: (nodeIds: string[]) => void;
+  // Per-layout pane size ratios for resizable splitter (sum to 1)
+  splitRatios: Record<string, number[]>;
+  setSplitRatios: (key: string, ratios: number[]) => void;
+
   // Delete toast
   deleteToast: DeleteToast | null;
   setDeleteToast: (toast: DeleteToast | null) => void;
 }
+
+// Load persisted UI state from localStorage
+function loadPersistedUIState(): Partial<AppState> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        sessionListOpen: parsed.sessionListOpen ?? true,
+        viewMode: parsed.viewMode ?? "canvas",
+        focusedSessionIds: parsed.focusedSessionIds ?? [],
+        splitRatios: parsed.splitRatios ?? {},
+      };
+    }
+  } catch {
+    // Corrupted localStorage — ignore
+  }
+  return {};
+}
+
+const MAX_FOCUSED_SESSIONS = 16;
+
+const persisted = loadPersistedUIState();
 
 export const useStore = create<AppState>((set) => ({
   // Config
@@ -143,7 +191,55 @@ export const useStore = create<AppState>((set) => ({
   newSessionForNodeId: null,
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
 
+  // Session List Panel
+  sessionListOpen: persisted.sessionListOpen ?? true,
+  setSessionListOpen: (open) => set({ sessionListOpen: open }),
+  statusFilter: "all",
+  setStatusFilter: (filter) => set({ statusFilter: filter }),
+  searchQuery: "",
+  setSearchQuery: (query) => set({ searchQuery: query }),
+
+  // Focus Mode
+  viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
+  setViewMode: (mode) => set({ viewMode: mode }),
+  focusedSessionIds: persisted.focusedSessionIds ?? [],
+  addFocusedSession: (nodeId) =>
+    set((state) => ({
+      focusedSessionIds: state.focusedSessionIds.includes(nodeId)
+        ? state.focusedSessionIds
+        : [...state.focusedSessionIds, nodeId].slice(0, MAX_FOCUSED_SESSIONS),
+    })),
+  removeFocusedSession: (nodeId) =>
+    set((state) => ({
+      focusedSessionIds: state.focusedSessionIds.filter((id) => id !== nodeId),
+    })),
+  setFocusedSessions: (nodeIds) =>
+    set({ focusedSessionIds: nodeIds.slice(0, MAX_FOCUSED_SESSIONS) }),
+
+  splitRatios: (persisted.splitRatios as Record<string, number[]>) ?? {},
+  setSplitRatios: (key, ratios) =>
+    set((state) => ({
+      splitRatios: { ...state.splitRatios, [key]: ratios },
+    })),
+
   // Delete toast
   deleteToast: null,
   setDeleteToast: (toast) => set({ deleteToast: toast }),
 }));
+
+// Auto-persist UI state to localStorage on change
+useStore.subscribe((state) => {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        sessionListOpen: state.sessionListOpen,
+        viewMode: state.viewMode,
+        focusedSessionIds: state.focusedSessionIds,
+        splitRatios: state.splitRatios,
+      })
+    );
+  } catch {
+    // localStorage full or unavailable — ignore
+  }
+});

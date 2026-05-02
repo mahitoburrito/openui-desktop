@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -12,6 +12,12 @@ interface TerminalProps {
   onReady?: (sendInput: (text: string) => void) => void;
 }
 
+// Quote a path for shell pasting if it contains characters that would break tokenization.
+function shellQuote(p: string): string {
+  if (/^[A-Za-z0-9_\-./~@+:=]+$/.test(p)) return p;
+  return `'${p.replace(/'/g, "'\\''")}'`;
+}
+
 export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -19,6 +25,9 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const mountedRef = useRef(false);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
     if (!terminalRef.current || !sessionId) return;
@@ -75,34 +84,34 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
     term.loadAddon(webLinksAddon);
 
     term.open(terminalRef.current);
-    
+
     // Reset all terminal attributes before receiving buffered content
     term.write("\x1b[0m\x1b[?25h");
-    
+
     setTimeout(() => fitAddon.fit(), 50);
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Connect WebSocket with small delay to allow session to be ready
+    // WebSocket connection with reconnection
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws?sessionId=${sessionId}`;
 
-    let ws: WebSocket | null = null;
     let isFirstMessage = true;
 
     const connectWs = () => {
       if (!mountedRef.current) return;
 
-      ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        reconnectAttemptRef.current = 0; // Reset backoff on success
         if (xtermRef.current) {
-          ws?.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
+          ws.send(JSON.stringify({ type: "resize", cols: xtermRef.current.cols, rows: xtermRef.current.rows }));
         }
         onReady?.((text: string) => {
-          if (ws?.readyState === WebSocket.OPEN) {
+          if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "input", data: text }));
           }
         });
@@ -136,11 +145,25 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
       };
 
       ws.onerror = () => {
-        // Silently handle errors - don't spam the terminal
+        // Will trigger onclose — reconnection handled there
       };
 
       ws.onclose = () => {
-        // Only show if not intentionally closed
+        wsRef.current = null;
+        // Reconnect with exponential backoff if component is still mounted
+        if (mountedRef.current) {
+          const attempt = reconnectAttemptRef.current;
+          // Backoff: 1s, 2s, 4s, 8s, cap at 15s
+          const delay = Math.min(1000 * Math.pow(2, attempt), 15000);
+          reconnectAttemptRef.current = attempt + 1;
+
+          reconnectTimerRef.current = setTimeout(() => {
+            if (mountedRef.current) {
+              isFirstMessage = true;
+              connectWs();
+            }
+          }, delay);
+        }
       };
     };
 
@@ -148,8 +171,8 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
     const connectTimeout = setTimeout(connectWs, 100);
 
     term.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "input", data }));
       }
     });
 
@@ -158,8 +181,8 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
         if (fitAddonRef.current) {
           fitAddonRef.current.fit();
         }
-        if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
-          ws.send(JSON.stringify({
+        if (wsRef.current?.readyState === WebSocket.OPEN && xtermRef.current) {
+          wsRef.current.send(JSON.stringify({
             type: "resize",
             cols: xtermRef.current.cols,
             rows: xtermRef.current.rows
@@ -173,21 +196,89 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
     return () => {
       mountedRef.current = false;
       clearTimeout(connectTimeout);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       resizeObserver.disconnect();
-      ws?.close();
+      wsRef.current?.close();
       term.dispose();
     };
   }, [sessionId, color, nodeId, updateSession]);
 
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.dataTransfer.types.includes("Files")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      if (!isDragOver) setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget === e.target) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // Electron exposes the absolute filesystem path on File objects.
+    // Browser-only fallback: just use the file name (caller can re-target).
+    const tokens: string[] = [];
+    for (const f of files) {
+      const path = (f as File & { path?: string }).path || f.name;
+      tokens.push(shellQuote(path));
+    }
+    const insertion = tokens.join(" ") + " ";
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "input", data: insertion }));
+    }
+    xtermRef.current?.focus();
+  };
+
   return (
     <div
-      ref={terminalRef}
-      className="w-full h-full"
-      style={{ 
-        padding: "12px", 
-        backgroundColor: "#0d0d0d",
-        minHeight: "200px"
-      }}
-    />
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="relative w-full h-full"
+      style={{ minHeight: "200px" }}
+    >
+      <div
+        ref={terminalRef}
+        className="w-full h-full"
+        style={{
+          padding: "12px",
+          backgroundColor: "#0d0d0d",
+          minHeight: "200px",
+        }}
+      />
+      {isDragOver && (
+        <div
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+          style={{
+            backgroundColor: `${color}10`,
+            outline: `2px dashed ${color}`,
+            outlineOffset: "-6px",
+          }}
+        >
+          <div
+            className="px-3 py-1.5 rounded-md text-xs font-medium"
+            style={{
+              backgroundColor: `${color}20`,
+              color,
+              border: `1px solid ${color}40`,
+            }}
+          >
+            Drop to insert path
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
