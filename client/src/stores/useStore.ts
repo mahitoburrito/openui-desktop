@@ -47,7 +47,7 @@ export interface DeleteToast {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-export type ViewMode = "canvas" | "focus";
+export type ViewMode = "canvas" | "focus" | "markdown";
 export type StatusFilter = AgentStatus | "all";
 
 interface AppState {
@@ -103,6 +103,12 @@ interface AppState {
   splitRatios: Record<string, number[]>;
   setSplitRatios: (key: string, ratios: number[]) => void;
 
+  // Markdown viewer
+  openMarkdownFiles: string[]; // absolute file paths
+  addMarkdownFile: (path: string) => void;
+  removeMarkdownFile: (path: string) => void;
+  setMarkdownFiles: (paths: string[]) => void;
+
   // Delete toast
   deleteToast: DeleteToast | null;
   setDeleteToast: (toast: DeleteToast | null) => void;
@@ -119,6 +125,7 @@ function loadPersistedUIState(): Partial<AppState> {
         viewMode: parsed.viewMode ?? "canvas",
         focusedSessionIds: parsed.focusedSessionIds ?? [],
         splitRatios: parsed.splitRatios ?? {},
+        openMarkdownFiles: parsed.openMarkdownFiles ?? [],
       };
     }
   } catch {
@@ -222,6 +229,20 @@ export const useStore = create<AppState>((set) => ({
       splitRatios: { ...state.splitRatios, [key]: ratios },
     })),
 
+  // Markdown viewer
+  openMarkdownFiles: (persisted.openMarkdownFiles as string[]) ?? [],
+  addMarkdownFile: (path) =>
+    set((state) => ({
+      openMarkdownFiles: state.openMarkdownFiles.includes(path)
+        ? state.openMarkdownFiles
+        : [...state.openMarkdownFiles, path],
+    })),
+  removeMarkdownFile: (path) =>
+    set((state) => ({
+      openMarkdownFiles: state.openMarkdownFiles.filter((p) => p !== path),
+    })),
+  setMarkdownFiles: (paths) => set({ openMarkdownFiles: paths }),
+
   // Delete toast
   deleteToast: null,
   setDeleteToast: (toast) => set({ deleteToast: toast }),
@@ -237,6 +258,7 @@ useStore.subscribe((state) => {
         viewMode: state.viewMode,
         focusedSessionIds: state.focusedSessionIds,
         splitRatios: state.splitRatios,
+        openMarkdownFiles: state.openMarkdownFiles,
       })
     );
   } catch {

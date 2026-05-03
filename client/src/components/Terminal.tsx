@@ -9,6 +9,8 @@ interface TerminalProps {
   sessionId: string;
   color: string;
   nodeId: string;
+  cwd?: string;
+  onOpenFile?: (absPath: string) => void;
   onReady?: (sendInput: (text: string) => void) => void;
 }
 
@@ -18,7 +20,58 @@ function shellQuote(p: string): string {
   return `'${p.replace(/'/g, "'\\''")}'`;
 }
 
-export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
+// File path detection. Matches:
+//   - absolute POSIX paths:   /Users/foo/bar.md
+//   - home-relative:          ~/notes/x.md
+//   - relative dir paths:     docs/notes.md, ./README.md, ../foo.mdx
+//   - bare filenames with a markdown extension: README.md, NOTES.mdx
+// We accept a leading delimiter (start-of-line, whitespace, quote, paren, etc.)
+// and capture the longest path-shaped run after it. The activate() handler only
+// fires for runs that actually look like markdown files, so non-markdown matches
+// are filtered out cheaply later.
+const FILE_PATH_RE =
+  /(?:^|[\s"'`(<\[])((?:~|\.{1,2})?\/[^\s"'`)<>\]]+|[A-Za-z0-9_.-]+\/[^\s"'`)<>\]]+|[A-Za-z0-9_-]+\.[A-Za-z0-9]+)/g;
+
+const MARKDOWN_EXTS = new Set(["md", "markdown", "mdx"]);
+
+function stripTrailingPunct(s: string): string {
+  // Remove trailing punctuation that's almost certainly not part of the path.
+  return s.replace(/[.,;:!?)\]'"`>]+$/, "");
+}
+
+function isMarkdownPath(p: string): boolean {
+  const ext = p.includes(".") ? p.split(".").pop()!.toLowerCase() : "";
+  return MARKDOWN_EXTS.has(ext);
+}
+
+function resolvePath(raw: string, cwd: string | undefined): string {
+  let p = raw;
+  if (p.startsWith("~/")) {
+    // We don't know the homedir client-side; let server's expandPath handle it.
+    return p;
+  }
+  if (p.startsWith("/")) return p;
+  if (!cwd) return p;
+  // Strip leading "./"
+  if (p.startsWith("./")) p = p.slice(2);
+  // Naive join; server resolves and validates.
+  return cwd.replace(/\/$/, "") + "/" + p;
+}
+
+export function Terminal({
+  sessionId,
+  color,
+  nodeId,
+  cwd,
+  onOpenFile,
+  onReady,
+}: TerminalProps) {
+  // Stable refs so the link provider closure picks up latest values
+  // without forcing the terminal to be recreated on prop changes.
+  const cwdRef = useRef(cwd);
+  const onOpenFileRef = useRef(onOpenFile);
+  cwdRef.current = cwd;
+  onOpenFileRef.current = onOpenFile;
   const updateSession = useStore((state) => state.updateSession);
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -84,6 +137,57 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
     term.loadAddon(webLinksAddon);
 
     term.open(terminalRef.current);
+
+    // Custom link provider — finds file paths on each visible line and makes
+    // markdown ones clickable to open in an in-pane viewer.
+    const linkProviderDisposable = term.registerLinkProvider({
+      provideLinks(bufferLineNumber, callback) {
+        const buffer = term.buffer.active;
+        const line = buffer.getLine(bufferLineNumber - 1);
+        if (!line) {
+          callback(undefined);
+          return;
+        }
+        const text = line.translateToString(true);
+        if (!text) {
+          callback(undefined);
+          return;
+        }
+
+        const links: import("@xterm/xterm").ILink[] = [];
+        FILE_PATH_RE.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = FILE_PATH_RE.exec(text)) !== null) {
+          const captured = match[1];
+          if (!captured) continue;
+          const cleaned = stripTrailingPunct(captured);
+          if (!cleaned || !isMarkdownPath(cleaned)) continue;
+
+          // Find the captured group's start within the matched text
+          const groupOffset = match[0].indexOf(captured);
+          const startCol = match.index + groupOffset; // 0-based
+          const endCol = startCol + cleaned.length; // exclusive
+
+          links.push({
+            range: {
+              start: { x: startCol + 1, y: bufferLineNumber },
+              end: { x: endCol, y: bufferLineNumber },
+            },
+            text: cleaned,
+            decorations: { underline: true, pointerCursor: true },
+            activate: (event, txt) => {
+              event.preventDefault();
+              const handler = onOpenFileRef.current;
+              if (!handler) return;
+              const abs = resolvePath(txt, cwdRef.current);
+              handler(abs);
+            },
+          });
+        }
+
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
 
     // Reset all terminal attributes before receiving buffered content
     term.write("\x1b[0m\x1b[?25h");
@@ -198,6 +302,7 @@ export function Terminal({ sessionId, color, nodeId, onReady }: TerminalProps) {
       clearTimeout(connectTimeout);
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       resizeObserver.disconnect();
+      linkProviderDisposable.dispose();
       wsRef.current?.close();
       term.dispose();
     };

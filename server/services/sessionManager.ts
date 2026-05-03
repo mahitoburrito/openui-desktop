@@ -437,13 +437,44 @@ export function createSession(params: {
 
   sessions.set(sessionId, session);
 
-  // Output decay
+  // Output decay + stale status watchdog
   const resetInterval = setInterval(() => {
     if (!sessions.has(sessionId) || !session.pty) {
       clearInterval(resetInterval);
       return;
     }
     session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
+
+    // Watchdog: if plugin hasn't reported in 30s and session looks stuck, reset the lock
+    // so PTY-based auto-detect can kick back in
+    const now = Date.now();
+    if (session.pluginReportedStatus && session.lastPluginStatusTime) {
+      const silentFor = now - session.lastPluginStatusTime;
+      if (silentFor > 30000) {
+        log(`[watchdog] Plugin silent for ${Math.round(silentFor / 1000)}s on ${sessionId}, resetting pluginReportedStatus`);
+        session.pluginReportedStatus = false;
+      }
+    }
+
+    // Watchdog: if status is "running" or "tool_calling" but no PTY output for 60s,
+    // transition to "idle" so the UI doesn't look frozen
+    if ((session.status === "running" || session.status === "tool_calling") && session.lastOutputTime) {
+      const outputSilent = now - session.lastOutputTime;
+      if (outputSilent > 60000) {
+        log(`[watchdog] No output for ${Math.round(outputSilent / 1000)}s on ${sessionId}, transitioning to idle`);
+        session.status = "idle";
+        session.currentTool = undefined;
+        for (const client of session.clients) {
+          if (client.readyState === 1) {
+            client.send(JSON.stringify({
+              type: "status",
+              status: "idle",
+              isRestored: session.isRestored,
+            }));
+          }
+        }
+      }
+    }
   }, 500);
 
   // PTY output handler
@@ -456,7 +487,8 @@ export function createSession(params: {
     session.lastOutputTime = Date.now();
     session.recentOutputSize += data.length;
 
-    // Auto-detect running status from PTY output when plugin hasn't reported yet
+    // Auto-detect running status from PTY output
+    // Works when plugin hasn't reported yet OR when plugin has gone silent
     if (session.status === "idle" && !session.pluginReportedStatus) {
       session.status = "running";
       for (const client of session.clients) {

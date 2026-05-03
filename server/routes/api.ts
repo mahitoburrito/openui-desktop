@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import * as pty from "node-pty";
-import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir, tmpdir } from "os";
 import type { Agent } from "../types";
@@ -83,6 +83,115 @@ apiRoutes.get("/scan-repos", (c) => {
     return c.json({ repos });
   } catch (e: any) {
     return c.json({ error: e.message, repos: [] }, 400);
+  }
+});
+
+// Markdown file discovery and reading
+const MD_EXTS = new Set(["md", "markdown", "mdx"]);
+const MD_MAX_BYTES = 5 * 1024 * 1024; // 5MB
+const MD_MAX_DEPTH = 4;
+const MD_SKIP_DIRS = new Set([
+  "node_modules", ".git", "dist", "build", ".next", ".turbo",
+  "coverage", "__pycache__", ".cache", "release", ".venv", "venv",
+]);
+
+function expandPath(p: string): string {
+  if (p.startsWith("~")) p = p.replace("~", homedir());
+  return resolve(p);
+}
+
+function isMarkdownPath(p: string): boolean {
+  const ext = p.includes(".") ? p.split(".").pop()!.toLowerCase() : "";
+  return MD_EXTS.has(ext);
+}
+
+function walkMarkdown(
+  root: string,
+  results: { name: string; path: string; size: number; modified: number }[],
+  depth: number,
+): void {
+  if (depth > MD_MAX_DEPTH) return;
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith(".") && entry.name !== ".") continue;
+    const full = join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (MD_SKIP_DIRS.has(entry.name)) continue;
+      walkMarkdown(full, results, depth + 1);
+    } else if (entry.isFile() && isMarkdownPath(entry.name)) {
+      try {
+        const st = statSync(full);
+        results.push({
+          name: entry.name,
+          path: full,
+          size: st.size,
+          modified: st.mtimeMs,
+        });
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+}
+
+apiRoutes.get("/files/list", (c) => {
+  const queryPath = c.req.query("path") || getLaunchCwd();
+  const root = expandPath(queryPath);
+
+  if (!existsSync(root)) {
+    return c.json({ error: "Path not found", root }, 404);
+  }
+
+  const stat = statSync(root);
+  if (!stat.isDirectory()) {
+    return c.json({ error: "Not a directory", root }, 400);
+  }
+
+  const files: { name: string; path: string; size: number; modified: number }[] = [];
+  walkMarkdown(root, files, 0);
+  files.sort((a, b) => b.modified - a.modified);
+
+  return c.json({ root, files });
+});
+
+apiRoutes.get("/files/read", (c) => {
+  const queryPath = c.req.query("path");
+  if (!queryPath) return c.json({ error: "path required" }, 400);
+
+  const filePath = expandPath(queryPath);
+
+  if (!isMarkdownPath(filePath)) {
+    return c.json({ error: "Only markdown files are readable" }, 400);
+  }
+
+  if (!existsSync(filePath)) {
+    return c.json({ error: "File not found", path: filePath }, 404);
+  }
+
+  const stat = statSync(filePath);
+  if (!stat.isFile()) {
+    return c.json({ error: "Not a file" }, 400);
+  }
+  if (stat.size > MD_MAX_BYTES) {
+    return c.json({ error: `File too large (>${MD_MAX_BYTES} bytes)` }, 400);
+  }
+
+  try {
+    const content = readFileSync(filePath, "utf8");
+    return c.json({
+      path: filePath,
+      name: filePath.split("/").pop() || filePath,
+      size: stat.size,
+      modified: stat.mtimeMs,
+      content,
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message || "Read failed" }, 500);
   }
 });
 
@@ -402,7 +511,9 @@ apiRoutes.post("/status-update", async (c) => {
       }
 
       session.permissionTimeout = setTimeout(() => {
-        if (session!.preToolTime) {
+        // Only force waiting_input if we're still in a state where it makes sense
+        // (pre_tool was set and status hasn't already moved past it)
+        if (session!.preToolTime && (session!.status === "running" || session!.status === "tool_calling")) {
           session!.status = "waiting_input";
           for (const client of session!.clients) {
             if (client.readyState === 1) {
@@ -416,7 +527,7 @@ apiRoutes.post("/status-update", async (c) => {
             }
           }
         }
-      }, 2500);
+      }, 3500); // Increased from 2.5s to 3.5s — gives tools more time before flagging as stuck
     } else if (status === "post_tool") {
       effectiveStatus = "running";
       session.preToolTime = undefined;
@@ -436,9 +547,15 @@ apiRoutes.post("/status-update", async (c) => {
     }
 
     session.status = effectiveStatus;
-    session.pluginReportedStatus = true;
     session.lastPluginStatusTime = Date.now();
     session.lastHookEvent = hookEvent;
+    // Keep pluginReportedStatus true while plugin is actively reporting
+    // but reset it on terminal states so auto-detect can recover if plugin dies
+    if (effectiveStatus === "idle" || effectiveStatus === "disconnected" || effectiveStatus === "error") {
+      session.pluginReportedStatus = false;
+    } else {
+      session.pluginReportedStatus = true;
+    }
 
     for (const client of session.clients) {
       if (client.readyState === 1) {
@@ -491,6 +608,86 @@ apiRoutes.post("/sessions/:sessionId/upload-image", async (c) => {
 
   log(`[upload] Saved image for ${sessionId}: ${filePath}`);
   return c.json({ success: true, filePath });
+});
+
+// General file upload — saves any file type into the session's cwd under
+// .openui-uploads/, then types the resulting paths into the PTY so the agent
+// can reference them. Accepts one or more files under the field name "files".
+const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 50MB per file
+const UPLOAD_MAX_FILES = 20;
+const UPLOAD_BLOCKED_EXTS = new Set(["exe", "dmg", "app", "pkg", "msi"]);
+
+apiRoutes.post("/sessions/:sessionId/upload", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+
+  const body = await c.req.parseBody({ all: true });
+  const raw = body["files"];
+  const files: File[] = Array.isArray(raw)
+    ? raw.filter((f): f is File => f instanceof File)
+    : raw instanceof File
+      ? [raw]
+      : [];
+
+  if (files.length === 0) {
+    return c.json({ error: "No files provided" }, 400);
+  }
+  if (files.length > UPLOAD_MAX_FILES) {
+    return c.json({ error: `Too many files (max ${UPLOAD_MAX_FILES})` }, 400);
+  }
+
+  const uploadDir = join(session.cwd, ".openui-uploads");
+  if (!existsSync(uploadDir)) {
+    mkdirSync(uploadDir, { recursive: true });
+  }
+
+  const saved: string[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+
+  for (const file of files) {
+    if (file.size > UPLOAD_MAX_BYTES) {
+      skipped.push({ name: file.name, reason: "too large (>50MB)" });
+      continue;
+    }
+
+    const rawName = file.name || `file-${Date.now()}`;
+    const ext = rawName.includes(".") ? rawName.split(".").pop()!.toLowerCase() : "";
+    if (ext && UPLOAD_BLOCKED_EXTS.has(ext)) {
+      skipped.push({ name: rawName, reason: `blocked type (.${ext})` });
+      continue;
+    }
+
+    // Sanitize: strip path components and collapse anything that isn't safe.
+    // Collision-proof by prefixing a short timestamp.
+    const basename = rawName.replace(/^.*[\\/]/, "").replace(/[^a-zA-Z0-9._-]/g, "_") || "file";
+    const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${basename}`;
+    const filePath = join(uploadDir, safeName);
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      writeFileSync(filePath, Buffer.from(arrayBuffer));
+      saved.push(filePath);
+    } catch (e: any) {
+      skipped.push({ name: rawName, reason: e.message || "write failed" });
+    }
+  }
+
+  // Inject the saved paths into the PTY so the agent sees them as an attachment.
+  // No trailing Enter — the user types their question and submits themselves.
+  if (saved.length > 0 && session.pty) {
+    const injection = saved.map((p) => `${p} `).join("");
+    session.pty.write(injection);
+    session.lastInputTime = Date.now();
+  }
+
+  log(`[upload] Saved ${saved.length}/${files.length} files for ${sessionId} in ${uploadDir}`);
+  return c.json({
+    success: saved.length > 0,
+    saved,
+    skipped,
+    uploadDir,
+  });
 });
 
 // Categories

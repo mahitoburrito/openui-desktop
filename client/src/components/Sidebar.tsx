@@ -16,11 +16,14 @@ import {
   Brain,
   Wand2,
   GitBranch,
-  ImagePlus,
+  Paperclip,
   Loader2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
+import { InPaneMarkdown } from "./InPaneMarkdown";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   running: { label: "Running", color: "#22C55E" },
@@ -69,13 +72,29 @@ export function Sidebar() {
   const [editColor, setEditColor] = useState("");
   const [editIcon, setEditIcon] = useState("");
   const [terminalKey, setTerminalKey] = useState(0);
+  const [openedFile, setOpenedFile] = useState<string | null>(null);
 
-  // Image attachment state
-  const [isDraggingImage, setIsDraggingImage] = useState(false);
+  // File attachment state
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [lastImagePath, setLastImagePath] = useState<string | null>(null);
+  const [lastUpload, setLastUpload] = useState<{
+    paths: string[];
+    skippedCount: number;
+    error?: string;
+  } | null>(null);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const sendInputRef = useRef<((text: string) => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const copyToClipboard = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedPath(text);
+      setTimeout(() => setCopiedPath((p) => (p === text ? null : p)), 1500);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(512);
@@ -116,7 +135,8 @@ export function Sidebar() {
       setEditIcon(typeof nodeIcon === 'string' ? nodeIcon : "cpu");
     }
     setIsEditing(false);
-    setLastImagePath(null);
+    setLastUpload(null);
+    setOpenedFile(null);
     sendInputRef.current = null;
     // Force terminal recreation when session changes
     setTerminalKey(k => k + 1);
@@ -139,59 +159,67 @@ export function Sidebar() {
     sendInputRef.current = sendInput;
   }, []);
 
-  const handleImageUpload = useCallback(async (file: File) => {
-    if (!session) return;
-
-    const allowedTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
-    if (!allowedTypes.includes(file.type)) return;
+  const handleFileUpload = useCallback(async (files: File[]) => {
+    if (!session || files.length === 0) return;
 
     setIsUploading(true);
-    setLastImagePath(null);
+    setLastUpload(null);
 
     try {
       const formData = new FormData();
-      formData.append("image", file);
+      for (const file of files) {
+        formData.append("files", file);
+      }
 
-      const res = await fetch(`/api/sessions/${session.sessionId}/upload-image`, {
+      const res = await fetch(`/api/sessions/${session.sessionId}/upload`, {
         method: "POST",
         body: formData,
       });
 
       if (res.ok) {
-        const { filePath } = await res.json();
-        setLastImagePath(filePath);
-        // Type the file path into the terminal so the agent can reference it
-        if (sendInputRef.current) {
-          sendInputRef.current(filePath);
+        const body = await res.json();
+        const saved: string[] = Array.isArray(body.saved) ? body.saved : [];
+        const skippedCount = Array.isArray(body.skipped) ? body.skipped.length : 0;
+        if (saved.length > 0 || skippedCount > 0) {
+          setLastUpload({ paths: saved, skippedCount });
+          // If a single file was saved, auto-copy its path so the user can
+          // paste it elsewhere immediately.
+          if (saved.length === 1) {
+            void copyToClipboard(saved[0]);
+          }
         }
+      } else {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        setLastUpload({ paths: [], skippedCount: 0, error: err.error || "Upload failed" });
       }
     } catch (e) {
-      console.error("Image upload failed:", e);
+      console.error("File upload failed:", e);
+      setLastUpload({ paths: [], skippedCount: 0, error: "Upload failed" });
     } finally {
       setIsUploading(false);
     }
-  }, [session]);
+  }, [session, copyToClipboard]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    setIsDraggingImage(false);
-    const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith("image/")) {
-      handleImageUpload(file);
+    setIsDraggingFile(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handleFileUpload(files);
     }
-  }, [handleImageUpload]);
+  }, [handleFileUpload]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.types.includes("Files")) {
-      setIsDraggingImage(true);
+      setIsDraggingFile(true);
     }
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     // Only hide if we're leaving the container (not entering a child)
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setIsDraggingImage(false);
+      setIsDraggingFile(false);
     }
   }, []);
 
@@ -436,22 +464,22 @@ export function Sidebar() {
                 <span className="text-xs text-zinc-500">Terminal</span>
               </div>
               <div className="flex items-center gap-2">
-                {/* Image attach button */}
+                {/* File attach button */}
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="flex items-center gap-1 px-1.5 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-active transition-colors"
-                  title="Attach image"
+                  title="Attach files"
                 >
-                  <ImagePlus className="w-3.5 h-3.5" />
+                  <Paperclip className="w-3.5 h-3.5" />
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+                  multiple
                   className="hidden"
                   onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleImageUpload(file);
+                    const files = Array.from(e.target.files || []);
+                    if (files.length > 0) handleFileUpload(files);
                     e.target.value = "";
                   }}
                 />
@@ -463,48 +491,145 @@ export function Sidebar() {
               </div>
             </div>
 
-            {/* Image upload status bar */}
-            {(isUploading || lastImagePath) && (
-              <div className="flex-shrink-0 px-3 py-1.5 border-b border-border bg-[#111] flex items-center gap-2">
+            {/* File upload status bar */}
+            {(isUploading || lastUpload) && (
+              <div className="flex-shrink-0 border-b border-border bg-[#111]">
                 {isUploading ? (
-                  <>
+                  <div className="px-3 py-1.5 flex items-center gap-2">
                     <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
-                    <span className="text-[10px] text-blue-400">Uploading image...</span>
-                  </>
-                ) : lastImagePath ? (
-                  <>
-                    <ImagePlus className="w-3 h-3 text-green-400" />
-                    <span className="text-[10px] text-green-400 truncate flex-1 font-mono">
-                      {lastImagePath.split("/").pop()}
+                    <span className="text-[10px] text-blue-400">Uploading files...</span>
+                  </div>
+                ) : lastUpload?.error ? (
+                  <div className="px-3 py-1.5 flex items-center gap-2">
+                    <Paperclip className="w-3 h-3 text-red-400 flex-shrink-0" />
+                    <span className="text-[10px] text-red-400 truncate flex-1">
+                      {lastUpload.error}
                     </span>
                     <button
-                      onClick={() => setLastImagePath(null)}
+                      onClick={() => setLastUpload(null)}
                       className="text-zinc-500 hover:text-zinc-300"
                     >
                       <X className="w-3 h-3" />
                     </button>
-                  </>
+                  </div>
+                ) : lastUpload && lastUpload.paths.length > 0 ? (
+                  <div className="py-1.5">
+                    {/* Header row */}
+                    <div className="px-3 pb-1 flex items-center gap-2">
+                      <Paperclip className="w-3 h-3 text-green-400 flex-shrink-0" />
+                      <span className="text-[10px] text-green-400 flex-1">
+                        Saved {lastUpload.paths.length} file
+                        {lastUpload.paths.length === 1 ? "" : "s"}
+                        {lastUpload.skippedCount > 0
+                          ? ` · ${lastUpload.skippedCount} skipped`
+                          : ""}
+                        {lastUpload.paths.length === 1 ? " · path copied" : ""}
+                      </span>
+                      {lastUpload.paths.length > 1 && (
+                        <button
+                          onClick={() =>
+                            copyToClipboard(lastUpload.paths.join(" "))
+                          }
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-zinc-400 hover:text-white hover:bg-surface-active transition-colors"
+                          title="Copy all paths"
+                        >
+                          {copiedPath === lastUpload.paths.join(" ") ? (
+                            <>
+                              <Check className="w-2.5 h-2.5 text-green-400" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-2.5 h-2.5" />
+                              Copy all
+                            </>
+                          )}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setLastUpload(null)}
+                        className="text-zinc-500 hover:text-zinc-300"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                    {/* Path list */}
+                    <div className="max-h-32 overflow-y-auto">
+                      {lastUpload.paths.map((p) => {
+                        const isCopied = copiedPath === p;
+                        return (
+                          <div
+                            key={p}
+                            className="px-3 py-0.5 flex items-center gap-2 group hover:bg-surface-active/40"
+                          >
+                            <span
+                              className="text-[10px] font-mono text-zinc-300 truncate flex-1"
+                              title={p}
+                            >
+                              {p}
+                            </span>
+                            <button
+                              onClick={() => copyToClipboard(p)}
+                              className="flex-shrink-0 w-5 h-5 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-200 opacity-0 group-hover:opacity-100 transition-opacity"
+                              title="Copy path"
+                            >
+                              {isCopied ? (
+                                <Check className="w-3 h-3 text-green-400" />
+                              ) : (
+                                <Copy className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : lastUpload && lastUpload.skippedCount > 0 ? (
+                  <div className="px-3 py-1.5 flex items-center gap-2">
+                    <Paperclip className="w-3 h-3 text-yellow-400 flex-shrink-0" />
+                    <span className="text-[10px] text-yellow-400 truncate flex-1">
+                      Skipped {lastUpload.skippedCount} file
+                      {lastUpload.skippedCount === 1 ? "" : "s"}
+                    </span>
+                    <button
+                      onClick={() => setLastUpload(null)}
+                      className="text-zinc-500 hover:text-zinc-300"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
                 ) : null}
               </div>
             )}
 
-            <div className="flex-1 min-h-0 bg-[#0d0d0d]">
+            <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
               <Terminal
                 key={`${session.sessionId}-${terminalKey}`}
                 sessionId={session.sessionId}
                 color={displayColor}
                 nodeId={selectedNodeId!}
+                cwd={session.cwd}
+                onOpenFile={(p) => setOpenedFile(p)}
                 onReady={handleTerminalReady}
               />
+              <AnimatePresence>
+                {openedFile && (
+                  <InPaneMarkdown
+                    key={openedFile}
+                    path={openedFile}
+                    onClose={() => setOpenedFile(null)}
+                  />
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Drag overlay */}
-            {isDraggingImage && (
+            {isDraggingFile && (
               <div className="absolute inset-0 z-20 flex items-center justify-center bg-blue-500/10 border-2 border-dashed border-blue-500/50 rounded-lg backdrop-blur-sm">
                 <div className="text-center">
-                  <ImagePlus className="w-8 h-8 text-blue-400 mx-auto mb-2" />
-                  <p className="text-sm text-blue-300 font-medium">Drop image here</p>
-                  <p className="text-[10px] text-blue-400/70 mt-1">PNG, JPG, GIF, WebP, SVG</p>
+                  <Paperclip className="w-8 h-8 text-blue-400 mx-auto mb-2" />
+                  <p className="text-sm text-blue-300 font-medium">Drop files here</p>
+                  <p className="text-[10px] text-blue-400/70 mt-1">Any type · 50MB each · up to 20</p>
                 </div>
               </div>
             )}

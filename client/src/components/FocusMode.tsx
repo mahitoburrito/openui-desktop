@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, ReactNode } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
   Minimize2,
@@ -24,6 +24,7 @@ import {
 import { useStore, AgentStatus } from "../stores/useStore";
 import { Terminal } from "./Terminal";
 import { ResizableSplit } from "./ResizableSplit";
+import { InPaneMarkdown } from "./InPaneMarkdown";
 
 const iconMap: Record<string, any> = {
   sparkles: Sparkles,
@@ -74,6 +75,11 @@ export function FocusMode() {
   const [activePane, setActivePane] = useState<string | null>(null);
   const [maximizedPane, setMaximizedPane] = useState<string | null>(null);
   const [layout, setLayout] = useState<SplitLayout>("auto");
+  const [openedFiles, setOpenedFiles] = useState<Record<string, string | null>>({});
+
+  const setOpenedFile = (nodeId: string, path: string | null) => {
+    setOpenedFiles((prev) => ({ ...prev, [nodeId]: path }));
+  };
 
   const focusedSessions = useMemo(
     () =>
@@ -289,13 +295,24 @@ export function FocusMode() {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 bg-[#0d0d0d]">
+        <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
           <Terminal
             key={`focus-${session.sessionId}`}
             sessionId={session.sessionId}
             color={displayColor}
             nodeId={nodeId}
+            cwd={session.cwd}
+            onOpenFile={(p) => setOpenedFile(nodeId, p)}
           />
+          <AnimatePresence>
+            {openedFiles[nodeId] && (
+              <InPaneMarkdown
+                key={openedFiles[nodeId]!}
+                path={openedFiles[nodeId]!}
+                onClose={() => setOpenedFile(nodeId, null)}
+              />
+            )}
+          </AnimatePresence>
         </div>
       </div>
     );

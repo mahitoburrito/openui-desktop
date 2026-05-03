@@ -208,20 +208,52 @@ export async function startServer(): Promise<number> {
       });
     });
 
-    // Periodic state save
+    // Periodic state save — every 10s for crash resilience
     setInterval(() => {
       saveState(sessions);
-    }, 30000);
+    }, 10000);
+
+    // Cleanup helper
+    const emergencySave = () => {
+      try {
+        saveState(sessions);
+      } catch (e) {
+        console.error("[server] Emergency save failed:", e);
+      }
+    };
 
     // Cleanup on exit
     process.on("SIGINT", () => {
       log("[server] Saving state before exit...");
-      saveState(sessions);
+      emergencySave();
       for (const [, session] of sessions) {
         if (session.pty) session.pty.kill();
         if (session.stateTrackerPty) session.stateTrackerPty.kill();
       }
       process.exit(0);
+    });
+
+    // Crash-resilient: save on SIGTERM, uncaughtException, unhandledRejection
+    process.on("SIGTERM", () => {
+      log("[server] SIGTERM received, saving state...");
+      emergencySave();
+      process.exit(0);
+    });
+
+    process.on("SIGHUP", () => {
+      log("[server] SIGHUP received, saving state...");
+      emergencySave();
+    });
+
+    process.on("uncaughtException", (err) => {
+      console.error("[server] Uncaught exception, saving state:", err);
+      emergencySave();
+      process.exit(1);
+    });
+
+    process.on("unhandledRejection", (reason) => {
+      console.error("[server] Unhandled rejection, saving state:", reason);
+      emergencySave();
     });
 
     resolve(actualPort);
