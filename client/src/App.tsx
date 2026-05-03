@@ -27,6 +27,8 @@ import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
 import { usePRBEIPC } from "./hooks/usePRBEIPC";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
+import { destroyCachedTerminal } from "./components/Terminal";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -62,6 +64,9 @@ function AppContent() {
 
   // Initialize keyboard shortcuts
   useKeyboardShortcuts();
+
+  // Desktop notifications when sessions need attention and window is unfocused
+  useDesktopNotifications();
 
   // Sync nodes with store
   useEffect(() => {
@@ -271,9 +276,10 @@ function AppContent() {
           // Let React Flow process this removal
           confirmedRemoves.push(change);
 
-          // Soft-delete on server
+          // Soft-delete on server and clean up cached terminal
           if (sessionId) {
             fetch(`/api/sessions/${sessionId}/soft-delete`, { method: "POST" }).catch(console.error);
+            destroyCachedTerminal(sessionId);
           }
 
           // Clean up store

@@ -42,8 +42,9 @@ const statusConfig: Record<AgentStatus, { label: string; color: string; sortPrio
   running: { label: "Working", color: "#22C55E", sortPriority: 1 },
   tool_calling: { label: "Working", color: "#22C55E", sortPriority: 2 },
   error: { label: "Error", color: "#EF4444", sortPriority: 3 },
-  idle: { label: "Idle", color: "#FBBF24", sortPriority: 4 },
-  disconnected: { label: "Offline", color: "#6B7280", sortPriority: 5 },
+  creating: { label: "Creating...", color: "#818CF8", sortPriority: 4 },
+  idle: { label: "Idle", color: "#FBBF24", sortPriority: 5 },
+  disconnected: { label: "Offline", color: "#6B7280", sortPriority: 6 },
 };
 
 const filterOptions: { value: StatusFilter; label: string; color?: string }[] = [

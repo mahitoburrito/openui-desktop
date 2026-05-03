@@ -38,7 +38,8 @@ function loadEnvFile(): Record<string, string> {
       return vars;
     }
   } catch (e) {
-    console.error("Failed to load .env file:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_6w4l5d] Failed to load .env file:", e);
   }
   return {};
 }
@@ -64,7 +65,8 @@ function saveEnvFile(apiKey: string): void {
 
     writeFileSync(getEnvFile(), content);
   } catch (e) {
-    console.error("Failed to save .env file:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_wPblkc] Failed to save .env file:", e);
   }
 }
 
@@ -81,9 +83,11 @@ export function loadConfig(): LinearConfig {
       config.defaultBaseBranch = fileConfig.defaultBaseBranch;
       config.createWorktree = fileConfig.createWorktree;
       config.ticketPromptTemplate = fileConfig.ticketPromptTemplate;
+      config.autoCareful = fileConfig.autoCareful;
     }
   } catch (e) {
-    console.error("Failed to load config:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_jYMqlV] Failed to load config:", e);
   }
 
   return config;
@@ -104,10 +108,12 @@ export function saveConfig(config: LinearConfig): void {
       defaultBaseBranch: config.defaultBaseBranch,
       createWorktree: config.createWorktree,
       ticketPromptTemplate: config.ticketPromptTemplate,
+      autoCareful: config.autoCareful,
     };
     writeFileSync(getConfigFile(), JSON.stringify(fileConfig, null, 2));
   } catch (e) {
-    console.error("Failed to save config:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_MrXr0w] Failed to save config:", e);
   }
 }
 

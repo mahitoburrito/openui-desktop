@@ -172,7 +172,6 @@ export function NewSessionModal({
   const [customName, setCustomName] = useState("");
   const [commandArgs, setCommandArgs] = useState("");
   const [count, setCount] = useState(1);
-  const [isCreating, setIsCreating] = useState(false);
 
   // Tab state
   const [activeTab, setActiveTab] = useState<TabType>("blank");
@@ -216,10 +215,11 @@ export function NewSessionModal({
   useEffect(() => {
     if (open && !initialized) {
       if (existingSession) {
-        // Pre-fill from existing session
+        // Pre-fill from existing session — use originalCwd (mother repo) when available
+        // to avoid pre-filling the worktree path as the working directory
         const agent = agents.find((a) => a.id === existingSession.agentId);
         setSelectedAgent(agent || null);
-        setCwd(existingSession.cwd);
+        setCwd(existingSession.originalCwd || existingSession.cwd);
         setCustomName(existingSession.customName || "");
         setCommandArgs(agent?.id === "claude" ? "--dangerously-skip-permissions" : "");
         setCount(1);
@@ -244,8 +244,8 @@ export function NewSessionModal({
       setMultiRepoMode('main');
       setInitialized(true);
 
-      // Scan for repos in the effective working directory
-      const effectiveCwd = existingSession?.cwd || launchCwd;
+      // Scan for repos in the effective working directory — prefer originalCwd to avoid scanning worktree dirs
+      const effectiveCwd = existingSession?.originalCwd || existingSession?.cwd || launchCwd;
       if (effectiveCwd) {
         scanForRepos(effectiveCwd);
       }
@@ -421,101 +421,34 @@ export function NewSessionModal({
     onClose();
   };
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
     if (!selectedAgent) return;
 
-    setIsCreating(true);
+    const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
+    const fullCommand = selectedAgent.command
+      ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
+      : commandArgs;
 
-    try {
-      const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
-      const fullCommand = selectedAgent.command
-        ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
-        : commandArgs;
+    const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
+    const isMultiRepo = createWorktree && selectedReposList.length > 1;
+    const effectiveWorkingDir = workingDir;
+    const multiRepoParams = isMultiRepo ? {
+      multiRepoMode,
+      additionalRepos: selectedReposList
+        .map(r => ({ name: r.name, path: r.path, defaultBranch: r.defaultBranch })),
+    } : {};
 
-      // Build multi-repo params if applicable
-      const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
-      const isMultiRepo = createWorktree && selectedReposList.length > 1;
-      // Keep the user's chosen directory — worktrees are created from child repos
-      // but the session starts where the user pointed it
-      const effectiveWorkingDir = workingDir;
-      const multiRepoParams = isMultiRepo ? {
-        multiRepoMode,
-        additionalRepos: selectedReposList
-          .map(r => ({ name: r.name, path: r.path, defaultBranch: r.defaultBranch })),
-      } : {};
+    // Close modal immediately so the UI stays responsive
+    handleClose();
 
-      // If replacing existing session, delete it first
-      if (isReplacing && existingSession && existingNodeId) {
-        await fetch(`/api/sessions/${existingSession.sessionId}`, { method: "DELETE" });
+    if (isReplacing && existingSession && existingNodeId) {
+      // Show creating state on the existing node
+      updateSession(existingNodeId, { status: "creating" });
 
-        // Create the replacement session
-        const res = await fetch("/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            agentId: selectedAgent.id,
-            agentName: selectedAgent.name,
-            command: fullCommand,
-            cwd: effectiveWorkingDir,
-            nodeId: existingNodeId,
-            customName: customName || existingSession.customName,
-            customColor: existingSession.customColor,
-            // Worktree params (any tab)
-            ...(createWorktree && branchName && {
-              branchName,
-              baseBranch,
-              createWorktree,
-              ...multiRepoParams,
-            }),
-            // Ticket info if selected (Linear or GitHub)
-            ...(selectedTicket && {
-              ticketId: selectedTicket.identifier,
-              ticketTitle: selectedTicket.title,
-              ticketUrl: selectedTicket.url,
-            }),
-            ...(selectedGithubIssue && {
-              ticketId: `#${selectedGithubIssue.number}`,
-              ticketTitle: selectedGithubIssue.title,
-              ticketUrl: selectedGithubIssue.url,
-            }),
-          }),
-        });
-
-        if (res.ok) {
-          const { sessionId: newSessionId, gitBranch, cwd: newCwd } = await res.json();
-          updateSession(existingNodeId, {
-            sessionId: newSessionId,
-            agentId: selectedAgent.id,
-            agentName: selectedAgent.name,
-            command: fullCommand,
-            cwd: newCwd || effectiveWorkingDir,
-            status: "idle",
-            isRestored: false,
-            ticketId: selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined),
-            ticketTitle: selectedTicket?.title || selectedGithubIssue?.title,
-            gitBranch: gitBranch || branchName || undefined,
-          });
-        }
-      } else {
-        // Creating new agent(s)
-        // Get the center of the current viewport
-        const viewport = reactFlowInstance.getViewport();
-        const viewportBounds = document.querySelector('.react-flow')?.getBoundingClientRect();
-        const viewportWidth = viewportBounds?.width || window.innerWidth;
-        const viewportHeight = viewportBounds?.height || window.innerHeight;
-
-        // Convert viewport center to flow coordinates
-        const centerX = (-viewport.x + viewportWidth / 2) / viewport.zoom;
-        const centerY = (-viewport.y + viewportHeight / 2) / viewport.zoom;
-
-        // Find free positions near viewport center for all new agents
-        const freePositions = findFreePosition(centerX, centerY, nodes, count);
-
-        for (let i = 0; i < count; i++) {
-          const nodeId = `node-${Date.now()}-${i}`;
-          const agentName = count > 1
-            ? `${customName || selectedAgent.name} ${i + 1}`
-            : customName || selectedAgent.name;
+      // Fire replacement in the background
+      (async () => {
+        try {
+          await fetch(`/api/sessions/${existingSession.sessionId}`, { method: "DELETE" });
 
           const res = await fetch("/api/sessions", {
             method: "POST",
@@ -525,22 +458,21 @@ export function NewSessionModal({
               agentName: selectedAgent.name,
               command: fullCommand,
               cwd: effectiveWorkingDir,
-              nodeId,
-              customName: count > 1 ? agentName : customName || undefined,
-              // Worktree params (any tab, only for first agent)
-              ...(i === 0 && createWorktree && branchName && {
+              nodeId: existingNodeId,
+              customName: customName || existingSession.customName,
+              customColor: existingSession.customColor,
+              ...(createWorktree && branchName && {
                 branchName,
                 baseBranch,
                 createWorktree,
                 ...multiRepoParams,
               }),
-              // Ticket info if selected (only for first agent)
-              ...(i === 0 && selectedTicket && {
+              ...(selectedTicket && {
                 ticketId: selectedTicket.identifier,
                 ticketTitle: selectedTicket.title,
                 ticketUrl: selectedTicket.url,
               }),
-              ...(i === 0 && selectedGithubIssue && {
+              ...(selectedGithubIssue && {
                 ticketId: `#${selectedGithubIssue.number}`,
                 ticketTitle: selectedGithubIssue.title,
                 ticketUrl: selectedGithubIssue.url,
@@ -548,46 +480,129 @@ export function NewSessionModal({
             }),
           });
 
-          const { sessionId, gitBranch, cwd: newCwd } = await res.json();
-
-          const { x, y } = freePositions[i];
-
-          addNode({
-            id: nodeId,
-            type: "agent",
-            position: { x, y },
-            data: {
-              label: agentName,
+          if (res.ok) {
+            const { sessionId: newSessionId, gitBranch, cwd: newCwd } = await res.json();
+            updateSession(existingNodeId, {
+              sessionId: newSessionId,
               agentId: selectedAgent.id,
-              color: selectedAgent.color,
-              icon: selectedAgent.icon,
-              sessionId,
-            },
-          });
-
-          addSession(nodeId, {
-            id: nodeId,
-            sessionId,
-            agentId: selectedAgent.id,
-            agentName: selectedAgent.name,
-            command: fullCommand,
-            color: selectedAgent.color,
-            createdAt: new Date().toISOString(),
-            cwd: newCwd || effectiveWorkingDir,
-            gitBranch: gitBranch || branchName || undefined,
-            status: "idle",
-            customName: count > 1 ? agentName : customName || undefined,
-            ticketId: i === 0 ? (selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined)) : undefined,
-            ticketTitle: i === 0 ? (selectedTicket?.title || selectedGithubIssue?.title) : undefined,
-          });
+              agentName: selectedAgent.name,
+              command: fullCommand,
+              cwd: newCwd || effectiveWorkingDir,
+              status: "idle",
+              isRestored: false,
+              ticketId: selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined),
+              ticketTitle: selectedTicket?.title || selectedGithubIssue?.title,
+              gitBranch: gitBranch || branchName || undefined,
+            });
+          } else {
+            updateSession(existingNodeId, { status: "error" });
+          }
+        } catch (error) {
+          console.error("Failed to create session:", error);
+          updateSession(existingNodeId, { status: "error" });
         }
-      }
+      })();
+    } else {
+      // Creating new agent(s) — add nodes immediately with "creating" status
+      const viewport = reactFlowInstance.getViewport();
+      const viewportBounds = document.querySelector('.react-flow')?.getBoundingClientRect();
+      const viewportWidth = viewportBounds?.width || window.innerWidth;
+      const viewportHeight = viewportBounds?.height || window.innerHeight;
 
-      handleClose();
-    } catch (error) {
-      console.error("Failed to create session:", error);
-    } finally {
-      setIsCreating(false);
+      const centerX = (-viewport.x + viewportWidth / 2) / viewport.zoom;
+      const centerY = (-viewport.y + viewportHeight / 2) / viewport.zoom;
+
+      const freePositions = findFreePosition(centerX, centerY, nodes, count);
+
+      for (let i = 0; i < count; i++) {
+        const nodeId = `node-${Date.now()}-${i}`;
+        const agentName = count > 1
+          ? `${customName || selectedAgent.name} ${i + 1}`
+          : customName || selectedAgent.name;
+        const placeholderSessionId = `pending-${nodeId}`;
+
+        const { x, y } = freePositions[i];
+
+        // Add node and session immediately with "creating" status
+        addNode({
+          id: nodeId,
+          type: "agent",
+          position: { x, y },
+          data: {
+            label: agentName,
+            agentId: selectedAgent.id,
+            color: selectedAgent.color,
+            icon: selectedAgent.icon,
+            sessionId: placeholderSessionId,
+          },
+        });
+
+        addSession(nodeId, {
+          id: nodeId,
+          sessionId: placeholderSessionId,
+          agentId: selectedAgent.id,
+          agentName: selectedAgent.name,
+          command: fullCommand,
+          color: selectedAgent.color,
+          createdAt: new Date().toISOString(),
+          cwd: effectiveWorkingDir || "",
+          gitBranch: branchName || undefined,
+          status: "creating",
+          customName: count > 1 ? agentName : customName || undefined,
+          ticketId: i === 0 ? (selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined)) : undefined,
+          ticketTitle: i === 0 ? (selectedTicket?.title || selectedGithubIssue?.title) : undefined,
+        });
+
+        // Fire the session creation in the background
+        const agentIndex = i;
+        (async () => {
+          try {
+            const res = await fetch("/api/sessions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                agentId: selectedAgent.id,
+                agentName: selectedAgent.name,
+                command: fullCommand,
+                cwd: effectiveWorkingDir,
+                nodeId,
+                customName: count > 1 ? agentName : customName || undefined,
+                ...(agentIndex === 0 && createWorktree && branchName && {
+                  branchName,
+                  baseBranch,
+                  createWorktree,
+                  ...multiRepoParams,
+                }),
+                ...(agentIndex === 0 && selectedTicket && {
+                  ticketId: selectedTicket.identifier,
+                  ticketTitle: selectedTicket.title,
+                  ticketUrl: selectedTicket.url,
+                }),
+                ...(agentIndex === 0 && selectedGithubIssue && {
+                  ticketId: `#${selectedGithubIssue.number}`,
+                  ticketTitle: selectedGithubIssue.title,
+                  ticketUrl: selectedGithubIssue.url,
+                }),
+              }),
+            });
+
+            if (res.ok) {
+              const { sessionId, gitBranch, cwd: newCwd } = await res.json();
+              updateSession(nodeId, {
+                sessionId,
+                cwd: newCwd || effectiveWorkingDir,
+                gitBranch: gitBranch || branchName || undefined,
+                status: "idle",
+              });
+            } else {
+              updateSession(nodeId, { status: "error" });
+            }
+          } catch (error) {
+            console.error("Failed to create session:", error);
+            updateSession(nodeId, { status: "error" });
+          }
+        })();
+      }
     }
   };
 
@@ -884,10 +899,22 @@ export function NewSessionModal({
                           {createWorktree && detectedRepos.length > 1 && (
                             <div className="rounded-md border border-indigo-500/30 bg-indigo-500/5 p-3 space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs text-indigo-300 font-medium">
-                                  Repos in {cwd.split("/").pop() || cwd}
-                                </p>
-                                {scanningRepos && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />}
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-indigo-300 font-medium">
+                                    Repos in {cwd.split("/").pop() || cwd}
+                                  </p>
+                                  {scanningRepos && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allSelected = detectedRepos.every(r => selectedRepoPaths.has(r.path));
+                                    setSelectedRepoPaths(allSelected ? new Set() : new Set(detectedRepos.map(r => r.path)));
+                                  }}
+                                  className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                                >
+                                  {detectedRepos.every(r => selectedRepoPaths.has(r.path)) ? "Deselect all" : "Select all"}
+                                </button>
                               </div>
 
                               <div className="space-y-1.5">
@@ -1110,10 +1137,22 @@ export function NewSessionModal({
                           {createWorktree && detectedRepos.length > 1 && (
                             <div className="rounded-md border border-zinc-600/30 bg-zinc-700/20 p-3 space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs text-zinc-300 font-medium">
-                                  Repos in {cwd.split("/").pop() || cwd}
-                                </p>
-                                {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-zinc-300 font-medium">
+                                    Repos in {cwd.split("/").pop() || cwd}
+                                  </p>
+                                  {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allSelected = detectedRepos.every(r => selectedRepoPaths.has(r.path));
+                                    setSelectedRepoPaths(allSelected ? new Set() : new Set(detectedRepos.map(r => r.path)));
+                                  }}
+                                  className="text-[10px] text-zinc-400 hover:text-zinc-300 transition-colors"
+                                >
+                                  {detectedRepos.every(r => selectedRepoPaths.has(r.path)) ? "Deselect all" : "Select all"}
+                                </button>
                               </div>
 
                               <div className="space-y-1.5">
@@ -1404,10 +1443,22 @@ export function NewSessionModal({
                           {detectedRepos.length > 1 && (
                             <div className="rounded-md border border-zinc-600/30 bg-zinc-700/20 p-3 space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs text-zinc-300 font-medium">
-                                  Repos in {(cwd || launchCwd || "").split("/").pop() || cwd || launchCwd}
-                                </p>
-                                {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-zinc-300 font-medium">
+                                    Repos in {(cwd || launchCwd || "").split("/").pop() || cwd || launchCwd}
+                                  </p>
+                                  {scanningRepos && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin" />}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const allSelected = detectedRepos.every(r => selectedRepoPaths.has(r.path));
+                                    setSelectedRepoPaths(allSelected ? new Set() : new Set(detectedRepos.map(r => r.path)));
+                                  }}
+                                  className="text-[10px] text-zinc-400 hover:text-zinc-300 transition-colors"
+                                >
+                                  {detectedRepos.every(r => selectedRepoPaths.has(r.path)) ? "Deselect all" : "Select all"}
+                                </button>
                               </div>
 
                               <div className="space-y-1.5">
@@ -1450,12 +1501,10 @@ export function NewSessionModal({
                   </button>
                   <button
                     onClick={handleCreate}
-                    disabled={!selectedAgent || isCreating || (!selectedAgent?.command && !commandArgs) || (activeTab === "linear" && !selectedTicket) || (activeTab === "github" && !selectedGithubIssue)}
+                    disabled={!selectedAgent || (!selectedAgent?.command && !commandArgs) || (activeTab === "linear" && !selectedTicket) || (activeTab === "github" && !selectedGithubIssue)}
                     className="px-4 py-1.5 rounded-md text-sm font-medium text-canvas bg-white hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    {isCreating
-                      ? "Creating..."
-                      : isReplacing
+                    {isReplacing
                       ? "Start Session"
                       : count > 1
                       ? `Create ${count} Agents`

@@ -33,9 +33,9 @@
     "README.md"
   ],
   "scripts": {
-    "dev": "SERVER_PORT=6968 concurrently \"npm run dev:client\" \"npm run dev:electron\"",
-    "dev:client": "cd client && SERVER_PORT=${SERVER_PORT:-6968} npx vite",
-    "dev:electron": "tsc -p tsconfig.electron.json && PORT=${SERVER_PORT:-6968} electron .",
+    "dev": "VITE_PORT=5173 SERVER_PORT=6968 concurrently --kill-others \"npm run dev:client\" \"npm run dev:electron\"",
+    "dev:client": "cd client && SERVER_PORT=${SERVER_PORT:-6968} npx vite --port ${VITE_PORT:-5173} --strictPort",
+    "dev:electron": "tsc -p tsconfig.electron.json && VITE_PORT=${VITE_PORT:-5173} PORT=${SERVER_PORT:-6968} electron .",
     "build:client": "cd client && npx vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:client && npm run build:electron",
@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.8",
-    "@prbe.ai/electron-sdk": "^0.1.18",
+    "@prbe.ai/electron-sdk": "^0.1.19",
     "electron-updater": "^6.8.3",
     "hono": "^4.7.5",
     "node-pty": "^1.0.0",
@@ -57,8 +57,8 @@
     "@types/node": "^22.15.3",
     "@types/ws": "^8.5.14",
     "concurrently": "^9.1.2",
-    "electron": "^35.1.2",
-    "electron-builder": "^25.1.8",
+    "electron": "^41.1.1",
+    "electron-builder": "^26.8.1",
     "typescript": "^5.7.3"
   },
   "build": {

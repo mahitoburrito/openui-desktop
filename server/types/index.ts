@@ -69,6 +69,7 @@ export interface LinearConfig {
   defaultBaseBranch?: string;
   createWorktree?: boolean;
   ticketPromptTemplate?: string;
+  autoCareful?: boolean;
 }
 
 export interface PersistedNode {
@@ -78,6 +79,7 @@ export interface PersistedNode {
   agentName: string;
   command: string;
   cwd: string;
+  originalCwd?: string;
   createdAt: string;
   customName?: string;
   customColor?: string;

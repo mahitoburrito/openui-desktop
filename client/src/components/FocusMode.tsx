@@ -38,6 +38,7 @@ const iconMap: Record<string, any> = {
 };
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
+  creating: { label: "Creating...", color: "#818CF8" },
   running: { label: "Working", color: "#22C55E" },
   tool_calling: { label: "Working", color: "#22C55E" },
   waiting_input: { label: "Needs Input", color: "#F97316" },

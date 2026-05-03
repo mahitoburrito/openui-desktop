@@ -1,14 +1,20 @@
-import { execSync } from "child_process";
+import { exec as execCb } from "child_process";
+import { promisify } from "util";
 import * as pty from "node-pty";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session, DetectedRepo } from "../types";
 import { loadBuffer, loadState } from "./persistence";
 
+const execAsync = promisify(execCb);
+
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
+
+export const DEFAULT_PTY_COLS = 80;
+export const DEFAULT_PTY_ROWS = 24;
 
 // Get the OpenUI plugin directory path
 function getPluginDir(): string | null {
@@ -18,11 +24,25 @@ function getPluginDir(): string | null {
     return homePluginDir;
   }
 
-  // Check bundled plugin in app resources (for packaged Electron app)
-  const resourcesPlugin = join(__dirname, "..", "..", "claude-code-plugin");
-  const resourcesPluginJson = join(resourcesPlugin, ".claude-plugin", "plugin.json");
-  if (existsSync(resourcesPluginJson)) {
-    return resourcesPlugin;
+  // Packaged Electron app: extraResources copies plugin to process.resourcesPath
+  try {
+    const resourcesPlugin = join(process.resourcesPath, "claude-code-plugin");
+    const resourcesPluginJson = join(resourcesPlugin, ".claude-plugin", "plugin.json");
+    if (existsSync(resourcesPluginJson)) {
+      return resourcesPlugin;
+    }
+  } catch {
+    // process.resourcesPath may not exist outside Electron
+  }
+
+  // Dev mode / npm package: walk up from compiled output to find project root
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    dir = join(dir, "..");
+    const candidate = join(dir, "claude-code-plugin", ".claude-plugin", "plugin.json");
+    if (existsSync(candidate)) {
+      return join(dir, "claude-code-plugin");
+    }
   }
 
   return null;
@@ -49,42 +69,30 @@ export function injectPluginDir(command: string, agentId: string): string {
 }
 
 // Get git branch for a directory
-function getGitBranch(cwd: string): string | null {
+async function getGitBranch(cwd: string): Promise<string | null> {
   try {
-    const result = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return result.trim();
+    const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd });
+    return stdout.trim();
   } catch {
     return null;
   }
 }
 
 // Get git root directory
-function getGitRoot(cwd: string): string | null {
+async function getGitRoot(cwd: string): Promise<string | null> {
   try {
-    const result = execSync("git rev-parse --show-toplevel", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return result.trim();
+    const { stdout } = await execAsync("git rev-parse --show-toplevel", { cwd });
+    return stdout.trim();
   } catch {
     return null;
   }
 }
 
 // Get the main worktree (mother repo) path
-function getMainWorktree(cwd: string): string | null {
+async function getMainWorktree(cwd: string): Promise<string | null> {
   try {
-    const result = execSync("git worktree list --porcelain", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const match = result.match(/^worktree (.+)$/m);
+    const { stdout } = await execAsync("git worktree list --porcelain", { cwd });
+    const match = stdout.match(/^worktree (.+)$/m);
     if (match) {
       return match[1];
     }
@@ -95,13 +103,13 @@ function getMainWorktree(cwd: string): string | null {
 }
 
 // Create a git worktree for a branch
-export function createWorktree(params: {
+export async function createWorktree(params: {
   cwd: string;
   branchName: string;
   baseBranch: string;
-}): { success: boolean; worktreePath?: string; error?: string } {
+}): Promise<{ success: boolean; worktreePath?: string; error?: string }> {
   const { cwd, branchName, baseBranch } = params;
-  const gitRoot = getGitRoot(cwd);
+  const gitRoot = await getGitRoot(cwd);
 
   if (!gitRoot) {
     return { success: false, error: "Not a git repository" };
@@ -118,11 +126,20 @@ export function createWorktree(params: {
   const worktreePath = join(worktreesDir, dirName);
 
   if (existsSync(worktreePath)) {
-    return { success: true, worktreePath };
+    try {
+      const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: worktreePath });
+      const currentBranch = stdout.trim();
+      if (currentBranch === branchName) {
+        return { success: true, worktreePath };
+      }
+      return { success: false, error: `Worktree directory already exists at ${worktreePath} but is on branch '${currentBranch}', not '${branchName}'` };
+    } catch {
+      return { success: false, error: `Worktree directory exists at ${worktreePath} but is not a valid git worktree` };
+    }
   }
 
   try {
-    execSync("git fetch origin", { cwd: gitRoot, stdio: "pipe" });
+    await execAsync("git fetch origin", { cwd: gitRoot });
   } catch {
     // Ignore fetch errors
   }
@@ -130,58 +147,51 @@ export function createWorktree(params: {
   try {
     // Try local branch first
     try {
-      execSync(`git rev-parse --verify ${branchName}`, { cwd: gitRoot, stdio: "pipe" });
-      execSync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+      await execAsync(`git rev-parse --verify ${branchName}`, { cwd: gitRoot });
+      await execAsync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: gitRoot });
     } catch {
       // Try remote branch
       try {
-        execSync(`git rev-parse --verify origin/${branchName}`, { cwd: gitRoot, stdio: "pipe" });
-        execSync(`git worktree add --track -b ${branchName} "${worktreePath}" origin/${branchName}`, { cwd: gitRoot, stdio: "pipe" });
+        await execAsync(`git rev-parse --verify origin/${branchName}`, { cwd: gitRoot });
+        await execAsync(`git worktree add --track -b ${branchName} "${worktreePath}" origin/${branchName}`, { cwd: gitRoot });
       } catch {
         // Create new branch from base
-        execSync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, { cwd: gitRoot, stdio: "pipe" });
+        await execAsync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, { cwd: gitRoot });
       }
     }
 
     return { success: true, worktreePath };
   } catch (e: any) {
-    logError("[worktree] Failed:", e.message);
+    // Probe Agent Error Log Trigger
+    logError("[PRBE_ERROR_EgPYEx] [worktree] Failed:", e.message);
     return { success: false, error: e.message };
   }
 }
 
 // Preserve working state by stashing uncommitted changes
-function preserveWorkingState(gitRoot: string): { method: 'stash' | 'commit' | 'clean'; stashRef?: string } {
+async function preserveWorkingState(gitRoot: string): Promise<{ method: 'stash' | 'commit' | 'clean'; stashRef?: string }> {
   try {
-    const statusOutput = execSync("git status --porcelain", {
-      cwd: gitRoot,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
+    const { stdout } = await execAsync("git status --porcelain", { cwd: gitRoot });
+    const statusOutput = stdout.trim();
 
     if (!statusOutput) {
       return { method: 'clean' };
     }
 
-    // Try to stash
     const stashMsg = `openui-preserve-${Date.now()}`;
     try {
-      execSync(`git stash push -m "${stashMsg}" --include-untracked`, {
-        cwd: gitRoot,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      await execAsync(`git stash push -m "${stashMsg}" --include-untracked`, { cwd: gitRoot });
       log(`[worktree] Stashed changes in ${gitRoot}: ${stashMsg}`);
       return { method: 'stash', stashRef: stashMsg };
     } catch {
-      // Fallback: auto-commit
       try {
-        execSync('git add -A', { cwd: gitRoot, stdio: "pipe" });
-        execSync('git commit -am "openui: preserve WIP [skip ci]"', { cwd: gitRoot, stdio: "pipe" });
+        await execAsync('git add -A', { cwd: gitRoot });
+        await execAsync('git commit -am "openui: preserve WIP [skip ci]"', { cwd: gitRoot });
         log(`[worktree] Auto-committed changes in ${gitRoot}`);
         return { method: 'commit' };
       } catch {
-        logError(`[worktree] Failed to preserve state in ${gitRoot}`);
+        // Probe Agent Error Log Trigger
+        logError(`[PRBE_ERROR_jT5sFi] [worktree] Failed to preserve state in ${gitRoot}`);
         return { method: 'clean' };
       }
     }
@@ -191,11 +201,10 @@ function preserveWorkingState(gitRoot: string): { method: 'stash' | 'commit' | '
 }
 
 // Scan a directory for child git repositories
-export function scanReposInDirectory(dirPath: string): DetectedRepo[] {
+export async function scanReposInDirectory(dirPath: string): Promise<DetectedRepo[]> {
   const repos: DetectedRepo[] = [];
 
   try {
-    const { readdirSync, existsSync: fsExists } = require("fs");
     const entries = readdirSync(dirPath, { withFileTypes: true });
 
     for (const entry of entries) {
@@ -204,72 +213,63 @@ export function scanReposInDirectory(dirPath: string): DetectedRepo[] {
       const entryPath = join(dirPath, entry.name);
       const gitPath = join(entryPath, ".git");
 
-      if (!fsExists(gitPath)) continue;
+      if (!existsSync(gitPath)) continue;
 
       const name = entry.name;
-      const branch = getGitBranch(entryPath) || "unknown";
+      const branch = (await getGitBranch(entryPath)) || "unknown";
 
-      // Check dirty status
       let dirty = false;
       try {
-        const statusOutput = execSync("git status --porcelain", {
-          cwd: entryPath,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
-        dirty = statusOutput.length > 0;
+        const { stdout } = await execAsync("git status --porcelain", { cwd: entryPath });
+        dirty = stdout.trim().length > 0;
       } catch {}
 
-      // Detect default branch
       let defaultBranch = "main";
       try {
-        const ref = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
-          cwd: entryPath,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
-        defaultBranch = ref.replace("refs/remotes/origin/", "");
+        const { stdout } = await execAsync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: entryPath });
+        defaultBranch = stdout.trim().replace("refs/remotes/origin/", "");
       } catch {}
 
       repos.push({ name, path: entryPath, branch, dirty, defaultBranch });
     }
   } catch (e) {
-    logError(`[scan] Failed to scan ${dirPath}:`, e);
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_qf7a3F] [scan] Failed to scan ${dirPath}:`, e);
   }
 
   return repos;
 }
 
 // Create worktrees across multiple repos
-export function createMultiRepoWorktrees(params: {
+export async function createMultiRepoWorktrees(params: {
   repos: { name: string; path: string; defaultBranch?: string }[];
   branchName: string;
   mode: 'current' | 'main';
   baseBranch: string;
-}): {
+}): Promise<{
   worktreePaths: Record<string, string>;
   stashRefs: Record<string, string>;
   errors: Record<string, string>;
-} {
+}> {
   const { repos, branchName, mode, baseBranch } = params;
   const worktreePaths: Record<string, string> = {};
   const stashRefs: Record<string, string> = {};
   const errors: Record<string, string> = {};
 
   for (const repo of repos) {
-    const preserveResult = preserveWorkingState(repo.path);
+    const preserveResult = await preserveWorkingState(repo.path);
     if (preserveResult.stashRef) {
       stashRefs[repo.name] = preserveResult.stashRef;
     }
 
     let repoBaseBranch: string;
     if (mode === 'current') {
-      repoBaseBranch = getGitBranch(repo.path) || baseBranch;
+      repoBaseBranch = (await getGitBranch(repo.path)) || baseBranch;
     } else {
       repoBaseBranch = repo.defaultBranch || baseBranch;
     }
 
-    const result = createWorktree({
+    const result = await createWorktree({
       cwd: repo.path,
       branchName,
       baseBranch: repoBaseBranch,
@@ -280,22 +280,32 @@ export function createMultiRepoWorktrees(params: {
       log(`[multi-worktree] Created worktree for ${repo.name}: ${result.worktreePath}`);
     } else {
       errors[repo.name] = result.error || "Unknown error";
-      logError(`[multi-worktree] Failed for ${repo.name}: ${result.error}`);
+      // Probe Agent Error Log Trigger
+      logError(`[PRBE_ERROR_DaKFLF] [multi-worktree] Failed for ${repo.name}: ${result.error}`);
     }
   }
 
   return { worktreePaths, stashRefs, errors };
 }
 
-const MAX_BUFFER_SIZE = 1000;
+const MAX_BUFFER_SIZE = 5000;
 
 export const sessions = new Map<string, Session>();
 
 // Actual port the server is listening on — set by setServerPort() after bind
 let serverPort: number = 6968;
 export function setServerPort(port: number) { serverPort = port; }
+export function getServerPort(): number { return serverPort; }
 
-export function createSession(params: {
+export function getActiveSessionCount(): number {
+  let count = 0;
+  for (const [, session] of sessions) {
+    if (session.pty) count++;
+  }
+  return count;
+}
+
+export async function createSession(params: {
   sessionId: string;
   agentId: string;
   agentName: string;
@@ -311,10 +321,10 @@ export function createSession(params: {
   baseBranch?: string;
   createWorktreeFlag?: boolean;
   ticketPromptTemplate?: string;
-  // Multi-repo worktree options
+  autoCareful?: boolean;
   multiRepoMode?: 'current' | 'main';
   additionalRepos?: { name: string; path: string; defaultBranch?: string }[];
-}): { session: Session; cwd: string; gitBranch?: string } {
+}): Promise<{ session: Session; cwd: string; gitBranch?: string }> {
   const {
     sessionId,
     agentId,
@@ -331,6 +341,7 @@ export function createSession(params: {
     baseBranch,
     createWorktreeFlag,
     ticketPromptTemplate,
+    autoCareful,
     multiRepoMode,
     additionalRepos,
   } = params;
@@ -345,9 +356,7 @@ export function createSession(params: {
 
   if (createWorktreeFlag && branchName && baseBranch) {
     if (additionalRepos && additionalRepos.length > 0 && multiRepoMode) {
-      // Multi-repo worktree creation
-      // All repos come from additionalRepos — the session cwd stays at originalCwd
-      const multiResult = createMultiRepoWorktrees({
+      const multiResult = await createMultiRepoWorktrees({
         repos: additionalRepos,
         branchName,
         mode: multiRepoMode,
@@ -359,15 +368,14 @@ export function createSession(params: {
       worktreeMode = multiRepoMode;
       gitBranch = branchName;
 
-      // Keep workingDir as originalCwd — don't migrate into a child repo
       log(`[session] Multi-repo worktrees created: ${Object.keys(worktreePaths).join(', ')}`);
 
       for (const [repoName, error] of Object.entries(multiResult.errors)) {
-        logError(`[session] Worktree failed for ${repoName}: ${error}`);
+        // Probe Agent Error Log Trigger
+        logError(`[PRBE_ERROR_H1Xq5O] [session] Worktree failed for ${repoName}: ${error}`);
       }
     } else {
-      // Single repo worktree creation (existing behavior)
-      const result = createWorktree({ cwd: originalCwd, branchName, baseBranch });
+      const result = await createWorktree({ cwd: originalCwd, branchName, baseBranch });
       if (result.success && result.worktreePath) {
         workingDir = result.worktreePath;
         worktreePath = result.worktreePath;
@@ -378,14 +386,20 @@ export function createSession(params: {
   }
 
   if (!mainRepoPath) {
-    const detectedMainRepo = getMainWorktree(workingDir);
+    const detectedMainRepo = await getMainWorktree(workingDir);
     if (detectedMainRepo && detectedMainRepo !== workingDir) {
       mainRepoPath = detectedMainRepo;
     }
   }
 
   if (!gitBranch) {
-    gitBranch = getGitBranch(workingDir);
+    gitBranch = await getGitBranch(workingDir);
+  }
+
+  // Validate working directory exists before spawning
+  if (!existsSync(workingDir)) {
+    log(`[session] Working directory does not exist: ${workingDir}, falling back to home`);
+    workingDir = homedir();
   }
 
   // Use the user's default shell and spawn as login shell to source their profile
@@ -393,18 +407,25 @@ export function createSession(params: {
     ? "powershell.exe"
     : process.env.SHELL || "/bin/zsh";
 
-  const ptyProcess = pty.spawn(shell, ["--login"], {
-    name: "xterm-256color",
-    cwd: workingDir,
-    env: {
-      ...process.env,
-      TERM: "xterm-256color",
-      OPENUI_SESSION_ID: sessionId,
-      OPENUI_PORT: String(serverPort),
-    } as Record<string, string>,
-    cols: 120,
-    rows: 30,
-  });
+  let ptyProcess: pty.IPty;
+  try {
+    ptyProcess = pty.spawn(shell, ["--login"], {
+      name: "xterm-256color",
+      cwd: workingDir,
+      env: {
+        ...process.env,
+        TERM: "xterm-256color",
+        OPENUI_SESSION_ID: sessionId,
+        OPENUI_PORT: String(serverPort),
+      } as Record<string, string>,
+      cols: DEFAULT_PTY_COLS,
+      rows: DEFAULT_PTY_ROWS,
+    });
+  } catch (e: any) {
+    // Probe Agent Error Log Trigger
+    logError(`[PRBE_ERROR_nsfUhY] [session] Failed to spawn PTY (shell=${shell}, cwd=${workingDir}): ${e.message}`);
+    throw new Error(`Failed to spawn terminal: ${e.message}. Shell: ${shell}, CWD: ${workingDir}`);
+  }
 
   const now = Date.now();
   const session: Session = {
@@ -477,6 +498,19 @@ export function createSession(params: {
     }
   }, 500);
 
+  // PTY exit handler — detect when Claude goes offline
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    log(`[session] PTY exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
+    session.status = "disconnected";
+    session.pty = null;
+
+    for (const client of session.clients) {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify({ type: "exit", exitCode, signal }));
+      }
+    }
+  });
+
   // PTY output handler
   ptyProcess.onData((data: string) => {
     session.outputBuffer.push(data);
@@ -515,8 +549,8 @@ export function createSession(params: {
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
 
-    // Enable /careful for Claude Code sessions on startup
-    if (agentId === "claude") {
+    // Enable /careful for Claude Code sessions on startup (if enabled in settings)
+    if (agentId === "claude" && autoCareful !== false) {
       setTimeout(() => {
         ptyProcess.write("/careful\r");
       }, 2000);
@@ -565,14 +599,14 @@ export function deleteSession(sessionId: string) {
   return true;
 }
 
-export function restoreSessions() {
+export async function restoreSessions() {
   const state = loadState();
 
   log(`[restore] Found ${state.nodes.length} saved sessions`);
 
   for (const node of state.nodes) {
     const buffer = loadBuffer(node.sessionId);
-    const gitBranch = getGitBranch(node.cwd);
+    const gitBranch = await getGitBranch(node.cwd);
 
     const session: Session = {
       pty: null,
@@ -580,6 +614,7 @@ export function restoreSessions() {
       agentName: node.agentName,
       command: node.command,
       cwd: node.cwd,
+      originalCwd: node.originalCwd,
       gitBranch: gitBranch || undefined,
       createdAt: node.createdAt,
       clients: new Set(),

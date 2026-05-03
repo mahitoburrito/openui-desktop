@@ -78,7 +78,7 @@ function tryListen(app: Hono, port: number): Promise<{ server: any; port: number
 
 // Start server, auto-resolving port conflicts
 export async function startServer(): Promise<number> {
-  restoreSessions();
+  await restoreSessions();
 
   const MAX_ATTEMPTS = 10;
   let server: any;
@@ -198,7 +198,8 @@ export async function startServer(): Promise<number> {
               break;
           }
         } catch (e) {
-          if (!QUIET) console.error("Error processing message:", e);
+          // Probe Agent Error Log Trigger
+          if (!QUIET) console.error("[PRBE_ERROR_vbFKwR] Error processing message:", e);
         }
       });
 
@@ -230,7 +231,12 @@ export async function startServer(): Promise<number> {
         if (session.pty) session.pty.kill();
         if (session.stateTrackerPty) session.stateTrackerPty.kill();
       }
-      process.exit(0);
+      // Only call process.exit when running standalone (not embedded in Electron).
+      // When embedded, Electron manages the process lifecycle — calling process.exit()
+      // here kills the process before electron-updater can install and relaunch.
+      if (require.main === module) {
+        process.exit(0);
+      }
     });
 
     // Crash-resilient: save on SIGTERM, uncaughtException, unhandledRejection
