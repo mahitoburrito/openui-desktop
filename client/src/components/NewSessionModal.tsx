@@ -221,7 +221,13 @@ export function NewSessionModal({
         setSelectedAgent(agent || null);
         setCwd(existingSession.originalCwd || existingSession.cwd);
         setCustomName(existingSession.customName || "");
-        setCommandArgs(agent?.id === "claude" ? "--dangerously-skip-permissions" : "");
+        setCommandArgs(
+          agent?.id === "claude"
+            ? "--dangerously-skip-permissions"
+            : agent?.id === "codex"
+              ? "--yolo"
+              : ""
+        );
         setCount(1);
       } else {
         setSelectedAgent(null);
@@ -711,7 +717,13 @@ export function NewSessionModal({
                               key={agent.id}
                               onClick={() => {
                                 setSelectedAgent(agent);
-                                setCommandArgs(agent.id === "claude" ? "--dangerously-skip-permissions" : "");
+                                setCommandArgs(
+                                  agent.id === "claude"
+                                    ? "--dangerously-skip-permissions"
+                                    : agent.id === "codex"
+                                      ? "--yolo"
+                                      : ""
+                                );
                               }}
                               className={`relative p-3 rounded-md text-left transition-all border ${
                                 isSelected
