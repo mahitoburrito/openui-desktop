@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell, dialog } from "electron";
 import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { startServer } from "../server/index";
+import { getActiveSessionCount } from "../server/services/sessionManager";
 import { autoUpdater } from "electron-updater";
 import { initPRBE, cleanupPRBE } from "./prbe";
 
@@ -58,7 +59,23 @@ function createWindow() {
     mainWindow.loadURL(`http://localhost:${serverPort}`);
   }
 
-  mainWindow.on("closed", () => {
+  mainWindow.on("close", (e) => {
+    const activeCount = getActiveSessionCount();
+    if (activeCount > 0) {
+      const choice = dialog.showMessageBoxSync(mainWindow!, {
+        type: "warning",
+        title: "Quit OpenUI?",
+        message: `You have ${activeCount} active session${activeCount === 1 ? "" : "s"} running.`,
+        detail: "Quitting will stop all sessions and shut down the server.",
+        buttons: ["Quit", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+      });
+      if (choice === 1) {
+        e.preventDefault();
+        return;
+      }
+    }
     mainWindow = null;
   });
 }
@@ -72,7 +89,8 @@ app.whenReady().then(async () => {
     serverPort = await startServer();
     console.log(`[electron] Server started on port ${serverPort}`);
   } catch (err) {
-    console.error("[electron] Failed to start server:", err);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_5di1QF] [electron] Failed to start server:", err);
     dialog.showErrorBox(
       "Server Error",
       "Failed to start the embedded server. The application may not work correctly."
@@ -108,11 +126,13 @@ app.whenReady().then(async () => {
     });
 
     autoUpdater.on("error", (err) => {
-      console.error("[updater] Error:", err.message);
+      // Probe Agent Error Log Trigger
+      console.error("[PRBE_ERROR_2BweaS] [updater] Error:", err.message);
     });
 
     autoUpdater.checkForUpdates().catch((err) => {
-      console.error("[updater] Check failed:", err.message);
+      // Probe Agent Error Log Trigger
+      console.error("[PRBE_ERROR_uzkINF] [updater] Check failed:", err.message);
     });
   }
 
@@ -124,16 +144,11 @@ app.whenReady().then(async () => {
   });
 });
 
-// Quit when all windows are closed (except on macOS)
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  app.quit();
 });
 
-// Cleanup before quit
-app.on("before-quit", () => {
+app.on("will-quit", () => {
   cleanupPRBE();
-  // Server cleanup is handled by its own SIGINT handler
   process.emit("SIGINT" as any);
 });

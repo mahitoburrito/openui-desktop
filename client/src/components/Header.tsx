@@ -1,15 +1,30 @@
 import { useState } from "react";
-import { Plus, Folder, Settings, Bug } from "lucide-react";
+import { Plus, Folder, Settings, Bug, List, Maximize2, Layout, FileText } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
 import { usePRBEStore } from "../stores/usePRBEStore";
 import { SettingsModal } from "./SettingsModal";
 
 export function Header() {
-  const { setAddAgentModalOpen, sessions, launchCwd } = useStore();
+  const {
+    setAddAgentModalOpen,
+    sessions,
+    launchCwd,
+    sessionListOpen,
+    setSessionListOpen,
+    viewMode,
+    setViewMode,
+    focusedSessionIds,
+    openMarkdownFiles,
+  } = useStore();
   const { isAvailable: prbeAvailable, hasApiKey: prbeHasKey, isInvestigating: prbeInvestigating, pendingInteraction: prbeInteraction, setPanelOpen: setPrbePanelOpen } = usePRBEStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const showPrbeButton = prbeAvailable && prbeHasKey;
+
+  // Count sessions needing attention
+  const needsAttentionCount = Array.from(sessions.values()).filter(
+    (s) => s.status === "waiting_input" || s.status === "error"
+  ).length;
 
   return (
     <header className="h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark titlebar-drag">
@@ -60,6 +75,65 @@ export function Header() {
 
       {/* Right side buttons */}
       <div className="flex items-center gap-2 titlebar-no-drag">
+        {/* Session list toggle */}
+        <button
+          onClick={() => setSessionListOpen(!sessionListOpen)}
+          className={`relative p-2 rounded-md transition-colors ${
+            sessionListOpen
+              ? "text-white bg-surface-active"
+              : "text-zinc-400 hover:text-white hover:bg-surface-active"
+          }`}
+          title="Toggle session list (Cmd+\\)"
+        >
+          <List className="w-4 h-4" />
+          {needsAttentionCount > 0 && (
+            <div className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-orange-500 text-[9px] text-white font-bold flex items-center justify-center">
+              {needsAttentionCount}
+            </div>
+          )}
+        </button>
+
+        {/* Markdown viewer toggle — always available */}
+        <button
+          onClick={() =>
+            setViewMode(viewMode === "markdown" ? "canvas" : "markdown")
+          }
+          className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            viewMode === "markdown"
+              ? "text-purple-300 bg-purple-500/20 hover:bg-purple-500/30"
+              : "text-zinc-400 hover:text-white hover:bg-surface-active"
+          }`}
+          title="Markdown viewer (Cmd+Shift+M)"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          {viewMode === "markdown"
+            ? "Canvas"
+            : openMarkdownFiles.length > 0
+              ? `Markdown (${openMarkdownFiles.length})`
+              : "Markdown"}
+        </button>
+
+        {/* Focus mode toggle */}
+        {focusedSessionIds.length > 0 && (
+          <button
+            onClick={() => setViewMode(viewMode === "focus" ? "canvas" : "focus")}
+            className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              viewMode === "focus"
+                ? "text-blue-400 bg-blue-500/20 hover:bg-blue-500/30"
+                : "text-zinc-400 hover:text-white hover:bg-surface-active"
+            }`}
+            title="Toggle focus mode (Cmd+Shift+F)"
+          >
+            {viewMode === "focus" ? (
+              <Layout className="w-3.5 h-3.5" />
+            ) : (
+              <Maximize2 className="w-3.5 h-3.5" />
+            )}
+            {viewMode === "focus" ? "Canvas" : `Focus (${focusedSessionIds.length})`}
+          </button>
+        )}
+
+        <div className="h-4 w-px bg-border" />
         {showPrbeButton && (
           <button
             onClick={() => setPrbePanelOpen(true)}

@@ -16,6 +16,9 @@ import { useStore } from "./stores/useStore";
 import { AgentNode } from "./components/AgentNode/index";
 import { CategoryNode } from "./components/CategoryNode";
 import { Sidebar } from "./components/Sidebar";
+import { SessionListPanel } from "./components/SessionListPanel";
+import { FocusMode } from "./components/FocusMode";
+import { MarkdownView } from "./components/MarkdownView";
 import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
@@ -23,6 +26,9 @@ import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
 import { usePRBEIPC } from "./hooks/usePRBEIPC";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
+import { destroyCachedTerminal } from "./components/Terminal";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -46,6 +52,7 @@ function AppContent() {
     newSessionForNodeId,
     setNewSessionForNodeId,
     sessions,
+    sessionListOpen,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -54,6 +61,12 @@ function AppContent() {
 
   // Initialize PRBE IPC listeners
   usePRBEIPC();
+
+  // Initialize keyboard shortcuts
+  useKeyboardShortcuts();
+
+  // Desktop notifications when sessions need attention and window is unfocused
+  useDesktopNotifications();
 
   // Sync nodes with store
   useEffect(() => {
@@ -263,9 +276,10 @@ function AppContent() {
           // Let React Flow process this removal
           confirmedRemoves.push(change);
 
-          // Soft-delete on server
+          // Soft-delete on server and clean up cached terminal
           if (sessionId) {
             fetch(`/api/sessions/${sessionId}/soft-delete`, { method: "POST" }).catch(console.error);
+            destroyCachedTerminal(sessionId);
           }
 
           // Clean up store
@@ -336,55 +350,70 @@ function AppContent() {
       <Header />
 
       <div className="flex-1 relative">
-        <ReactFlow
-          nodes={nodes}
-          edges={[]}
-          onNodesChange={handleNodesChange}
-          onNodeClick={onNodeClick}
-          onPaneClick={onPaneClick}
-          nodeTypes={nodeTypes}
-          fitView
-          proOptions={{ hideAttribution: true }}
-          minZoom={0.3}
-          maxZoom={2}
-          nodesDraggable
-          nodesConnectable={false}
-          snapToGrid
-          snapGrid={[24, 24]}
-        >
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={24}
-            size={1}
-            color="#252525"
-          />
-          <Controls
-            showInteractive={false}
-            position="bottom-left"
-          />
-          <CanvasControls />
-        </ReactFlow>
+        {/* Session List Panel (left sidebar) */}
+        <SessionListPanel />
 
-        {/* Empty state */}
-        {isEmpty && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="text-center pointer-events-auto">
-              <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
-                <Plus className="w-8 h-8 text-zinc-600" />
+        {/* Canvas area — shifts right when session list is open */}
+        <div
+          className="absolute inset-0 transition-all duration-300"
+          style={{ left: sessionListOpen ? 280 : 0 }}
+        >
+          <ReactFlow
+            nodes={nodes}
+            edges={[]}
+            onNodesChange={handleNodesChange}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
+            nodeTypes={nodeTypes}
+            fitView
+            proOptions={{ hideAttribution: true }}
+            minZoom={0.3}
+            maxZoom={2}
+            nodesDraggable
+            nodesConnectable={false}
+            snapToGrid
+            snapGrid={[24, 24]}
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={24}
+              size={1}
+              color="#252525"
+            />
+            <Controls
+              showInteractive={false}
+              position="bottom-left"
+            />
+            <CanvasControls />
+          </ReactFlow>
+
+          {/* Empty state */}
+          {isEmpty && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="text-center pointer-events-auto">
+                <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
+                  <Plus className="w-8 h-8 text-zinc-600" />
+                </div>
+                <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
+                <p className="text-sm text-zinc-500 mb-4 max-w-xs">
+                  Spawn your first AI agent to get started
+                </p>
+                <button
+                  onClick={() => setAddAgentModalOpen(true)}
+                  className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
+                >
+                  Create Agent
+                </button>
               </div>
-              <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
-              <p className="text-sm text-zinc-500 mb-4 max-w-xs">
-                Spawn your first AI agent to get started
-              </p>
-              <button
-                onClick={() => setAddAgentModalOpen(true)}
-                className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
-              >
-                Create Agent
-              </button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* Focus Mode overlay */}
+        <FocusMode />
+
+        {/* Markdown viewer overlay */}
+        <MarkdownView />
 
         <Sidebar />
         <PRBEPanel />

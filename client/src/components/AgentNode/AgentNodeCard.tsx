@@ -1,8 +1,9 @@
-import { MessageSquare, WifiOff, GitBranch, Folder, Wrench, Layers } from "lucide-react";
+import { MessageSquare, WifiOff, GitBranch, Folder, Wrench, Layers, Loader2 } from "lucide-react";
 import { AgentStatus } from "../../stores/useStore";
 
 // Status config with visual priority levels
 const statusConfig: Record<AgentStatus, { label: string; color: string; bgColor: string; isActive?: boolean; needsAttention?: boolean }> = {
+  creating: { label: "Creating...", color: "#818CF8", bgColor: "#818CF815", isActive: true },
   running: { label: "Working", color: "#22C55E", bgColor: "#22C55E15", isActive: true },
   tool_calling: { label: "Working", color: "#22C55E", bgColor: "#22C55E15", isActive: true },
   waiting_input: { label: "Needs Input", color: "#F97316", bgColor: "#F9731620", needsAttention: true },
@@ -151,6 +152,9 @@ export function AgentNodeCard({
             </span>
           )}
         </div>
+        {status === "creating" && (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: statusInfo.color }} />
+        )}
         {status === "waiting_input" && (
           <MessageSquare className="w-3.5 h-3.5" style={{ color: statusInfo.color }} />
         )}
