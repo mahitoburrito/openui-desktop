@@ -36,6 +36,43 @@ const nodeTypes = {
   category: CategoryNode,
 };
 
+// Remember the last repo we auto-opened so a single finish event doesn't keep
+// re-triggering while the user is already looking at that repo's diff.
+let lastAutoOpenedRepo: string | null = null;
+
+// When an agent finishes, surface the diff viewer if its repo has uncommitted
+// changes — but never yank the user out of a view they deliberately opened.
+async function maybeAutoOpenDiff(repo: string | undefined) {
+  if (!repo) return;
+  const {
+    diffAutoOpen,
+    viewMode,
+    setDiffRepoPath,
+    setViewMode,
+  } = useStore.getState();
+
+  if (!diffAutoOpen) return;
+  // Only auto-open from the canvas; respect focus/markdown/diff/browser views.
+  if (viewMode !== "canvas") return;
+  // Already showing this repo — don't re-trigger.
+  if (lastAutoOpenedRepo === repo) return;
+
+  try {
+    const res = await fetch(`/api/diff/files?path=${encodeURIComponent(repo)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.error || !Array.isArray(data.files) || data.files.length === 0) return;
+
+    // Re-check the view in case the user navigated during the fetch.
+    if (useStore.getState().viewMode !== "canvas") return;
+    lastAutoOpenedRepo = repo;
+    setDiffRepoPath(repo);
+    setViewMode("diff");
+  } catch {
+    // Network/path error — silently skip auto-open.
+  }
+}
+
 function AppContent() {
   const {
     nodes: storeNodes,
@@ -54,6 +91,7 @@ function AppContent() {
     setNewSessionForNodeId,
     sessions,
     sessionListOpen,
+    viewMode,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -106,6 +144,13 @@ function AppContent() {
               const existing = currentSessions.get(sessionData.nodeId);
               if (existing && existing.status !== sessionData.status) {
                 console.log(`[poll] Updating ${sessionData.nodeId} status: ${existing.status} -> ${sessionData.status}`);
+                // An agent just finished working (active -> idle). If its repo
+                // has uncommitted changes, surface the diff viewer automatically.
+                const wasActive =
+                  existing.status === "running" || existing.status === "tool_calling";
+                if (wasActive && sessionData.status === "idle") {
+                  maybeAutoOpenDiff(existing.originalCwd || existing.cwd);
+                }
                 updateSession(sessionData.nodeId, { status: sessionData.status });
               }
             }
@@ -121,6 +166,14 @@ function AppContent() {
     const interval = setInterval(pollStatus, 1000);
     return () => clearInterval(interval);
   }, [updateSession]);
+
+  // Once the user leaves the diff view, clear the auto-open guard so a later
+  // agent finish on the same repo can surface the diff again.
+  useEffect(() => {
+    if (viewMode !== "diff") {
+      lastAutoOpenedRepo = null;
+    }
+  }, [viewMode]);
 
   // Restore sessions and categories after agents are loaded
   useEffect(() => {

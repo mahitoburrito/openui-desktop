@@ -12,6 +12,7 @@ import {
   Rows3,
   WrapText,
   Palette,
+  Sparkles,
 } from "lucide-react";
 import { DIFF_THEMES, useStore, type DiffTheme } from "../stores/useStore";
 import {
@@ -52,6 +53,8 @@ export function DiffView() {
     setDiffWrap,
     diffTheme,
     setDiffTheme,
+    diffAutoOpen,
+    setDiffAutoOpen,
   } = useStore();
 
   const [files, setFiles] = useState<ChangedFile[]>([]);
@@ -297,6 +300,24 @@ export function DiffView() {
               Split
             </button>
           </div>
+
+          {/* Auto-open toggle */}
+          <button
+            onClick={() => setDiffAutoOpen(!diffAutoOpen)}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors ${
+              diffAutoOpen
+                ? "bg-green-500/20 text-green-300 hover:bg-green-500/30"
+                : "text-zinc-500 hover:text-white hover:bg-surface-active"
+            }`}
+            title={
+              diffAutoOpen
+                ? "Auto-open: on — opens this view when an agent finishes with changes"
+                : "Auto-open: off"
+            }
+          >
+            <Sparkles className="w-3 h-3" />
+            Auto
+          </button>
 
           {/* Wrap toggle */}
           <button

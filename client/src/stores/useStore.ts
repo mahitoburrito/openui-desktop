@@ -132,6 +132,9 @@ interface AppState {
   // Diff viewer — repo whose working-tree diff is being reviewed
   diffRepoPath: string | null;
   setDiffRepoPath: (path: string | null) => void;
+  // Auto-open the diff viewer when an agent finishes with uncommitted changes.
+  diffAutoOpen: boolean;
+  setDiffAutoOpen: (on: boolean) => void;
   // Diff viewer presentation preferences
   diffLayout: DiffLayout;
   setDiffLayout: (layout: DiffLayout) => void;
@@ -162,6 +165,7 @@ function loadPersistedUIState(): Partial<AppState> {
         splitRatios: parsed.splitRatios ?? {},
         openMarkdownFiles: parsed.openMarkdownFiles ?? [],
         diffRepoPath: parsed.diffRepoPath ?? null,
+        diffAutoOpen: parsed.diffAutoOpen ?? true,
         diffLayout: parsed.diffLayout ?? "unified",
         diffWrap: parsed.diffWrap ?? false,
         diffTheme: parsed.diffTheme ?? "github-dark",
@@ -288,6 +292,8 @@ export const useStore = create<AppState>((set) => ({
   // Diff viewer
   diffRepoPath: (persisted.diffRepoPath as string | null) ?? null,
   setDiffRepoPath: (path) => set({ diffRepoPath: path }),
+  diffAutoOpen: (persisted.diffAutoOpen as boolean) ?? true,
+  setDiffAutoOpen: (on) => set({ diffAutoOpen: on }),
   diffLayout: (persisted.diffLayout as DiffLayout) ?? "unified",
   setDiffLayout: (layout) => set({ diffLayout: layout }),
   diffWrap: (persisted.diffWrap as boolean) ?? false,
@@ -316,6 +322,7 @@ useStore.subscribe((state) => {
         splitRatios: state.splitRatios,
         openMarkdownFiles: state.openMarkdownFiles,
         diffRepoPath: state.diffRepoPath,
+        diffAutoOpen: state.diffAutoOpen,
         diffLayout: state.diffLayout,
         diffWrap: state.diffWrap,
         diffTheme: state.diffTheme,
