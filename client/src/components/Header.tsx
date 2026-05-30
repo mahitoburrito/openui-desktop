@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Folder, Settings, Bug, List, Maximize2, Layout, FileText } from "lucide-react";
+import { Plus, Folder, Settings, Bug, List, Maximize2, Layout, FileText, FileDiff } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
 import { usePRBEStore } from "../stores/usePRBEStore";
@@ -111,6 +111,20 @@ export function Header() {
             : openMarkdownFiles.length > 0
               ? `Markdown (${openMarkdownFiles.length})`
               : "Markdown"}
+        </button>
+
+        {/* Diff viewer toggle — always available */}
+        <button
+          onClick={() => setViewMode(viewMode === "diff" ? "canvas" : "diff")}
+          className={`relative flex items-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            viewMode === "diff"
+              ? "text-green-300 bg-green-500/20 hover:bg-green-500/30"
+              : "text-zinc-400 hover:text-white hover:bg-surface-active"
+          }`}
+          title="Diff viewer (Cmd+Shift+D)"
+        >
+          <FileDiff className="w-3.5 h-3.5" />
+          {viewMode === "diff" ? "Canvas" : "Diff"}
         </button>
 
         {/* Focus mode toggle */}

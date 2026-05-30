@@ -19,6 +19,7 @@ import { Sidebar } from "./components/Sidebar";
 import { SessionListPanel } from "./components/SessionListPanel";
 import { FocusMode } from "./components/FocusMode";
 import { MarkdownView } from "./components/MarkdownView";
+import { DiffView } from "./components/DiffView";
 import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
@@ -414,6 +415,9 @@ function AppContent() {
 
         {/* Markdown viewer overlay */}
         <MarkdownView />
+
+        {/* Diff viewer overlay */}
+        <DiffView />
 
         <Sidebar />
         <PRBEPanel />

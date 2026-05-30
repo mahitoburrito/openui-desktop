@@ -21,7 +21,10 @@ export function useKeyboardShortcuts() {
       } = useStore.getState();
 
       // Escape — exit focus / markdown mode
-      if (e.key === "Escape" && (viewMode === "focus" || viewMode === "markdown")) {
+      if (
+        e.key === "Escape" &&
+        (viewMode === "focus" || viewMode === "markdown" || viewMode === "diff")
+      ) {
         e.preventDefault();
         setViewMode("canvas");
         return;
@@ -31,6 +34,13 @@ export function useKeyboardShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "m" || e.key === "M")) {
         e.preventDefault();
         setViewMode(viewMode === "markdown" ? "canvas" : "markdown");
+        return;
+      }
+
+      // Cmd+Shift+D — toggle diff viewer
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        setViewMode(viewMode === "diff" ? "canvas" : "diff");
         return;
       }
 
