@@ -47,8 +47,26 @@ export interface DeleteToast {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-export type ViewMode = "canvas" | "focus" | "markdown";
+export type ViewMode = "canvas" | "focus" | "markdown" | "diff" | "browser";
 export type StatusFilter = AgentStatus | "all";
+
+// Diff viewer presentation preferences
+export type DiffLayout = "unified" | "split";
+export type DiffTheme =
+  | "github-dark"
+  | "github-light"
+  | "one-dark-pro"
+  | "dracula"
+  | "nord"
+  | "vitesse-dark";
+export const DIFF_THEMES: DiffTheme[] = [
+  "github-dark",
+  "github-light",
+  "one-dark-pro",
+  "dracula",
+  "nord",
+  "vitesse-dark",
+];
 
 interface AppState {
   // Config
@@ -83,6 +101,8 @@ interface AppState {
   setNewSessionModalOpen: (open: boolean) => void;
   newSessionForNodeId: string | null;
   setNewSessionForNodeId: (nodeId: string | null) => void;
+  todosPanelOpen: boolean;
+  setTodosPanelOpen: (open: boolean) => void;
 
   // Session List Panel
   sessionListOpen: boolean;
@@ -109,6 +129,21 @@ interface AppState {
   removeMarkdownFile: (path: string) => void;
   setMarkdownFiles: (paths: string[]) => void;
 
+  // Diff viewer — repo whose working-tree diff is being reviewed
+  diffRepoPath: string | null;
+  setDiffRepoPath: (path: string | null) => void;
+  // Diff viewer presentation preferences
+  diffLayout: DiffLayout;
+  setDiffLayout: (layout: DiffLayout) => void;
+  diffWrap: boolean;
+  setDiffWrap: (wrap: boolean) => void;
+  diffTheme: DiffTheme;
+  setDiffTheme: (theme: DiffTheme) => void;
+
+  // Embedded browser preview
+  browserUrl: string;
+  setBrowserUrl: (url: string) => void;
+
   // Delete toast
   deleteToast: DeleteToast | null;
   setDeleteToast: (toast: DeleteToast | null) => void;
@@ -126,6 +161,11 @@ function loadPersistedUIState(): Partial<AppState> {
         focusedSessionIds: parsed.focusedSessionIds ?? [],
         splitRatios: parsed.splitRatios ?? {},
         openMarkdownFiles: parsed.openMarkdownFiles ?? [],
+        diffRepoPath: parsed.diffRepoPath ?? null,
+        diffLayout: parsed.diffLayout ?? "unified",
+        diffWrap: parsed.diffWrap ?? false,
+        diffTheme: parsed.diffTheme ?? "github-dark",
+        browserUrl: parsed.browserUrl ?? "",
       };
     }
   } catch {
@@ -197,6 +237,8 @@ export const useStore = create<AppState>((set) => ({
   setNewSessionModalOpen: (open) => set({ newSessionModalOpen: open }),
   newSessionForNodeId: null,
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
+  todosPanelOpen: false,
+  setTodosPanelOpen: (open) => set({ todosPanelOpen: open }),
 
   // Session List Panel
   sessionListOpen: persisted.sessionListOpen ?? true,
@@ -243,6 +285,20 @@ export const useStore = create<AppState>((set) => ({
     })),
   setMarkdownFiles: (paths) => set({ openMarkdownFiles: paths }),
 
+  // Diff viewer
+  diffRepoPath: (persisted.diffRepoPath as string | null) ?? null,
+  setDiffRepoPath: (path) => set({ diffRepoPath: path }),
+  diffLayout: (persisted.diffLayout as DiffLayout) ?? "unified",
+  setDiffLayout: (layout) => set({ diffLayout: layout }),
+  diffWrap: (persisted.diffWrap as boolean) ?? false,
+  setDiffWrap: (wrap) => set({ diffWrap: wrap }),
+  diffTheme: (persisted.diffTheme as DiffTheme) ?? "github-dark",
+  setDiffTheme: (theme) => set({ diffTheme: theme }),
+
+  // Embedded browser preview
+  browserUrl: (persisted.browserUrl as string) ?? "",
+  setBrowserUrl: (url) => set({ browserUrl: url }),
+
   // Delete toast
   deleteToast: null,
   setDeleteToast: (toast) => set({ deleteToast: toast }),
@@ -259,6 +315,11 @@ useStore.subscribe((state) => {
         focusedSessionIds: state.focusedSessionIds,
         splitRatios: state.splitRatios,
         openMarkdownFiles: state.openMarkdownFiles,
+        diffRepoPath: state.diffRepoPath,
+        diffLayout: state.diffLayout,
+        diffWrap: state.diffWrap,
+        diffTheme: state.diffTheme,
+        browserUrl: state.browserUrl,
       })
     );
   } catch {
