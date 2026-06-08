@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import type { Session, DetectedRepo } from "../types";
-import { loadBuffer, loadState } from "./persistence";
+import { loadBuffer, loadState, saveState } from "./persistence";
+import { generateSessionTitle } from "./titleGenerator";
 
 const execAsync = promisify(execCb);
 
@@ -297,6 +298,41 @@ let serverPort: number = 6968;
 export function setServerPort(port: number) { serverPort = port; }
 export function getServerPort(): number { return serverPort; }
 
+function broadcastSessionName(sessionId: string, name: string) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  for (const client of session.clients) {
+    if (client.readyState === 1) {
+      client.send(JSON.stringify({ type: "nameGenerated", name }));
+    }
+  }
+}
+
+export function scheduleSessionTitleGeneration(sessionId: string, prompt: string) {
+  const session = sessions.get(sessionId);
+  const titlePrompt = prompt.trim();
+  if (!session || !titlePrompt || session.customName || session.nameGenerated) return;
+
+  session.nameGenerated = true;
+
+  void generateSessionTitle({
+    prompt: titlePrompt,
+    agentName: session.agentName,
+    cwd: session.cwd,
+    ticketTitle: session.ticketTitle,
+    gitBranch: session.gitBranch,
+  }).then((name) => {
+    const current = sessions.get(sessionId);
+    if (!current || current.customName) return;
+    current.customName = name;
+    saveState(sessions);
+    broadcastSessionName(sessionId, name);
+  }).catch((error: any) => {
+    logError(`[PRBE_ERROR_titleGeneration] [session] Failed to generate title for ${sessionId}: ${error?.message || error}`);
+  });
+}
+
 export function getActiveSessionCount(): number {
   let count = 0;
   for (const [, session] of sessions) {
@@ -321,9 +357,11 @@ export async function createSession(params: {
   baseBranch?: string;
   createWorktreeFlag?: boolean;
   ticketPromptTemplate?: string;
+  initialPrompt?: string;
   autoCareful?: boolean;
   multiRepoMode?: 'current' | 'main';
   additionalRepos?: { name: string; path: string; defaultBranch?: string }[];
+  beforeStart?: (cwd: string) => Promise<void>;
 }): Promise<{ session: Session; cwd: string; gitBranch?: string }> {
   const {
     sessionId,
@@ -341,9 +379,11 @@ export async function createSession(params: {
     baseBranch,
     createWorktreeFlag,
     ticketPromptTemplate,
+    initialPrompt,
     autoCareful,
     multiRepoMode,
     additionalRepos,
+    beforeStart,
   } = params;
 
   let workingDir = originalCwd;
@@ -402,6 +442,10 @@ export async function createSession(params: {
     workingDir = homedir();
   }
 
+  if (beforeStart) {
+    await beforeStart(workingDir);
+  }
+
   // Use the user's default shell and spawn as login shell to source their profile
   const shell = process.platform === "win32"
     ? "powershell.exe"
@@ -412,12 +456,20 @@ export async function createSession(params: {
     ptyProcess = pty.spawn(shell, ["--login"], {
       name: "xterm-256color",
       cwd: workingDir,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-        OPENUI_PORT: String(serverPort),
-      } as Record<string, string>,
+      env: (() => {
+        // Inherit the parent env, but strip NO_COLOR (which makes Claude Code
+        // and other CLIs render their UI monochrome) and force color on. The
+        // xterm renderer has a full ANSI theme, so color is always supported here.
+        const { NO_COLOR, ...rest } = process.env;
+        return {
+          ...rest,
+          TERM: "xterm-256color",
+          COLORTERM: "truecolor",
+          FORCE_COLOR: "1",
+          OPENUI_SESSION_ID: sessionId,
+          OPENUI_PORT: String(serverPort),
+        };
+      })() as Record<string, string>,
       cols: DEFAULT_PTY_COLS,
       rows: DEFAULT_PTY_ROWS,
     });
@@ -556,8 +608,9 @@ export async function createSession(params: {
       }, 2000);
     }
 
+    let promptDelay = agentId === "claude" ? 4000 : 1200;
+
     if (ticketUrl) {
-      const ticketDelay = agentId === "claude" ? 4000 : 2000;
       setTimeout(() => {
         const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
         const template = ticketPromptTemplate || defaultTemplate;
@@ -566,20 +619,27 @@ export async function createSession(params: {
           .replace(/\{\{id\}\}/g, ticketId || "")
           .replace(/\{\{title\}\}/g, ticketTitle || "");
         ptyProcess.write(ticketPrompt + "\r");
-      }, ticketDelay);
+      }, promptDelay);
+      promptDelay += 1800;
     }
 
     // If multi-repo worktrees were created, inject context
     if (worktreePaths && Object.keys(worktreePaths).length > 1) {
-      const baseDelay = agentId === "claude" ? 4000 : 2000;
-      const delay = ticketUrl ? baseDelay + 2000 : baseDelay;
       setTimeout(() => {
         const repoLines = Object.entries(worktreePaths!)
           .map(([name, path]) => `- ${name}: ${path}`)
           .join("\n");
         const contextPrompt = `This session has worktrees across multiple repos:\n${repoLines}\n\nAll repos are on branch: ${branchName}\nCoordinate changes across all repos as needed.`;
         ptyProcess.write(contextPrompt + "\r");
-      }, delay);
+      }, promptDelay);
+      promptDelay += 1800;
+    }
+
+    const starterPrompt = initialPrompt?.trim();
+    if (starterPrompt) {
+      setTimeout(() => {
+        ptyProcess.write(`${starterPrompt.slice(0, 12000)}\r`);
+      }, promptDelay);
     }
   }, 300);
 
@@ -629,6 +689,7 @@ export async function restoreSessions() {
       nodeId: node.nodeId,
       isRestored: true,
       worktreePaths: node.worktreePaths,
+      launchCheckpoint: node.launchCheckpoint,
     };
 
     sessions.set(node.sessionId, session);

@@ -6,6 +6,11 @@ import { useStore } from "../stores/useStore";
 export function UndoDeleteToast() {
   const { deleteToast, setDeleteToast } = useStore();
   const [progress, setProgress] = useState(100);
+  const toastItems = deleteToast?.items?.length
+    ? deleteToast.items
+    : deleteToast
+      ? [{ sessionId: deleteToast.sessionId, nodeId: deleteToast.nodeId, sessionName: deleteToast.sessionName }]
+      : [];
 
   useEffect(() => {
     if (!deleteToast) {
@@ -35,7 +40,11 @@ export function UndoDeleteToast() {
     clearTimeout(deleteToast.timeout);
 
     // Tell server to undo the soft-delete
-    await fetch(`/api/sessions/${deleteToast.sessionId}/undo-delete`, { method: "POST" });
+    await Promise.all(
+      toastItems.map((item) =>
+        fetch(`/api/sessions/${item.sessionId}/undo-delete`, { method: "POST" }),
+      ),
+    );
 
     // Dismiss toast
     setDeleteToast(null);
@@ -65,13 +74,16 @@ export function UndoDeleteToast() {
           {/* Progress bar */}
           <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-zinc-700 rounded-b-lg overflow-hidden">
             <div
-              className="h-full bg-orange-500 transition-all duration-100 ease-linear"
-              style={{ width: `${progress}%` }}
+              className="h-full transition-all duration-100 ease-linear"
+              style={{ width: `${progress}%`, backgroundColor: "#D97652" }}
             />
           </div>
 
           <span className="text-sm text-zinc-300">
-            Deleted <span className="font-medium text-white">"{deleteToast.sessionName}"</span>
+            Deleted{" "}
+            <span className="font-medium text-white">
+              {toastItems.length > 1 ? `${toastItems.length} sessions` : `"${deleteToast.sessionName}"`}
+            </span>
           </span>
 
           <button

@@ -4,14 +4,6 @@ import {
   X,
   Minimize2,
   Maximize2,
-  Sparkles,
-  Code,
-  Cpu,
-  Zap,
-  Rocket,
-  Bot,
-  Brain,
-  Wand2,
   Wrench,
   MessageSquare,
   WifiOff,
@@ -20,28 +12,20 @@ import {
   Rows,
   Grid2X2,
   Square,
+  Plus,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
+import { TERMINAL_THEMES, getTerminalTheme } from "../theme/appearance";
 import { Terminal } from "./Terminal";
 import { ResizableSplit } from "./ResizableSplit";
 import { InPaneMarkdown } from "./InPaneMarkdown";
-
-const iconMap: Record<string, any> = {
-  sparkles: Sparkles,
-  code: Code,
-  cpu: Cpu,
-  zap: Zap,
-  rocket: Rocket,
-  bot: Bot,
-  brain: Brain,
-  wand2: Wand2,
-};
+import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   creating: { label: "Creating...", color: "#818CF8" },
   running: { label: "Working", color: "#22C55E" },
   tool_calling: { label: "Working", color: "#22C55E" },
-  waiting_input: { label: "Needs Input", color: "#F97316" },
+  waiting_input: { label: "Needs Input", color: "#D97652" },
   idle: { label: "Idle", color: "#FBBF24" },
   disconnected: { label: "Offline", color: "#6B7280" },
   error: { label: "Error", color: "#EF4444" },
@@ -66,17 +50,22 @@ export function FocusMode() {
     viewMode,
     setViewMode,
     focusedSessionIds,
+    addFocusedSession,
     removeFocusedSession,
     sessions,
     nodes,
     setNewSessionModalOpen,
     setNewSessionForNodeId,
+    terminalTheme,
+    setTerminalTheme,
   } = useStore();
 
   const [activePane, setActivePane] = useState<string | null>(null);
   const [maximizedPane, setMaximizedPane] = useState<string | null>(null);
   const [layout, setLayout] = useState<SplitLayout>("auto");
   const [openedFiles, setOpenedFiles] = useState<Record<string, string | null>>({});
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+  const terminalPalette = getTerminalTheme(terminalTheme);
 
   const setOpenedFile = (nodeId: string, path: string | null) => {
     setOpenedFiles((prev) => ({ ...prev, [nodeId]: path }));
@@ -94,6 +83,18 @@ export function FocusMode() {
     [focusedSessionIds, sessions, nodes]
   );
 
+  const availableSessions = useMemo(
+    () =>
+      Array.from(sessions.entries())
+        .filter(([nodeId]) => !focusedSessionIds.includes(nodeId))
+        .map(([nodeId, session]) => ({
+          nodeId,
+          session,
+          node: nodes.find((n) => n.id === nodeId),
+        })),
+    [focusedSessionIds, sessions, nodes]
+  );
+
   // Auto-set active pane to first session if none set
   useEffect(() => {
     if (focusedSessions.length > 0 && !activePane) {
@@ -107,6 +108,12 @@ export function FocusMode() {
       setMaximizedPane(null);
     }
   }, [focusedSessionIds, maximizedPane]);
+
+  useEffect(() => {
+    if (availableSessions.length === 0) {
+      setSessionPickerOpen(false);
+    }
+  }, [availableSessions.length]);
 
   const handleClose = useCallback(
     (nodeId: string) => {
@@ -131,6 +138,16 @@ export function FocusMode() {
       setNewSessionModalOpen(true);
     },
     [setNewSessionForNodeId, setNewSessionModalOpen]
+  );
+
+  const handleAddFocusedSession = useCallback(
+    (nodeId: string) => {
+      addFocusedSession(nodeId);
+      setActivePane(nodeId);
+      setSessionPickerOpen(false);
+      setMaximizedPane(null);
+    },
+    [addFocusedSession]
   );
 
   const toggleMaximize = useCallback(
@@ -162,10 +179,12 @@ export function FocusMode() {
     node,
   }: (typeof focusedSessions)[number]) => {
     if (!session) return null;
-    const displayColor = session.customColor || session.color || "#888";
+    const displayColor = getAgentAccentColor(
+      session.agentId,
+      session.customColor || session.color,
+    );
     const displayName = session.customName || session.agentName;
     const iconId = (node?.data?.icon as string) || "cpu";
-    const Icon = iconMap[iconId] || Cpu;
     const status = statusConfig[session.status] || statusConfig.idle;
     const isActive = activePane === nodeId;
     const isDisconnected = session.status === "disconnected";
@@ -182,6 +201,7 @@ export function FocusMode() {
         }`}
         onClick={() => setActivePane(nodeId)}
         style={{
+          backgroundColor: isActive ? terminalPalette.surface : terminalPalette.background,
           outline: isActive
             ? `1px solid ${displayColor}40`
             : needsInput
@@ -192,20 +212,21 @@ export function FocusMode() {
         <div
           className="flex-shrink-0 h-8 px-2.5 flex items-center justify-between border-b transition-colors"
           style={{
-            borderColor: isActive ? `${displayColor}30` : "#2a2a2a",
+            borderColor: isActive ? `${displayColor}30` : terminalPalette.border,
             backgroundColor: isActive ? `${displayColor}08` : "transparent",
           }}
         >
           <div className="flex items-center gap-2 min-w-0">
             <div
-              className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{ backgroundColor: displayColor }}
-            />
-            <div
               className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0"
               style={{ backgroundColor: `${displayColor}15` }}
             >
-              <Icon className="w-2.5 h-2.5" style={{ color: displayColor }} />
+              <AgentIcon
+                agentId={session.agentId}
+                iconId={iconId}
+                className="w-2.5 h-2.5"
+                style={{ color: displayColor }}
+              />
             </div>
             <span className="text-[11px] font-medium text-white truncate">
               {displayName}
@@ -296,7 +317,10 @@ export function FocusMode() {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 bg-[#0d0d0d] relative">
+        <div
+          className="flex-1 min-h-0 relative"
+          style={{ backgroundColor: terminalPalette.background }}
+        >
           <Terminal
             key={`focus-${session.sessionId}`}
             sessionId={session.sessionId}
@@ -392,6 +416,96 @@ export function FocusMode() {
         </div>
 
         <div className="flex items-center gap-1">
+          <div className="relative">
+            <button
+              onClick={() => setSessionPickerOpen((open) => !open)}
+              disabled={availableSessions.length === 0}
+              className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] text-zinc-400 hover:text-white hover:bg-surface-active disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-400 transition-colors"
+              title={
+                availableSessions.length === 0
+                  ? "All sessions are already in focus"
+                  : "Add session to focus mode"
+              }
+            >
+              <Plus className="w-3 h-3" />
+              Session
+            </button>
+
+            <AnimatePresence>
+              {sessionPickerOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute right-0 top-7 z-[80] w-64 rounded-md border border-border bg-canvas-dark shadow-2xl overflow-hidden"
+                >
+                  <div className="px-2.5 py-1.5 border-b border-border text-[9px] uppercase tracking-wider text-zinc-600 font-semibold">
+                    Add To Focus
+                  </div>
+                  <div className="max-h-72 overflow-y-auto py-1">
+                    {availableSessions.map(({ nodeId, session, node }) => {
+                      const displayColor = getAgentAccentColor(
+                        session.agentId,
+                        session.customColor || session.color,
+                      );
+                      const displayName = session.customName || session.agentName;
+                      const iconId = (node?.data?.icon as string) || session.agentId;
+                      const status = statusConfig[session.status] || statusConfig.idle;
+
+                      return (
+                        <button
+                          key={nodeId}
+                          onClick={() => handleAddFocusedSession(nodeId)}
+                          className="w-full min-w-0 px-2.5 py-2 flex items-center gap-2 text-left hover:bg-surface-active transition-colors"
+                          title={`Add ${displayName} to focus mode`}
+                        >
+                          <div
+                            className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
+                            style={{ backgroundColor: `${displayColor}18` }}
+                          >
+                            <AgentIcon
+                              agentId={session.agentId}
+                              iconId={iconId}
+                              className="w-3.5 h-3.5"
+                              style={{ color: displayColor }}
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[11px] text-zinc-200 truncate">
+                              {displayName}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-zinc-600">
+                              <span
+                                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: status.color }}
+                              />
+                              <span>{status.label}</span>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <div className="hidden md:flex items-center gap-1 mr-2 px-1 py-0.5 rounded bg-canvas">
+            {TERMINAL_THEMES.map((theme) => (
+              <button
+                key={theme.id}
+                onClick={() => setTerminalTheme(theme.id)}
+                className={`w-5 h-5 rounded border transition-transform hover:scale-105 ${
+                  terminalTheme === theme.id ? "border-zinc-200" : "border-zinc-700"
+                }`}
+                style={{ backgroundColor: theme.background }}
+                title={`${theme.name} terminal background`}
+              />
+            ))}
+          </div>
+
           {/* Layout switcher — only show when >1 session and not maximized */}
           {count > 1 && !maximizedPane && (
             <div className="flex items-center gap-0.5 mr-2 px-1 py-0.5 rounded bg-canvas">

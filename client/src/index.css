@@ -3,11 +3,18 @@
 @tailwind utilities;
 
 :root {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: "SF Pro Text", "SF Pro Display", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  --accent-orange: oklch(68% 0.15 48);
+  --accent-orange-soft: oklch(68% 0.15 48 / 0.16);
+  --workspace-bg: oklch(8.5% 0.004 260);
+  --workspace-bg-dark: oklch(6.5% 0.004 260);
+  --workspace-dots: oklch(22% 0.006 260);
+  --workspace-controls: oklch(13% 0.005 260);
+  --workspace-border: oklch(24% 0.007 260);
 }
 
 * {
@@ -19,9 +26,14 @@ html, body {
   padding: 0;
   height: 100%;
   width: 100%;
-  background: #0f0f0f;
-  color: #fafafa;
+  background: oklch(8.5% 0.004 260);
+  color: oklch(97% 0.004 42);
   overflow: hidden;
+}
+
+#root {
+  min-height: 100%;
+  background: var(--workspace-bg);
 }
 
 /* Electron draggable titlebar region */
@@ -35,11 +47,11 @@ html, body {
 
 /* React Flow canvas */
 .react-flow {
-  background: #0f0f0f !important;
+  background: var(--workspace-bg) !important;
 }
 
 .react-flow__background {
-  background-color: #0f0f0f !important;
+  background-color: var(--workspace-bg) !important;
 }
 
 .react-flow__pane {
@@ -63,18 +75,18 @@ html, body {
 }
 
 .react-flow__controls {
-  background: #1a1a1a !important;
-  border: 1px solid #2a2a2a !important;
+  background: var(--workspace-controls) !important;
+  border: 1px solid var(--workspace-border) !important;
   border-radius: 8px !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.24) !important;
   overflow: hidden;
 }
 
 .react-flow__controls-button {
   background: transparent !important;
   border: none !important;
-  border-bottom: 1px solid #2a2a2a !important;
-  color: #666 !important;
+  border-bottom: 1px solid var(--workspace-border) !important;
+  color: oklch(62% 0.012 260) !important;
   width: 28px !important;
   height: 28px !important;
   padding: 6px !important;
@@ -85,8 +97,8 @@ html, body {
 }
 
 .react-flow__controls-button:hover {
-  background: #252525 !important;
-  color: #fff !important;
+  background: oklch(27% 0.01 260 / 0.82) !important;
+  color: oklch(96% 0.004 260) !important;
 }
 
 .react-flow__controls-button svg {
@@ -96,10 +108,10 @@ html, body {
 }
 
 .react-flow__minimap {
-  background: #1a1a1a !important;
-  border: 1px solid #2a2a2a !important;
+  background: var(--workspace-controls) !important;
+  border: 1px solid var(--workspace-border) !important;
   border-radius: 8px !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.24) !important;
 }
 
 /* Hide edges/connections */
@@ -114,6 +126,12 @@ html, body {
 /* Terminal styling — padding is on the wrapper div, not here */
 .xterm {
   padding: 0;
+  height: 100%;
+  font-family: "SF Mono", ui-monospace, Menlo, Monaco, "Cascadia Code", monospace;
+}
+
+.xterm-screen {
+  border-radius: 7px;
 }
 
 .xterm-viewport::-webkit-scrollbar {
@@ -125,12 +143,12 @@ html, body {
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb {
-  background: #333;
+  background: oklch(35% 0.01 260);
   border-radius: 3px;
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: oklch(43% 0.012 260);
 }
 
 /* Custom scrollbar */
@@ -144,12 +162,12 @@ html, body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: oklch(35% 0.01 260);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: oklch(43% 0.012 260);
 }
 
 /* Animations */
@@ -223,7 +241,7 @@ html, body {
   border: 1px solid #2a2a2a;
   border-radius: 4px;
   padding: 0.1em 0.4em;
-  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, Monaco, "Cascadia Code", monospace;
   font-size: 0.85em;
   color: #f4f4f5;
 }

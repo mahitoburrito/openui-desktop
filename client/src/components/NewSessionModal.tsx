@@ -3,9 +3,6 @@ import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
-  Sparkles,
-  Code,
-  Cpu,
   FolderOpen,
   Terminal,
   Plus,
@@ -18,19 +15,11 @@ import {
   Home,
   ArrowUp,
   Github,
-  Brain,
   RefreshCw,
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
-
-const iconMap: Record<string, any> = {
-  sparkles: Sparkles,
-  code: Code,
-  cpu: Cpu,
-  brain: Brain,
-  terminal: Terminal,
-};
+import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 
 interface LinearTicket {
   id: string;
@@ -159,6 +148,8 @@ export function NewSessionModal({
     updateSession,
     nodes,
     launchCwd,
+    newSessionInitialPrompt,
+    setNewSessionInitialPrompt,
   } = useStore();
 
   // Get ReactFlow instance to access viewport
@@ -171,6 +162,7 @@ export function NewSessionModal({
   const [cwd, setCwd] = useState("");
   const [customName, setCustomName] = useState("");
   const [commandArgs, setCommandArgs] = useState("");
+  const [initialPrompt, setInitialPrompt] = useState("");
   const [count, setCount] = useState(1);
 
   // Tab state
@@ -228,14 +220,17 @@ export function NewSessionModal({
               ? "--yolo"
               : ""
         );
+        setInitialPrompt(newSessionInitialPrompt);
         setCount(1);
       } else {
         setSelectedAgent(null);
         setCwd("");
         setCustomName("");
         setCommandArgs("");
+        setInitialPrompt(newSessionInitialPrompt);
         setCount(1);
       }
+      setNewSessionInitialPrompt("");
       setActiveTab("blank");
       setSelectedTicket(null);
       setSearchQuery("");
@@ -270,7 +265,7 @@ export function NewSessionModal({
       setInitialized(false);
       setLinearConfigured(null);
     }
-  }, [open, initialized, existingSession, agents]);
+  }, [open, initialized, existingSession, agents, newSessionInitialPrompt, setNewSessionInitialPrompt]);
 
   // Load tickets when switching to linear tab
   useEffect(() => {
@@ -434,6 +429,7 @@ export function NewSessionModal({
     const fullCommand = selectedAgent.command
       ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
       : commandArgs;
+    const starterPrompt = initialPrompt.trim();
 
     const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
     const isMultiRepo = createWorktree && selectedReposList.length > 1;
@@ -467,6 +463,7 @@ export function NewSessionModal({
               nodeId: existingNodeId,
               customName: customName || existingSession.customName,
               customColor: existingSession.customColor,
+              initialPrompt: starterPrompt || undefined,
               ...(createWorktree && branchName && {
                 branchName,
                 baseBranch,
@@ -522,6 +519,7 @@ export function NewSessionModal({
 
       for (let i = 0; i < count; i++) {
         const nodeId = `node-${Date.now()}-${i}`;
+        const selectedColor = getAgentAccentColor(selectedAgent.id, selectedAgent.color);
         const agentName = count > 1
           ? `${customName || selectedAgent.name} ${i + 1}`
           : customName || selectedAgent.name;
@@ -537,7 +535,7 @@ export function NewSessionModal({
           data: {
             label: agentName,
             agentId: selectedAgent.id,
-            color: selectedAgent.color,
+            color: selectedColor,
             icon: selectedAgent.icon,
             sessionId: placeholderSessionId,
           },
@@ -549,7 +547,7 @@ export function NewSessionModal({
           agentId: selectedAgent.id,
           agentName: selectedAgent.name,
           command: fullCommand,
-          color: selectedAgent.color,
+          color: selectedColor,
           createdAt: new Date().toISOString(),
           cwd: effectiveWorkingDir || "",
           gitBranch: branchName || undefined,
@@ -569,10 +567,11 @@ export function NewSessionModal({
               body: JSON.stringify({
                 agentId: selectedAgent.id,
                 agentName: selectedAgent.name,
-                command: fullCommand,
-                cwd: effectiveWorkingDir,
-                nodeId,
-                customName: count > 1 ? agentName : customName || undefined,
+              command: fullCommand,
+              cwd: effectiveWorkingDir,
+              nodeId,
+              customName: count > 1 ? agentName : customName || undefined,
+                initialPrompt: starterPrompt || undefined,
                 ...(agentIndex === 0 && createWorktree && branchName && {
                   branchName,
                   baseBranch,
@@ -593,11 +592,12 @@ export function NewSessionModal({
             });
 
             if (res.ok) {
-              const { sessionId, gitBranch, cwd: newCwd } = await res.json();
+              const { sessionId, gitBranch, cwd: newCwd, launchCheckpoint } = await res.json();
               updateSession(nodeId, {
                 sessionId,
                 cwd: newCwd || effectiveWorkingDir,
                 gitBranch: gitBranch || branchName || undefined,
+                launchCheckpoint,
                 status: "idle",
               });
             } else {
@@ -615,7 +615,7 @@ export function NewSessionModal({
   const priorityColors: Record<number, string> = {
     0: "#6B7280",
     1: "#EF4444",
-    2: "#F97316",
+    2: "#D97652",
     3: "#FBBF24",
     4: "#22C55E",
   };
@@ -710,8 +710,9 @@ export function NewSessionModal({
                       <label className="text-xs text-zinc-500">Select Agent</label>
                       <div className="grid grid-cols-2 gap-2">
                         {agents.map((agent) => {
-                          const Icon = iconMap[agent.icon] || Cpu;
                           const isSelected = selectedAgent?.id === agent.id;
+                          const displayColor = getAgentAccentColor(agent.id, agent.color);
+                          const useBrandOnly = agent.id === "codex" || agent.id === "claude";
                           return (
                             <button
                               key={agent.id}
@@ -725,20 +726,48 @@ export function NewSessionModal({
                                       : ""
                                 );
                               }}
-                              className={`relative p-3 rounded-md text-left transition-all border ${
+                              className={`group relative rounded-md border p-3 transition-all ${
+                                useBrandOnly ? "text-center" : "text-left"
+                              } ${
                                 isSelected
-                                  ? "border-white/20 bg-surface-active"
-                                  : "border-border hover:border-border hover:bg-surface-hover"
+                                  ? "border-zinc-200/40 bg-surface-active"
+                                  : "border-border hover:border-zinc-600 hover:bg-surface-hover"
                               }`}
+                              aria-label={`${agent.name}: ${agent.description}`}
+                              title={`${agent.name}: ${agent.description}`}
                             >
                               <div
-                                className="w-8 h-8 rounded-md flex items-center justify-center mb-2"
-                                style={{ backgroundColor: `${agent.color}20` }}
+                                className={`relative rounded-md flex items-center justify-center ${
+                                  useBrandOnly ? "mx-auto h-14 w-14" : "mb-2 h-8 w-8"
+                                }`}
+                                style={{ backgroundColor: useBrandOnly ? "transparent" : `${displayColor}18` }}
                               >
-                                <Icon className="w-4 h-4" style={{ color: agent.color }} />
+                                <AgentIcon
+                                  agentId={agent.id}
+                                  iconId={agent.icon}
+                                  className={useBrandOnly ? "h-12 w-12" : "h-4 w-4"}
+                                  style={{ color: displayColor }}
+                                />
+                                <span
+                                  className="absolute bottom-1 right-1 h-2.5 w-2.5 rounded-full border border-canvas-dark"
+                                  style={{ backgroundColor: displayColor }}
+                                />
                               </div>
-                              <h3 className="text-sm font-medium text-white">{agent.name}</h3>
-                              <p className="text-[10px] text-zinc-500 mt-0.5">{agent.description}</p>
+                              {useBrandOnly ? (
+                                <>
+                                  <span className="mt-2 block text-xs font-medium text-zinc-200">
+                                    {agent.name}
+                                  </span>
+                                  <span className="mt-1 block min-h-[1.5rem] text-[10px] leading-snug text-zinc-500 opacity-0 transition-all duration-150 group-hover:text-zinc-300 group-hover:opacity-100 group-focus-visible:text-zinc-300 group-focus-visible:opacity-100">
+                                    {agent.description}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <h3 className="text-sm font-medium text-white">{agent.name}</h3>
+                                  <p className="text-[10px] text-zinc-500 mt-0.5">{agent.description}</p>
+                                </>
+                              )}
                             </button>
                           );
                         })}
@@ -1246,6 +1275,18 @@ export function NewSessionModal({
                     </div>
                   )}
 
+                  {/* Starter prompt */}
+                  <div className="space-y-2">
+                    <label className="text-xs text-zinc-500">Starter prompt</label>
+                    <textarea
+                      value={initialPrompt}
+                      onChange={(event) => setInitialPrompt(event.target.value)}
+                      rows={5}
+                      placeholder="Optional first message to send after the agent starts..."
+                      className="w-full resize-y rounded-md bg-canvas border border-border px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                    />
+                  </div>
+
                   {/* Command arguments */}
                   <div className="space-y-2">
                     <label className="text-xs text-zinc-500 flex items-center gap-1.5">
@@ -1256,7 +1297,7 @@ export function NewSessionModal({
                       type="text"
                       value={commandArgs}
                       onChange={(e) => setCommandArgs(e.target.value)}
-                      placeholder={selectedAgent?.command ? "e.g. --model opus or --resume" : "e.g. ralph --monitor, ralph-setup, ralph-import"}
+                      placeholder={selectedAgent?.command ? "e.g. --model opus or --resume" : "Select Claude or Codex first"}
                       className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors font-mono"
                     />
                     {selectedAgent && (selectedAgent.command || commandArgs) && (

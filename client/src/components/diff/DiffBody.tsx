@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Loader2, Undo2 } from "lucide-react";
 import {
   toSplitRows,
   type DiffLine,
@@ -46,6 +47,37 @@ const markerFor = (t: DiffLine["type"]) =>
 const wrapCls = (wrap: boolean) =>
   wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre";
 
+function HunkRejectButton({
+  hunkIndex,
+  rejectingHunkIndex,
+  onRejectHunk,
+}: {
+  hunkIndex: number | null;
+  rejectingHunkIndex?: number | null;
+  onRejectHunk?: (hunkIndex: number) => void;
+}) {
+  if (hunkIndex === null || !onRejectHunk) return null;
+  const rejecting = rejectingHunkIndex === hunkIndex;
+  return (
+    <button
+      type="button"
+      onClick={() => onRejectHunk(hunkIndex)}
+      disabled={rejecting}
+      className="flex-shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-200/70 hover:text-red-200 hover:bg-red-500/10 disabled:opacity-60 disabled:hover:text-blue-200/70 disabled:hover:bg-transparent transition-colors"
+      title="Reject this hunk"
+    >
+      {rejecting ? (
+        <Loader2 className="w-3 h-3 animate-spin" />
+      ) : (
+        <Undo2 className="w-3 h-3" />
+      )}
+      Reject
+    </button>
+  );
+}
+
+const diffVar = (name: string) => `var(${name})`;
+
 // ── Unified ───────────────────────────────────────────────────────────────────
 
 export function UnifiedDiff({
@@ -53,18 +85,28 @@ export function UnifiedDiff({
   filePath,
   highlight,
   wrap,
+  canRejectHunks = false,
+  rejectingHunkIndex,
+  onRejectHunk,
 }: {
   lines: DiffLine[];
   filePath: string;
   highlight: Highlight;
   wrap: boolean;
+  canRejectHunks?: boolean;
+  rejectingHunkIndex?: number | null;
+  onRejectHunk?: (hunkIndex: number) => void;
 }) {
   return (
     <div className="text-[12px] leading-[1.5] font-mono">
       {lines.map((line, i) => {
         if (line.type === "meta") {
           return (
-            <div key={i} className="px-4 text-zinc-600 whitespace-pre-wrap break-all">
+            <div
+              key={i}
+              className="px-4 whitespace-pre-wrap break-all"
+              style={{ color: diffVar("--diff-muted") }}
+            >
               {line.text || " "}
             </div>
           );
@@ -72,10 +114,24 @@ export function UnifiedDiff({
         const isCode = line.type === "add" || line.type === "del" || line.type === "ctx";
         return (
           <div key={i} className={`flex ${bgFor(line.type)}`}>
-            <span className="flex-shrink-0 w-10 select-none text-right pr-1 text-[10px] text-zinc-600 border-r border-border/40">
+            <span
+              className="flex-shrink-0 w-10 select-none text-right pr-1 text-[10px] border-r"
+              style={{
+                backgroundColor: diffVar("--diff-gutter"),
+                borderColor: diffVar("--diff-border"),
+                color: diffVar("--diff-muted"),
+              }}
+            >
               {line.oldNo ?? ""}
             </span>
-            <span className="flex-shrink-0 w-10 select-none text-right pr-1 text-[10px] text-zinc-600 border-r border-border/40">
+            <span
+              className="flex-shrink-0 w-10 select-none text-right pr-1 text-[10px] border-r"
+              style={{
+                backgroundColor: diffVar("--diff-gutter"),
+                borderColor: diffVar("--diff-border"),
+                color: diffVar("--diff-muted"),
+              }}
+            >
               {line.newNo ?? ""}
             </span>
             <span
@@ -84,13 +140,25 @@ export function UnifiedDiff({
                   ? "text-green-400"
                   : line.type === "del"
                     ? "text-red-400"
-                    : "text-zinc-700"
+                    : ""
               }`}
+              style={line.type === "ctx" ? { color: diffVar("--diff-muted") } : undefined}
             >
               {line.type === "hunk" ? "" : markerFor(line.type)}
             </span>
             <span className={`flex-1 min-w-0 pr-4 ${wrapCls(wrap)}`}>
-              {isCode ? (
+              {line.type === "hunk" ? (
+                <span className="flex min-w-0 items-center justify-between gap-3 text-blue-300">
+                  <span className="flex-1 min-w-0 truncate">{line.text || " "}</span>
+                  {canRejectHunks && (
+                    <HunkRejectButton
+                      hunkIndex={line.hunkIndex}
+                      rejectingHunkIndex={rejectingHunkIndex}
+                      onRejectHunk={onRejectHunk}
+                    />
+                  )}
+                </span>
+              ) : isCode ? (
                 <HighlightedContent line={line} filePath={filePath} highlight={highlight} />
               ) : (
                 line.text || " "
@@ -119,12 +187,24 @@ function SplitCell({
   wrap: boolean;
 }) {
   if (!line) {
-    return <div className="flex-1 min-w-0 bg-zinc-500/[0.03]" />;
+    return (
+      <div
+        className="flex-1 min-w-0"
+        style={{ backgroundColor: "color-mix(in oklab, var(--diff-gutter), transparent 54%)" }}
+      />
+    );
   }
   const no = side === "left" ? line.oldNo : line.newNo;
   return (
     <div className={`flex-1 min-w-0 flex ${bgFor(line.type)}`}>
-      <span className="flex-shrink-0 w-10 select-none text-right pr-1 text-[10px] text-zinc-600 border-r border-border/40">
+      <span
+        className="flex-shrink-0 w-10 select-none text-right pr-1 text-[10px] border-r"
+        style={{
+          backgroundColor: diffVar("--diff-gutter"),
+          borderColor: diffVar("--diff-border"),
+          color: diffVar("--diff-muted"),
+        }}
+      >
         {no ?? ""}
       </span>
       <span
@@ -133,8 +213,9 @@ function SplitCell({
             ? "text-green-400"
             : line.type === "del"
               ? "text-red-400"
-              : "text-zinc-700"
+              : ""
         }`}
+        style={line.type === "ctx" ? { color: diffVar("--diff-muted") } : undefined}
       >
         {markerFor(line.type)}
       </span>
@@ -150,11 +231,17 @@ export function SplitDiff({
   filePath,
   highlight,
   wrap,
+  canRejectHunks = false,
+  rejectingHunkIndex,
+  onRejectHunk,
 }: {
   lines: DiffLine[];
   filePath: string;
   highlight: Highlight;
   wrap: boolean;
+  canRejectHunks?: boolean;
+  rejectingHunkIndex?: number | null;
+  onRejectHunk?: (hunkIndex: number) => void;
 }) {
   const rows: SplitRow[] = useMemo(() => toSplitRows(lines), [lines]);
   return (
@@ -162,22 +249,35 @@ export function SplitDiff({
       {rows.map((row, i) => {
         if (row.kind === "meta") {
           return (
-            <div key={i} className="px-4 text-zinc-600 whitespace-pre-wrap break-all">
+            <div
+              key={i}
+              className="px-4 whitespace-pre-wrap break-all"
+              style={{ color: diffVar("--diff-muted") }}
+            >
               {row.full?.text || " "}
             </div>
           );
         }
         if (row.kind === "hunk") {
           return (
-            <div key={i} className="px-4 bg-blue-500/10 text-blue-300 whitespace-pre-wrap break-all">
-              {row.full?.text || " "}
+            <div key={i} className="px-4 bg-blue-500/10 text-blue-300">
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <span className={`${wrapCls(wrap)} flex-1 min-w-0`}>{row.full?.text || " "}</span>
+                {canRejectHunks && (
+                  <HunkRejectButton
+                    hunkIndex={row.full?.hunkIndex ?? null}
+                    rejectingHunkIndex={rejectingHunkIndex}
+                    onRejectHunk={onRejectHunk}
+                  />
+                )}
+              </div>
             </div>
           );
         }
         return (
           <div key={i} className="flex">
             <SplitCell line={row.left} side="left" filePath={filePath} highlight={highlight} wrap={wrap} />
-            <div className="w-px bg-border flex-shrink-0" />
+            <div className="w-px flex-shrink-0" style={{ backgroundColor: diffVar("--diff-border") }} />
             <SplitCell line={row.right} side="right" filePath={filePath} highlight={highlight} wrap={wrap} />
           </div>
         );

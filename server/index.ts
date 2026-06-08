@@ -8,7 +8,12 @@ import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { apiRoutes } from "./routes/api";
 import { prbeRoutes } from "./routes/prbe";
-import { sessions, restoreSessions, setServerPort } from "./services/sessionManager";
+import {
+  sessions,
+  restoreSessions,
+  scheduleSessionTitleGeneration,
+  setServerPort,
+} from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 
 const PREFERRED_PORT = Number(process.env.PORT) || 6968;
@@ -165,18 +170,7 @@ export async function startServer(): Promise<number> {
                     session.firstInputBuffer += remaining;
                     const query = session.firstInputBuffer.trim();
                     if (query.length > 0) {
-                      let name = query.length <= 40
-                        ? query
-                        : query.slice(0, 40).replace(/\s+\S*$/, "").trim() + "\u2026";
-                      name = name.charAt(0).toUpperCase() + name.slice(1);
-                      session.customName = name;
-                      session.nameGenerated = true;
-                      saveState(sessions);
-                      for (const client of session.clients) {
-                        if (client.readyState === WebSocket.OPEN) {
-                          client.send(JSON.stringify({ type: "nameGenerated", name }));
-                        }
-                      }
+                      scheduleSessionTitleGeneration(sessionId, query);
                     }
                     session.firstInputBuffer = undefined;
                   } else {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { motion } from "framer-motion";
 import {
   Minimize2,
@@ -7,29 +7,35 @@ import {
   FolderGit2,
   FileDiff,
   Loader2,
-  ChevronRight,
+  ChevronDown,
   Columns2,
   Rows3,
   WrapText,
   Palette,
   Sparkles,
+  Trash2,
+  Undo2,
+  Clipboard,
+  Check,
+  History,
+  Save,
+  RotateCcw,
 } from "lucide-react";
 import { DIFF_THEMES, useStore, type DiffTheme } from "../stores/useStore";
 import {
-  buildFileTree,
-  flattenFiles,
   parseDiff,
   type ChangedFile,
   type DiffLine,
 } from "./diff/diffModel";
-import { FileTree } from "./diff/FileTree";
 import { UnifiedDiff, SplitDiff } from "./diff/DiffBody";
 import { useHighlighter } from "./diff/useHighlighter";
 
-// Which pane currently owns the keyboard. Tab toggles between them so ↑/↓ are
-// unambiguous: they walk the file tree when it's focused, scroll the diff when
-// the diff is focused.
-type Focus = "tree" | "diff";
+interface GitCheckpointSummary {
+  id: string;
+  name: string;
+  createdAt: number;
+  files: { path: string; exists: boolean }[];
+}
 
 const THEME_LABELS: Record<DiffTheme, string> = {
   "github-dark": "GitHub Dark",
@@ -39,6 +45,71 @@ const THEME_LABELS: Record<DiffTheme, string> = {
   nord: "Nord",
   "vitesse-dark": "Vitesse Dark",
 };
+
+const DIFF_THEME_SURFACES: Record<
+  DiffTheme,
+  { background: string; foreground: string; muted: string; gutter: string; border: string }
+> = {
+  "github-dark": {
+    background: "#0d1117",
+    foreground: "#e6edf3",
+    muted: "#7d8590",
+    gutter: "#161b22",
+    border: "#30363d",
+  },
+  "github-light": {
+    background: "#ffffff",
+    foreground: "#24292f",
+    muted: "#6e7781",
+    gutter: "#f6f8fa",
+    border: "#d0d7de",
+  },
+  "one-dark-pro": {
+    background: "#282c34",
+    foreground: "#abb2bf",
+    muted: "#6b7280",
+    gutter: "#21252b",
+    border: "#3b4048",
+  },
+  dracula: {
+    background: "#282a36",
+    foreground: "#f8f8f2",
+    muted: "#7f8497",
+    gutter: "#21222c",
+    border: "#44475a",
+  },
+  nord: {
+    background: "#2e3440",
+    foreground: "#d8dee9",
+    muted: "#8f9bad",
+    gutter: "#252b36",
+    border: "#4c566a",
+  },
+  "vitesse-dark": {
+    background: "#121212",
+    foreground: "#dbd7ca",
+    muted: "#85806f",
+    gutter: "#191919",
+    border: "#343434",
+  },
+};
+
+function formatCheckpointTime(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function formatFileOption(file: ChangedFile): string {
+  const status = file.untracked ? "A" : file.status.replace("?", "M").charAt(0) || "M";
+  const stats = [file.added > 0 ? `+${file.added}` : "", file.removed > 0 ? `-${file.removed}` : ""]
+    .filter(Boolean)
+    .join(" ");
+  return `${status} ${file.path}${stats ? ` (${stats})` : ""}`;
+}
 
 export function DiffView() {
   const {
@@ -66,14 +137,31 @@ export function DiffView() {
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pathInput, setPathInput] = useState("");
-  const [focus, setFocus] = useState<Focus>("tree");
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [discarding, setDiscarding] = useState<"file" | "all" | null>(null);
+  const [rejectingHunkIndex, setRejectingHunkIndex] = useState<number | null>(null);
+  const [copyingMessage, setCopyingMessage] = useState(false);
+  const [commitSummary, setCommitSummary] = useState<string | null>(null);
+  const [copiedCommitMessage, setCopiedCommitMessage] = useState(false);
+  const [checkpoints, setCheckpoints] = useState<GitCheckpointSummary[]>([]);
+  const [checkpointMenuOpen, setCheckpointMenuOpen] = useState(false);
+  const [checkpointing, setCheckpointing] = useState(false);
+  const [restoringCheckpointId, setRestoringCheckpointId] = useState<string | null>(null);
 
   const diffScrollRef = useRef<HTMLDivElement>(null);
-  const treeRef = useRef<HTMLDivElement>(null);
   const diffReqId = useRef(0);
 
   const highlight = useHighlighter(diffTheme);
+  const diffSurface = DIFF_THEME_SURFACES[diffTheme];
+  const diffSurfaceStyle = {
+    backgroundColor: diffSurface.background,
+    color: diffSurface.foreground,
+    "--diff-bg": diffSurface.background,
+    "--diff-fg": diffSurface.foreground,
+    "--diff-muted": diffSurface.muted,
+    "--diff-gutter": diffSurface.gutter,
+    "--diff-border": diffSurface.border,
+  } as CSSProperties;
 
   // The repo we're reviewing. Defaults to the launch cwd until the user picks one.
   const repoPath = diffRepoPath || launchCwd;
@@ -82,10 +170,10 @@ export function DiffView() {
     setPathInput(repoPath);
   }, [repoPath]);
 
-  // Display tree (with collapsed single-child dirs) and the flattened file list
-  // in display order — the latter drives keyboard up/down navigation.
-  const tree = useMemo(() => buildFileTree(files), [files]);
-  const orderedFiles = useMemo(() => flattenFiles(tree), [tree]);
+  const activeFile = useMemo(
+    () => files.find((file) => file.path === activePath) ?? null,
+    [files, activePath],
+  );
 
   const loadFiles = useCallback(() => {
     if (!repoPath) return;
@@ -103,8 +191,11 @@ export function DiffView() {
           setFiles(d.files || []);
           setBranch(d.branch || "");
           setRoot(d.root || "");
+          if (d.root && d.root !== repoPath) {
+            setDiffRepoPath(d.root);
+          }
           // Keep the active selection if it survived; else auto-focus the first
-          // file in display order (OpenCode behavior).
+          // file after the list settles.
           setActivePath((prev) =>
             prev && (d.files || []).some((f: { path: string }) => f.path === prev)
               ? prev
@@ -116,30 +207,49 @@ export function DiffView() {
       .finally(() => setLoadingList(false));
   }, [repoPath]);
 
+  const loadCheckpoints = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      const res = await fetch(`/api/checkpoints?path=${encodeURIComponent(repoPath)}`);
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setCheckpoints([]);
+        return;
+      }
+      setCheckpoints(data.checkpoints || []);
+    } catch {
+      setCheckpoints([]);
+    }
+  }, [repoPath]);
+
   // Load the file list whenever the diff view opens or the repo changes.
   useEffect(() => {
-    if (viewMode === "diff") loadFiles();
-  }, [viewMode, loadFiles]);
-
-  // Auto-focus the first file once the tree is built and nothing is selected.
-  useEffect(() => {
-    if (!activePath && orderedFiles.length > 0) {
-      setActivePath(orderedFiles[0].path);
+    if (viewMode === "diff") {
+      loadFiles();
+      void loadCheckpoints();
     }
-  }, [orderedFiles, activePath]);
+  }, [viewMode, loadFiles, loadCheckpoints]);
+
+  // Auto-focus the most recently edited file once the list loads and nothing
+  // is selected, so opening the diff lands on the file that was just changed.
+  useEffect(() => {
+    if (activePath || files.length === 0) return;
+    const newest = files.reduce((a, b) => (b.mtime > a.mtime ? b : a));
+    setActivePath(newest.mtime > 0 ? newest.path : files[0]?.path ?? null);
+  }, [files, activePath]);
 
   // Load the selected file's diff.
   useEffect(() => {
-    if (!activePath || !root) {
+    const reviewPath = root || repoPath;
+    if (!activePath || !reviewPath) {
       setDiff([]);
       return;
     }
-    const file = files.find((f) => f.path === activePath);
     const id = ++diffReqId.current;
     setLoadingDiff(true);
-    const url = `/api/diff/file?path=${encodeURIComponent(repoPath)}&file=${encodeURIComponent(
+    const url = `/api/diff/file?path=${encodeURIComponent(reviewPath)}&file=${encodeURIComponent(
       activePath,
-    )}${file?.untracked ? "&untracked=1" : ""}`;
+    )}${activeFile?.untracked ? "&untracked=1" : ""}`;
     fetch(url)
       .then((r) => r.json())
       .then((d) => {
@@ -158,69 +268,46 @@ export function DiffView() {
       .finally(() => {
         if (id === diffReqId.current) setLoadingDiff(false);
       });
-  }, [activePath, root, repoPath, files]);
+  }, [activePath, root, repoPath, activeFile]);
 
-  const moveSelection = useCallback(
-    (delta: number) => {
-      if (orderedFiles.length === 0) return;
-      const idx = orderedFiles.findIndex((f) => f.path === activePath);
-      const next = Math.max(0, Math.min(orderedFiles.length - 1, idx + delta));
-      setActivePath(orderedFiles[next].path);
-    },
-    [orderedFiles, activePath],
-  );
-
-  // Keyboard model. Tab toggles focus between tree and diff; ↑/↓ navigate the
-  // focused pane.
+  // Keyboard model: once inside the diff view, ↑/↓ and j/k scroll the diff.
   useEffect(() => {
     if (viewMode !== "diff") return;
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA"))
-        return;
-
-      if (e.key === "Tab") {
-        e.preventDefault();
-        setFocus((f) => (f === "tree" ? "diff" : "tree"));
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.tagName === "BUTTON")
+      ) {
         return;
       }
 
-      if (focus === "tree") {
-        if (e.key === "ArrowDown" || e.key === "j") {
-          e.preventDefault();
-          moveSelection(1);
-        } else if (e.key === "ArrowUp" || e.key === "k") {
-          e.preventDefault();
-          moveSelection(-1);
-        }
-      } else {
-        const el = diffScrollRef.current;
-        if (!el) return;
-        if (e.key === "ArrowDown" || e.key === "j") {
-          e.preventDefault();
-          el.scrollTop += 40;
-        } else if (e.key === "ArrowUp" || e.key === "k") {
-          e.preventDefault();
-          el.scrollTop -= 40;
-        } else if (e.key === "PageDown" || e.key === " ") {
-          e.preventDefault();
-          el.scrollTop += el.clientHeight * 0.9;
-        } else if (e.key === "PageUp") {
-          e.preventDefault();
-          el.scrollTop -= el.clientHeight * 0.9;
-        }
+      const el = diffScrollRef.current;
+      if (!el) return;
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        el.scrollTop += 40;
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        el.scrollTop -= 40;
+      } else if (e.key === "PageDown" || e.key === " ") {
+        e.preventDefault();
+        el.scrollTop += el.clientHeight * 0.9;
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        el.scrollTop -= el.clientHeight * 0.9;
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setViewMode("canvas");
+        return;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [viewMode, focus, moveSelection]);
-
-  // Keep the selected file visible in the tree as you arrow through it.
-  useEffect(() => {
-    if (focus !== "tree" || !activePath || !treeRef.current) return;
-    const el = treeRef.current.querySelector(`[data-path="${CSS.escape(activePath)}"]`);
-    el?.scrollIntoView({ block: "nearest" });
-  }, [activePath, focus]);
+  }, [viewMode, setViewMode]);
 
   const totals = useMemo(() => {
     let added = 0;
@@ -240,8 +327,180 @@ export function DiffView() {
   };
 
   const selectFile = (path: string) => {
-    setActivePath(path);
-    setFocus("tree");
+    setActivePath(path || null);
+  };
+
+  const discardChanges = async (scope: "file" | "all") => {
+    if (scope === "file" && !activePath) return;
+    const reviewPath = root || repoPath;
+    const target = scope === "all" ? `${files.length} changed file${files.length === 1 ? "" : "s"}` : activePath;
+    const confirmed = window.confirm(`Discard changes in ${target}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDiscarding(scope);
+    setError(null);
+    try {
+      const res = await fetch("/api/diff/discard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: reviewPath,
+          scope,
+          file: scope === "file" ? activePath : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to discard changes");
+      }
+      if (scope === "file") {
+        setActivePath(null);
+        setDiff([]);
+      }
+      loadFiles();
+    } catch (e: any) {
+      setError(e.message || "Failed to discard changes");
+    } finally {
+      setDiscarding(null);
+    }
+  };
+
+  const discardHunk = async (hunkIndex: number) => {
+    if (!activePath || activeFile?.untracked) return;
+    const reviewPath = root || repoPath;
+    const confirmed = window.confirm(
+      `Reject hunk ${hunkIndex + 1} in ${activePath}? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    setRejectingHunkIndex(hunkIndex);
+    setError(null);
+    try {
+      const res = await fetch("/api/diff/discard-hunk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: reviewPath,
+          file: activePath,
+          hunkIndex,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to reject hunk");
+      }
+      loadFiles();
+    } catch (e: any) {
+      setError(e.message || "Failed to reject hunk");
+    } finally {
+      setRejectingHunkIndex(null);
+    }
+  };
+
+  const copyCommitMessage = async () => {
+    const reviewPath = root || repoPath;
+    if (!reviewPath) return;
+    setCopyingMessage(true);
+    setCopiedCommitMessage(false);
+    setError(null);
+    try {
+      const res = await fetch(`/api/diff/summary?path=${encodeURIComponent(reviewPath)}`);
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to build commit message");
+      }
+      if (!data.commitMessage) {
+        setCommitSummary("No uncommitted changes");
+        return;
+      }
+      await navigator.clipboard.writeText(data.commitMessage);
+      setCommitSummary(data.summary || "Commit message copied");
+      setCopiedCommitMessage(true);
+      setTimeout(() => setCopiedCommitMessage(false), 1800);
+    } catch (e: any) {
+      setError(e.message || "Failed to copy commit message");
+    } finally {
+      setCopyingMessage(false);
+    }
+  };
+
+  const createCheckpoint = async () => {
+    const reviewPath = root || repoPath;
+    if (!reviewPath) return;
+    setCheckpointing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/checkpoints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: reviewPath,
+          name: `Manual checkpoint ${new Date().toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          })}`,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to create checkpoint");
+      }
+      await loadCheckpoints();
+      setCheckpointMenuOpen(true);
+    } catch (e: any) {
+      setError(e.message || "Failed to create checkpoint");
+    } finally {
+      setCheckpointing(false);
+    }
+  };
+
+  const restoreCheckpoint = async (checkpoint: GitCheckpointSummary) => {
+    const reviewPath = root || repoPath;
+    const confirmed = window.confirm(
+      `Restore "${checkpoint.name}"? Current uncommitted changes after this checkpoint will be discarded.`,
+    );
+    if (!confirmed) return;
+
+    setRestoringCheckpointId(checkpoint.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/checkpoints/${encodeURIComponent(checkpoint.id)}/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: reviewPath }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to restore checkpoint");
+      }
+      setActivePath(null);
+      setDiff([]);
+      loadFiles();
+      await loadCheckpoints();
+      setCheckpointMenuOpen(false);
+    } catch (e: any) {
+      setError(e.message || "Failed to restore checkpoint");
+    } finally {
+      setRestoringCheckpointId(null);
+    }
+  };
+
+  const deleteCheckpoint = async (checkpoint: GitCheckpointSummary) => {
+    const reviewPath = root || repoPath;
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/checkpoints/${encodeURIComponent(checkpoint.id)}?path=${encodeURIComponent(reviewPath)}`,
+        { method: "DELETE" },
+      );
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to delete checkpoint");
+      }
+      await loadCheckpoints();
+    } catch (e: any) {
+      setError(e.message || "Failed to delete checkpoint");
+    }
   };
 
   return (
@@ -253,7 +512,7 @@ export function DiffView() {
     >
       {/* Top bar */}
       <div className="flex-shrink-0 h-8 px-3 flex items-center justify-between bg-canvas-dark border-b border-border">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">
             Diff
           </span>
@@ -270,9 +529,33 @@ export function DiffView() {
               <span className="text-red-400 ml-1">−{totals.removed}</span>
             </span>
           )}
+          <div className="relative flex min-w-[220px] max-w-[min(560px,42vw)] flex-1 items-center rounded border border-border bg-canvas">
+            <FileDiff className="ml-2 h-3.5 w-3.5 flex-shrink-0 text-zinc-600" />
+            <select
+              value={activePath || ""}
+              onChange={(event) => selectFile(event.target.value)}
+              disabled={loadingList || files.length === 0}
+              className="h-6 min-w-0 flex-1 appearance-none bg-transparent py-0 pl-2 pr-7 font-mono text-[11px] text-zinc-200 outline-none disabled:text-zinc-600"
+              title="Changed file"
+            >
+              <option value="" disabled>
+                {loadingList
+                  ? "Loading changed files..."
+                  : files.length === 0
+                    ? "No changed files"
+                    : "Select a changed file"}
+              </option>
+              {files.map((file) => (
+                <option key={file.path} value={file.path}>
+                  {formatFileOption(file)}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-zinc-600" />
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-shrink-0 items-center gap-2">
           {/* Layout toggle: unified / split */}
           <div className="flex items-center rounded bg-canvas border border-border overflow-hidden">
             <button
@@ -330,6 +613,143 @@ export function DiffView() {
             title={diffWrap ? "Line wrapping: on" : "Line wrapping: off"}
           >
             <WrapText className="w-3 h-3" />
+          </button>
+
+          {/* Local checkpoints */}
+          <div className="relative flex items-center rounded bg-canvas border border-border">
+            <button
+              onClick={createCheckpoint}
+              disabled={checkpointing}
+              className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:text-white hover:bg-surface-active disabled:opacity-40 transition-colors"
+              title="Save a local restore point for this repo"
+            >
+              {checkpointing ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Save className="w-3 h-3" />
+              )}
+              Save
+            </button>
+            <button
+              onClick={() => {
+                setCheckpointMenuOpen((open) => !open);
+                setThemeMenuOpen(false);
+              }}
+              className={`flex items-center gap-1 px-1.5 py-0.5 border-l border-border text-[10px] transition-colors ${
+                checkpointMenuOpen
+                  ? "bg-surface-active text-white"
+                  : "text-zinc-500 hover:text-white hover:bg-surface-active"
+              }`}
+              title="Restore a saved checkpoint"
+            >
+              <History className="w-3 h-3" />
+              {checkpoints.length}
+            </button>
+            {checkpointMenuOpen && (
+              <div className="absolute right-0 top-7 z-40 w-72 rounded bg-canvas-dark border border-border shadow-xl overflow-hidden">
+                <div className="px-2.5 py-2 border-b border-border">
+                  <div className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">
+                    Checkpoints
+                  </div>
+                </div>
+                {checkpoints.length === 0 ? (
+                  <div className="px-2.5 py-3 text-[11px] text-zinc-600">
+                    No checkpoints saved for this repo.
+                  </div>
+                ) : (
+                  <div className="max-h-72 overflow-y-auto py-1">
+                    {checkpoints.map((checkpoint) => (
+                      <div
+                        key={checkpoint.id}
+                        className="px-2.5 py-2 border-b border-border/60 last:border-b-0"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-[11px] text-zinc-200 truncate">
+                              {checkpoint.name}
+                            </div>
+                            <div className="text-[10px] text-zinc-600 mt-0.5">
+                              {formatCheckpointTime(checkpoint.createdAt)} · {checkpoint.files.length} file
+                              {checkpoint.files.length === 1 ? "" : "s"}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <button
+                              onClick={() => restoreCheckpoint(checkpoint)}
+                              disabled={restoringCheckpointId !== null}
+                              className="w-6 h-6 rounded flex items-center justify-center text-zinc-500 hover:text-blue-300 hover:bg-blue-500/10 disabled:opacity-40 transition-colors"
+                              title="Restore checkpoint"
+                            >
+                              {restoringCheckpointId === checkpoint.id ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <RotateCcw className="w-3 h-3" />
+                              )}
+                            </button>
+                            <button
+                              onClick={() => deleteCheckpoint(checkpoint)}
+                              disabled={restoringCheckpointId !== null}
+                              className="w-6 h-6 rounded flex items-center justify-center text-zinc-600 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 transition-colors"
+                              title="Delete checkpoint"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => discardChanges("file")}
+            disabled={!activePath || discarding !== null}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:hover:text-zinc-500 disabled:hover:bg-transparent transition-colors"
+            title="Discard selected file changes"
+          >
+            {discarding === "file" ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Undo2 className="w-3 h-3" />
+            )}
+            File
+          </button>
+
+          <button
+            onClick={() => discardChanges("all")}
+            disabled={files.length === 0 || discarding !== null}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:hover:text-zinc-500 disabled:hover:bg-transparent transition-colors"
+            title="Discard all uncommitted changes in this repo"
+          >
+            {discarding === "all" ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Trash2 className="w-3 h-3" />
+            )}
+            All
+          </button>
+
+          <button
+            onClick={copyCommitMessage}
+            disabled={copyingMessage || files.length === 0}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-colors disabled:opacity-40 ${
+              copiedCommitMessage
+                ? "bg-green-500/20 text-green-300"
+                : "text-zinc-500 hover:text-white hover:bg-surface-active"
+            }`}
+            title="Generate and copy a commit message from this diff"
+          >
+            {copyingMessage ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : copiedCommitMessage ? (
+              <Check className="w-3 h-3" />
+            ) : (
+              <Clipboard className="w-3 h-3" />
+            )}
+            Message
           </button>
 
           {/* Theme picker */}
@@ -395,47 +815,10 @@ export function DiffView() {
         </div>
       </div>
 
-      {/* Body: file tree + diff pane */}
+      {/* Body */}
       <div className="flex-1 min-h-0 flex">
-        {/* File tree */}
-        <div
-          ref={treeRef}
-          onClick={() => setFocus("tree")}
-          className="w-72 flex-shrink-0 overflow-y-auto bg-canvas-dark border-r transition-colors"
-          style={{
-            borderRightColor: focus === "tree" ? "#3b82f6" : "#2a2a2a",
-          }}
-        >
-          <div className="px-2 py-1.5 flex items-center justify-between border-b border-border sticky top-0 bg-canvas-dark z-10">
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">
-              Changed files
-            </span>
-            {focus === "tree" && (
-              <span className="text-[9px] text-blue-400 font-medium">FOCUSED · Tab ⇄</span>
-            )}
-          </div>
-
-          {loadingList && (
-            <div className="flex items-center gap-2 px-3 py-3 text-xs text-zinc-500">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…
-            </div>
-          )}
-          {!loadingList && error && (
-            <div className="px-3 py-3 text-xs text-red-400">{error}</div>
-          )}
-          {!loadingList && !error && files.length === 0 && (
-            <div className="px-3 py-6 text-center text-xs text-zinc-600">
-              No uncommitted changes
-            </div>
-          )}
-          {!loadingList && files.length > 0 && (
-            <FileTree tree={tree} activePath={activePath} onSelect={selectFile} />
-          )}
-        </div>
-
         {/* Diff pane */}
         <div
-          onClick={() => setFocus("diff")}
           className="flex-1 min-w-0 flex flex-col bg-canvas"
         >
           <div className="flex-shrink-0 px-3 py-1.5 flex items-center justify-between border-b border-border">
@@ -444,36 +827,69 @@ export function DiffView() {
               <span className="text-[12px] text-white font-mono truncate" title={activePath || ""}>
                 {activePath || "No file selected"}
               </span>
+              {commitSummary && (
+                <span className="hidden md:inline text-[10px] text-zinc-600 truncate">
+                  {commitSummary}
+                </span>
+              )}
             </div>
-            {focus === "diff" && (
-              <span className="text-[9px] text-blue-400 font-medium flex-shrink-0">
-                FOCUSED · ↑↓ scroll · Tab ⇄
-              </span>
-            )}
+            <span className="hidden md:inline text-[9px] text-zinc-600 font-medium flex-shrink-0">
+              ↑↓ scroll · Esc closes
+            </span>
           </div>
 
-          <div ref={diffScrollRef} className="flex-1 min-h-0 overflow-auto">
+          <div ref={diffScrollRef} className="flex-1 min-h-0 overflow-auto" style={diffSurfaceStyle}>
+            {loadingList && (
+              <div className="flex items-center gap-2 px-4 py-3 text-xs text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading changed files…
+              </div>
+            )}
+            {!loadingList && error && (
+              <div className="px-4 py-4 text-xs text-red-400">{error}</div>
+            )}
+            {!loadingList && !error && files.length === 0 && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-zinc-600">
+                <FileDiff className="w-5 h-5" />
+                <span className="text-xs">No uncommitted changes</span>
+              </div>
+            )}
             {loadingDiff && (
               <div className="flex items-center gap-2 px-4 py-3 text-xs text-zinc-500">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading diff…
               </div>
             )}
-            {!loadingDiff && diff.length > 0 && activePath && (
+            {!loadingList && !error && !loadingDiff && diff.length > 0 && activePath && (
               diffLayout === "split" ? (
-                <SplitDiff lines={diff} filePath={activePath} highlight={highlight} wrap={diffWrap} />
+                <SplitDiff
+                  lines={diff}
+                  filePath={activePath}
+                  highlight={highlight}
+                  wrap={diffWrap}
+                  canRejectHunks={!activeFile?.untracked}
+                  rejectingHunkIndex={rejectingHunkIndex}
+                  onRejectHunk={discardHunk}
+                />
               ) : (
-                <UnifiedDiff lines={diff} filePath={activePath} highlight={highlight} wrap={diffWrap} />
+                <UnifiedDiff
+                  lines={diff}
+                  filePath={activePath}
+                  highlight={highlight}
+                  wrap={diffWrap}
+                  canRejectHunks={!activeFile?.untracked}
+                  rejectingHunkIndex={rejectingHunkIndex}
+                  onRejectHunk={discardHunk}
+                />
               )
             )}
-            {!loadingDiff && activePath && diff.length === 0 && (
+            {!loadingList && !error && !loadingDiff && activePath && diff.length === 0 && (
               <div className="px-4 py-6 text-xs text-zinc-600">
                 No textual diff (binary file, or no changes against HEAD).
               </div>
             )}
-            {!loadingDiff && !activePath && (
+            {!loadingList && !error && !loadingDiff && files.length > 0 && !activePath && (
               <div className="flex flex-col items-center justify-center h-full text-zinc-600 gap-2">
-                <ChevronRight className="w-5 h-5" />
-                <span className="text-xs">Select a file to view its diff</span>
+                <FileDiff className="w-5 h-5" />
+                <span className="text-xs">Choose a file from the dropdown</span>
               </div>
             )}
           </div>

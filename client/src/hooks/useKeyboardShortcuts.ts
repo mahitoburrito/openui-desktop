@@ -18,22 +18,44 @@ export function useKeyboardShortcuts() {
         setSelectedNodeId,
         setSidebarOpen,
         addFocusedSession,
+        setCommandPaletteOpen,
+        activityCenterOpen,
+        setActivityCenterOpen,
       } = useStore.getState();
 
-      // Escape — exit focus / markdown mode
-      if (
-        e.key === "Escape" &&
-        (viewMode === "focus" || viewMode === "markdown" || viewMode === "diff")
-      ) {
+      // Escape — close transient panels first
+      if (e.key === "Escape" && activityCenterOpen) {
         e.preventDefault();
-        setViewMode("canvas");
+        setActivityCenterOpen(false);
         return;
       }
 
-      // Cmd+Shift+M — toggle markdown viewer
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "m" || e.key === "M")) {
+      // Cmd+K / Cmd+Shift+P — command palette
+      if (
+        ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") ||
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "p")
+      ) {
         e.preventDefault();
-        setViewMode(viewMode === "markdown" ? "canvas" : "markdown");
+        setCommandPaletteOpen(true);
+        return;
+      }
+
+      // Cmd+Shift+A — agent activity center
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        setActivityCenterOpen(true);
+        return;
+      }
+
+      // Escape — exit focus / diff / browser mode
+      if (
+        e.key === "Escape" &&
+        (viewMode === "focus" ||
+          viewMode === "diff" ||
+          viewMode === "browser")
+      ) {
+        e.preventDefault();
+        setViewMode("canvas");
         return;
       }
 
@@ -41,6 +63,13 @@ export function useKeyboardShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
         setViewMode(viewMode === "diff" ? "canvas" : "diff");
+        return;
+      }
+
+      // Cmd+Shift+B — toggle embedded browser
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        setViewMode(viewMode === "browser" ? "canvas" : "browser");
         return;
       }
 

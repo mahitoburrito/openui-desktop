@@ -8,6 +8,7 @@ export interface ChangedFile {
   added: number;
   removed: number;
   untracked: boolean;
+  mtime: number;
 }
 
 export type DiffLineType = "add" | "del" | "ctx" | "hunk" | "meta";
@@ -20,6 +21,7 @@ export interface DiffLine {
   // 1-based line numbers in the old / new file. null when not applicable.
   oldNo: number | null;
   newNo: number | null;
+  hunkIndex: number | null;
 }
 
 // Parse a unified git diff into renderable lines, tracking line numbers so the
@@ -28,16 +30,18 @@ export function parseDiff(diff: string): DiffLine[] {
   const out: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
+  let hunkIndex = -1;
 
   for (const raw of diff.split("\n")) {
     if (raw.startsWith("@@")) {
+      hunkIndex += 1;
       // @@ -a,b +c,d @@ — reset counters to the hunk's starting lines.
       const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
       if (m) {
         oldNo = parseInt(m[1], 10);
         newNo = parseInt(m[2], 10);
       }
-      out.push({ type: "hunk", text: raw, content: raw, oldNo: null, newNo: null });
+      out.push({ type: "hunk", text: raw, content: raw, oldNo: null, newNo: null, hunkIndex });
     } else if (
       raw.startsWith("diff ") ||
       raw.startsWith("index ") ||
@@ -48,14 +52,14 @@ export function parseDiff(diff: string): DiffLine[] {
       raw.startsWith("similarity ") ||
       raw.startsWith("rename ")
     ) {
-      out.push({ type: "meta", text: raw, content: raw, oldNo: null, newNo: null });
+      out.push({ type: "meta", text: raw, content: raw, oldNo: null, newNo: null, hunkIndex: null });
     } else if (raw.startsWith("+")) {
-      out.push({ type: "add", text: raw, content: raw.slice(1), oldNo: null, newNo: newNo++ });
+      out.push({ type: "add", text: raw, content: raw.slice(1), oldNo: null, newNo: newNo++, hunkIndex });
     } else if (raw.startsWith("-")) {
-      out.push({ type: "del", text: raw, content: raw.slice(1), oldNo: oldNo++, newNo: null });
+      out.push({ type: "del", text: raw, content: raw.slice(1), oldNo: oldNo++, newNo: null, hunkIndex });
     } else {
       const content = raw.startsWith(" ") ? raw.slice(1) : raw;
-      out.push({ type: "ctx", text: raw, content, oldNo: oldNo++, newNo: newNo++ });
+      out.push({ type: "ctx", text: raw, content, oldNo: oldNo++, newNo: newNo++, hunkIndex });
     }
   }
   return out;

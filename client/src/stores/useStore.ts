@@ -1,5 +1,15 @@
 import { create } from "zustand";
 import { Node } from "@xyflow/react";
+import {
+  DEFAULT_APPEARANCE,
+  clampTerminalFontSize,
+  isTerminalFontFamilyId,
+  isTerminalThemeId,
+  isWorkspaceBackgroundId,
+  type TerminalFontFamilyId,
+  type TerminalThemeId,
+  type WorkspaceBackgroundId,
+} from "../theme/appearance";
 
 // localStorage keys for crash-resilient UI state
 const STORAGE_KEY = "openui-desktop-ui-state";
@@ -14,6 +24,34 @@ export interface Agent {
 }
 
 export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error" | "creating";
+
+export interface CheckpointSummary {
+  id: string;
+  repoRoot: string;
+  name: string;
+  createdAt: number;
+  files: { path: string; exists: boolean }[];
+  source?: "manual" | "session-launch";
+  sessionId?: string;
+  nodeId?: string;
+}
+
+export interface AgentChangeSummary {
+  sessionId: string;
+  nodeId: string;
+  repoRoot: string;
+  changedFileCount: number;
+  added: number;
+  removed: number;
+  summary: string;
+  files: {
+    path: string;
+    status: string;
+    added: number;
+    removed: number;
+    untracked: boolean;
+  }[];
+}
 
 export interface AgentSession {
   id: string;
@@ -38,17 +76,51 @@ export interface AgentSession {
   currentTool?: string;
   // Multi-repo worktree paths
   worktreePaths?: Record<string, string>;
+  // Restore point captured before this session started
+  launchCheckpoint?: CheckpointSummary;
+  // Current uncommitted changes in this session's repo
+  changeSummary?: AgentChangeSummary;
 }
 
 export interface DeleteToast {
   sessionId: string;
   nodeId: string;
   sessionName: string;
+  items?: { sessionId: string; nodeId: string; sessionName: string }[];
   timeout: ReturnType<typeof setTimeout>;
 }
 
 export type ViewMode = "canvas" | "focus" | "markdown" | "diff" | "browser";
 export type StatusFilter = AgentStatus | "all";
+
+export interface AgentActivityEvent {
+  id: string;
+  nodeId: string;
+  sessionId: string;
+  title: string;
+  body: string;
+  status: AgentStatus;
+  color: string;
+  repoPath?: string;
+  createdAt: number;
+}
+
+export interface LaunchPromptTemplate {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  builtIn?: boolean;
+}
+
+export const DEFAULT_LAUNCH_PROMPT_TEMPLATES: LaunchPromptTemplate[] = [];
+
+export interface CanvasLayoutSnapshot {
+  id: string;
+  name: string;
+  createdAt: number;
+  positions: Record<string, { x: number; y: number }>;
+}
 
 // Diff viewer presentation preferences
 export type DiffLayout = "unified" | "split";
@@ -101,8 +173,15 @@ interface AppState {
   setNewSessionModalOpen: (open: boolean) => void;
   newSessionForNodeId: string | null;
   setNewSessionForNodeId: (nodeId: string | null) => void;
+  newSessionInitialPrompt: string;
+  setNewSessionInitialPrompt: (prompt: string) => void;
   todosPanelOpen: boolean;
   setTodosPanelOpen: (open: boolean) => void;
+  commandPaletteOpen: boolean;
+  setCommandPaletteOpen: (open: boolean) => void;
+  activityCenterOpen: boolean;
+  setActivityCenterOpen: (open: boolean) => void;
+  activityLastSeenAt: number;
 
   // Session List Panel
   sessionListOpen: boolean;
@@ -147,9 +226,33 @@ interface AppState {
   browserUrl: string;
   setBrowserUrl: (url: string) => void;
 
+  // Appearance
+  workspaceBackground: WorkspaceBackgroundId;
+  setWorkspaceBackground: (background: WorkspaceBackgroundId) => void;
+  terminalTheme: TerminalThemeId;
+  setTerminalTheme: (theme: TerminalThemeId) => void;
+  terminalFontFamily: TerminalFontFamilyId;
+  setTerminalFontFamily: (font: TerminalFontFamilyId) => void;
+  terminalFontSize: number;
+  setTerminalFontSize: (size: number) => void;
+  launchPromptTemplates: LaunchPromptTemplate[];
+  addLaunchPromptTemplate: (template: Omit<LaunchPromptTemplate, "id" | "builtIn">) => void;
+  removeLaunchPromptTemplate: (id: string) => void;
+
   // Delete toast
   deleteToast: DeleteToast | null;
   setDeleteToast: (toast: DeleteToast | null) => void;
+
+  agentActivityEvents: AgentActivityEvent[];
+  addAgentActivityEvent: (event: Omit<AgentActivityEvent, "id" | "createdAt">) => void;
+  removeAgentActivityEvent: (id: string) => void;
+  clearAgentActivityEvents: () => void;
+
+  // Canvas layout snapshots
+  canvasLayoutSnapshots: CanvasLayoutSnapshot[];
+  saveCanvasLayoutSnapshot: (name?: string) => void;
+  restoreCanvasLayoutSnapshot: (id: string) => void;
+  removeCanvasLayoutSnapshot: (id: string) => void;
 }
 
 // Load persisted UI state from localStorage
@@ -160,7 +263,7 @@ function loadPersistedUIState(): Partial<AppState> {
       const parsed = JSON.parse(raw);
       return {
         sessionListOpen: parsed.sessionListOpen ?? true,
-        viewMode: parsed.viewMode ?? "canvas",
+        viewMode: parsed.viewMode === "markdown" ? "canvas" : parsed.viewMode ?? "canvas",
         focusedSessionIds: parsed.focusedSessionIds ?? [],
         splitRatios: parsed.splitRatios ?? {},
         openMarkdownFiles: parsed.openMarkdownFiles ?? [],
@@ -170,6 +273,34 @@ function loadPersistedUIState(): Partial<AppState> {
         diffWrap: parsed.diffWrap ?? false,
         diffTheme: parsed.diffTheme ?? "github-dark",
         browserUrl: parsed.browserUrl ?? "",
+        workspaceBackground: isWorkspaceBackgroundId(parsed.workspaceBackground)
+          ? parsed.workspaceBackground
+          : DEFAULT_APPEARANCE.workspaceBackground,
+        terminalTheme: isTerminalThemeId(parsed.terminalTheme)
+          ? parsed.terminalTheme
+          : DEFAULT_APPEARANCE.terminalTheme,
+        terminalFontFamily: isTerminalFontFamilyId(parsed.terminalFontFamily)
+          ? parsed.terminalFontFamily
+          : DEFAULT_APPEARANCE.terminalFontFamily,
+        terminalFontSize: clampTerminalFontSize(parsed.terminalFontSize),
+        activityLastSeenAt:
+          typeof parsed.activityLastSeenAt === "number"
+            ? parsed.activityLastSeenAt
+            : 0,
+        agentActivityEvents: Array.isArray(parsed.agentActivityEvents)
+          ? parsed.agentActivityEvents.slice(0, 50)
+          : [],
+        launchPromptTemplates: Array.isArray(parsed.launchPromptTemplates)
+          ? [
+              ...DEFAULT_LAUNCH_PROMPT_TEMPLATES,
+              ...parsed.launchPromptTemplates
+                .filter((template: LaunchPromptTemplate) => !template.builtIn)
+                .slice(0, 20),
+            ]
+          : DEFAULT_LAUNCH_PROMPT_TEMPLATES,
+        canvasLayoutSnapshots: Array.isArray(parsed.canvasLayoutSnapshots)
+          ? parsed.canvasLayoutSnapshots.slice(0, 8)
+          : [],
       };
     }
   } catch {
@@ -241,8 +372,20 @@ export const useStore = create<AppState>((set) => ({
   setNewSessionModalOpen: (open) => set({ newSessionModalOpen: open }),
   newSessionForNodeId: null,
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
+  newSessionInitialPrompt: "",
+  setNewSessionInitialPrompt: (prompt) => set({ newSessionInitialPrompt: prompt }),
   todosPanelOpen: false,
   setTodosPanelOpen: (open) => set({ todosPanelOpen: open }),
+  commandPaletteOpen: false,
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  activityCenterOpen: false,
+  setActivityCenterOpen: (open) =>
+    set(
+      open
+        ? { activityCenterOpen: true, activityLastSeenAt: Date.now() }
+        : { activityCenterOpen: false },
+    ),
+  activityLastSeenAt: (persisted.activityLastSeenAt as number) ?? 0,
 
   // Session List Panel
   sessionListOpen: persisted.sessionListOpen ?? true,
@@ -305,9 +448,105 @@ export const useStore = create<AppState>((set) => ({
   browserUrl: (persisted.browserUrl as string) ?? "",
   setBrowserUrl: (url) => set({ browserUrl: url }),
 
+  // Appearance
+  workspaceBackground:
+    (persisted.workspaceBackground as WorkspaceBackgroundId) ??
+    DEFAULT_APPEARANCE.workspaceBackground,
+  setWorkspaceBackground: (background) => set({ workspaceBackground: background }),
+  terminalTheme:
+    (persisted.terminalTheme as TerminalThemeId) ?? DEFAULT_APPEARANCE.terminalTheme,
+  setTerminalTheme: (theme) => set({ terminalTheme: theme }),
+  terminalFontFamily:
+    (persisted.terminalFontFamily as TerminalFontFamilyId) ??
+    DEFAULT_APPEARANCE.terminalFontFamily,
+  setTerminalFontFamily: (font) => set({ terminalFontFamily: font }),
+  terminalFontSize:
+    (persisted.terminalFontSize as number) ?? DEFAULT_APPEARANCE.terminalFontSize,
+  setTerminalFontSize: (size) => set({ terminalFontSize: clampTerminalFontSize(size) }),
+  launchPromptTemplates:
+    (persisted.launchPromptTemplates as LaunchPromptTemplate[] | undefined) ??
+    DEFAULT_LAUNCH_PROMPT_TEMPLATES,
+  addLaunchPromptTemplate: (template) =>
+    set((state) => ({
+      launchPromptTemplates: [
+        ...DEFAULT_LAUNCH_PROMPT_TEMPLATES,
+        ...state.launchPromptTemplates.filter((item) => !item.builtIn),
+        {
+          ...template,
+          id: `prompt-${Date.now()}`,
+          builtIn: false,
+        },
+      ].slice(0, DEFAULT_LAUNCH_PROMPT_TEMPLATES.length + 20),
+    })),
+  removeLaunchPromptTemplate: (id) =>
+    set((state) => ({
+      launchPromptTemplates: [
+        ...DEFAULT_LAUNCH_PROMPT_TEMPLATES,
+        ...state.launchPromptTemplates.filter((item) => !item.builtIn && item.id !== id),
+      ],
+    })),
+
   // Delete toast
   deleteToast: null,
   setDeleteToast: (toast) => set({ deleteToast: toast }),
+
+  agentActivityEvents:
+    (persisted.agentActivityEvents as AgentActivityEvent[] | undefined) ?? [],
+  addAgentActivityEvent: (event) =>
+    set((state) => ({
+      agentActivityEvents: [
+        {
+          ...event,
+          id: `${event.nodeId}-${event.status}-${Date.now()}`,
+          createdAt: Date.now(),
+        },
+        ...state.agentActivityEvents,
+      ].slice(0, 50),
+    })),
+  removeAgentActivityEvent: (id) =>
+    set((state) => ({
+      agentActivityEvents: state.agentActivityEvents.filter((event) => event.id !== id),
+    })),
+  clearAgentActivityEvents: () => set({ agentActivityEvents: [], activityLastSeenAt: Date.now() }),
+
+  // Canvas layout snapshots
+  canvasLayoutSnapshots:
+    (persisted.canvasLayoutSnapshots as CanvasLayoutSnapshot[] | undefined) ?? [],
+  saveCanvasLayoutSnapshot: (name) =>
+    set((state) => {
+      const positions: CanvasLayoutSnapshot["positions"] = {};
+      for (const node of state.nodes) {
+        if (node.type !== "agent") continue;
+        positions[node.id] = { x: node.position.x, y: node.position.y };
+      }
+      if (Object.keys(positions).length === 0) return state;
+
+      const snapshot: CanvasLayoutSnapshot = {
+        id: `layout-${Date.now()}`,
+        name: name || `Layout ${new Date().toLocaleTimeString()}`,
+        createdAt: Date.now(),
+        positions,
+      };
+
+      return {
+        canvasLayoutSnapshots: [snapshot, ...state.canvasLayoutSnapshots].slice(0, 8),
+      };
+    }),
+  restoreCanvasLayoutSnapshot: (id) =>
+    set((state) => {
+      const snapshot = state.canvasLayoutSnapshots.find((layout) => layout.id === id);
+      if (!snapshot) return state;
+      return {
+        nodes: state.nodes.map((node) => {
+          const position = snapshot.positions[node.id];
+          return position ? { ...node, position } : node;
+        }),
+      };
+    }),
+  removeCanvasLayoutSnapshot: (id) =>
+    set((state) => ({
+      canvasLayoutSnapshots: state.canvasLayoutSnapshots.filter((layout) => layout.id !== id),
+    })),
 }));
 
 // Auto-persist UI state to localStorage on change
@@ -327,6 +566,14 @@ useStore.subscribe((state) => {
         diffWrap: state.diffWrap,
         diffTheme: state.diffTheme,
         browserUrl: state.browserUrl,
+        workspaceBackground: state.workspaceBackground,
+        terminalTheme: state.terminalTheme,
+        terminalFontFamily: state.terminalFontFamily,
+        terminalFontSize: state.terminalFontSize,
+        activityLastSeenAt: state.activityLastSeenAt,
+        agentActivityEvents: state.agentActivityEvents,
+        launchPromptTemplates: state.launchPromptTemplates.filter((template) => !template.builtIn),
+        canvasLayoutSnapshots: state.canvasLayoutSnapshots,
       })
     );
   } catch {

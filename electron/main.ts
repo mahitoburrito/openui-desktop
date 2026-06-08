@@ -5,6 +5,7 @@ import { startServer } from "../server/index";
 import { getActiveSessionCount } from "../server/services/sessionManager";
 import { autoUpdater } from "electron-updater";
 import { initPRBE, cleanupPRBE } from "./prbe";
+import { destroyBrowserView, registerBrowserViewIpc } from "./browserView";
 
 // Load built-in default config (bundled API keys for production)
 function loadDefaultConfig() {
@@ -48,6 +49,7 @@ function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  registerBrowserViewIpc(mainWindow);
 
   if (isDev) {
     // In dev mode, load from Vite dev server
@@ -76,6 +78,7 @@ function createWindow() {
         return;
       }
     }
+    destroyBrowserView();
     mainWindow = null;
   });
 }
@@ -102,8 +105,9 @@ app.whenReady().then(async () => {
   // Initialize PRBE debug agent
   initPRBE(mainWindow!, serverPort);
 
-  // Auto-update (only in packaged builds)
-  if (!isDev) {
+  // Auto-update is opt-in for local daily-driver builds. Otherwise a packaged
+  // local install can overwrite itself with the public upstream release.
+  if (!isDev && process.env.OPENUI_ENABLE_AUTO_UPDATE === "true") {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
@@ -149,6 +153,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  destroyBrowserView();
   cleanupPRBE();
   process.emit("SIGINT" as any);
 });

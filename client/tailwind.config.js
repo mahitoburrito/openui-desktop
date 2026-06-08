@@ -8,24 +8,24 @@ export default {
     extend: {
       colors: {
         'canvas': {
-          DEFAULT: '#0f0f0f',
-          dark: '#0a0a0a',
-          light: '#1a1a1a',
-          lighter: '#252525'
+          DEFAULT: 'oklch(8.5% 0.004 260)',
+          dark: 'oklch(6.5% 0.004 260)',
+          light: 'oklch(13% 0.005 260)',
+          lighter: 'oklch(17% 0.006 260)'
         },
         'surface': {
-          DEFAULT: '#1a1a1a',
-          hover: '#1f1f1f',
-          active: '#252525'
+          DEFAULT: 'oklch(12% 0.005 260)',
+          hover: 'oklch(15.5% 0.006 260)',
+          active: 'oklch(19% 0.007 260)'
         },
         'border': {
-          DEFAULT: '#2a2a2a',
-          light: '#333333'
+          DEFAULT: 'oklch(24% 0.007 260)',
+          light: 'oklch(31% 0.009 260)'
         }
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['"JetBrains Mono"', '"Fira Code"', '"SF Mono"', 'monospace'],
+        sans: ['"SF Pro Text"', '"SF Pro Display"', 'ui-sans-serif', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'system-ui', 'sans-serif'],
+        mono: ['"SF Mono"', 'ui-monospace', '"Cascadia Code"', 'Menlo', 'monospace'],
       },
       boxShadow: {
         'node': '0 2px 8px rgba(0, 0, 0, 0.3)',

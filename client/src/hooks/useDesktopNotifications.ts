@@ -1,12 +1,11 @@
 import { useEffect, useRef } from "react";
 import { useStore, AgentStatus } from "../stores/useStore";
 
-const NOTIF_STORAGE_KEY = "openui-desktop-notifications";
-
 const NOTIFY_STATUSES: Set<AgentStatus> = new Set([
   "waiting_input",
   "idle",
   "disconnected",
+  "error",
 ]);
 
 function getNotificationBody(status: AgentStatus, name: string): string {
@@ -17,35 +16,24 @@ function getNotificationBody(status: AgentStatus, name: string): string {
       return `${name} has finished`;
     case "disconnected":
       return `${name} session ended`;
+    case "error":
+      return `${name} hit an error`;
     default:
       return `${name}: ${status}`;
   }
 }
 
 /**
- * Watches session status transitions and fires native desktop notifications
- * when the window is not focused and the user has enabled them in settings.
+ * Watches session status transitions and records them for the header activity
+ * bell. Agent events should stay quiet in-app; the bell badge is the only
+ * screen-level signal for unread activity.
  */
 export function useDesktopNotifications() {
   const sessions = useStore((s) => s.sessions);
+  const addAgentActivityEvent = useStore((s) => s.addAgentActivityEvent);
   const prevStatuses = useRef<Map<string, AgentStatus>>(new Map());
 
   useEffect(() => {
-    const enabled = localStorage.getItem(NOTIF_STORAGE_KEY) === "true";
-    if (!enabled || Notification.permission !== "granted") {
-      for (const [nodeId, session] of sessions) {
-        prevStatuses.current.set(nodeId, session.status);
-      }
-      return;
-    }
-
-    if (document.hasFocus()) {
-      for (const [nodeId, session] of sessions) {
-        prevStatuses.current.set(nodeId, session.status);
-      }
-      return;
-    }
-
     for (const [nodeId, session] of sessions) {
       const prev = prevStatuses.current.get(nodeId);
       prevStatuses.current.set(nodeId, session.status);
@@ -54,9 +42,15 @@ export function useDesktopNotifications() {
       if (!NOTIFY_STATUSES.has(session.status)) continue;
 
       const name = session.customName || session.agentName || session.sessionId;
-      new Notification("OpenUI Desktop", {
-        body: getNotificationBody(session.status, name),
-        silent: false,
+      const body = getNotificationBody(session.status, name);
+      addAgentActivityEvent({
+        nodeId,
+        sessionId: session.sessionId,
+        title: name,
+        body,
+        status: session.status,
+        color: session.customColor || session.color || "#888",
+        repoPath: session.originalCwd || session.cwd,
       });
     }
 
@@ -65,5 +59,5 @@ export function useDesktopNotifications() {
         prevStatuses.current.delete(nodeId);
       }
     }
-  }, [sessions]);
+  }, [sessions, addAgentActivityEvent]);
 }
