@@ -57,7 +57,7 @@ async function maybeAutoOpenDiff(repo: string | undefined) {
   } = useStore.getState();
 
   if (!diffAutoOpen) return;
-  // Only auto-open from the canvas; respect focus/markdown/diff/browser views.
+  // Only auto-open from the canvas; respect focus/markdown/diff views.
   if (viewMode !== "canvas") return;
   // Already showing this repo — don't re-trigger.
   if (lastAutoOpenedRepo === repo) return;
@@ -159,6 +159,8 @@ function AppContent() {
     sessions,
     sessionListOpen,
     viewMode,
+    browserPanelOpen,
+    browserPanelWidth,
     workspaceBackground,
   } = useStore();
 
@@ -566,81 +568,86 @@ function AppContent() {
     >
       <Header />
 
-      <div className="flex-1 relative">
-        {/* Session List Panel (left sidebar) */}
-        <SessionListPanel />
-
-        {/* Canvas area — shifts right when session list is open */}
+      <div className="flex-1 relative min-h-0">
         <div
-          className="absolute inset-0 transition-all duration-300"
-          style={{ left: sessionListOpen ? 280 : 0, background: workspace.canvas }}
+          className="absolute inset-y-0 left-0 min-w-0 transition-[right] duration-300"
+          style={{ right: browserPanelOpen ? browserPanelWidth : 0 }}
         >
-          <ReactFlow
-            nodes={nodes}
-            edges={[]}
-            onNodesChange={handleNodesChange}
-            onNodeClick={onNodeClick}
-            onPaneClick={onPaneClick}
-            nodeTypes={nodeTypes}
-            fitView
-            proOptions={{ hideAttribution: true }}
-            minZoom={0.3}
-            maxZoom={2}
-            nodesDraggable
-            nodesConnectable={false}
-            snapToGrid
-            snapGrid={[24, 24]}
-            style={{ background: workspace.canvas }}
-          >
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={24}
-              size={1}
-              color={workspace.dots}
-            />
-            <Controls
-              showInteractive={false}
-              position="bottom-left"
-            />
-            <CanvasControls />
-          </ReactFlow>
+          {/* Session List Panel (left sidebar) */}
+          <SessionListPanel />
 
-          {/* Empty state */}
-          {isEmpty && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="text-center pointer-events-auto">
-                <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
-                  <Plus className="w-8 h-8 text-zinc-600" />
+          {/* Canvas area — shifts right when session list is open */}
+          <div
+            className="absolute inset-0 transition-all duration-300"
+            style={{ left: sessionListOpen ? 280 : 0, background: workspace.canvas }}
+          >
+            <ReactFlow
+              nodes={nodes}
+              edges={[]}
+              onNodesChange={handleNodesChange}
+              onNodeClick={onNodeClick}
+              onPaneClick={onPaneClick}
+              nodeTypes={nodeTypes}
+              fitView
+              proOptions={{ hideAttribution: true }}
+              minZoom={0.3}
+              maxZoom={2}
+              nodesDraggable
+              nodesConnectable={false}
+              snapToGrid
+              snapGrid={[24, 24]}
+              style={{ background: workspace.canvas }}
+            >
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={24}
+                size={1}
+                color={workspace.dots}
+              />
+              <Controls
+                showInteractive={false}
+                position="bottom-left"
+              />
+              <CanvasControls />
+            </ReactFlow>
+
+            {/* Empty state */}
+            {isEmpty && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center pointer-events-auto">
+                  <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
+                    <Plus className="w-8 h-8 text-zinc-600" />
+                  </div>
+                  <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
+                  <p className="text-sm text-zinc-500 mb-4 max-w-xs">
+                    Spawn your first AI agent to get started
+                  </p>
+                  <button
+                    onClick={() => setAddAgentModalOpen(true)}
+                    className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
+                  >
+                    Create Agent
+                  </button>
                 </div>
-                <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
-                <p className="text-sm text-zinc-500 mb-4 max-w-xs">
-                  Spawn your first AI agent to get started
-                </p>
-                <button
-                  onClick={() => setAddAgentModalOpen(true)}
-                  className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
-                >
-                  Create Agent
-                </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
+
+          {/* Focus Mode overlay */}
+          <FocusMode />
+
+          {/* Markdown viewer overlay */}
+          <MarkdownView />
+
+          {/* Diff viewer overlay */}
+          <DiffView />
+
+          <Sidebar />
+          <PRBEPanel />
         </div>
 
-        {/* Focus Mode overlay */}
-        <FocusMode />
-
-        {/* Markdown viewer overlay */}
-        <MarkdownView />
-
-        {/* Diff viewer overlay */}
-        <DiffView />
-
-        {/* Embedded browser overlay */}
+        {/* Embedded browser dock */}
         <BrowserView />
-
-        <Sidebar />
-        <PRBEPanel />
       </div>
 
       <NewSessionModal

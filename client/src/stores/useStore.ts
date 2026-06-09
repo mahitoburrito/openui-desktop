@@ -90,7 +90,7 @@ export interface DeleteToast {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-export type ViewMode = "canvas" | "focus" | "markdown" | "diff" | "browser";
+export type ViewMode = "canvas" | "focus" | "markdown" | "diff";
 export type StatusFilter = AgentStatus | "all";
 
 export interface AgentActivityEvent {
@@ -225,6 +225,10 @@ interface AppState {
   // Embedded browser preview
   browserUrl: string;
   setBrowserUrl: (url: string) => void;
+  browserPanelOpen: boolean;
+  setBrowserPanelOpen: (open: boolean) => void;
+  browserPanelWidth: number;
+  setBrowserPanelWidth: (width: number) => void;
 
   // Appearance
   workspaceBackground: WorkspaceBackgroundId;
@@ -261,9 +265,14 @@ function loadPersistedUIState(): Partial<AppState> {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      const persistedViewMode =
+        parsed.viewMode === "focus" ||
+        parsed.viewMode === "diff"
+          ? parsed.viewMode
+          : "canvas";
       return {
         sessionListOpen: parsed.sessionListOpen ?? true,
-        viewMode: parsed.viewMode === "markdown" ? "canvas" : parsed.viewMode ?? "canvas",
+        viewMode: persistedViewMode,
         focusedSessionIds: parsed.focusedSessionIds ?? [],
         splitRatios: parsed.splitRatios ?? {},
         openMarkdownFiles: parsed.openMarkdownFiles ?? [],
@@ -273,6 +282,8 @@ function loadPersistedUIState(): Partial<AppState> {
         diffWrap: parsed.diffWrap ?? false,
         diffTheme: parsed.diffTheme ?? "github-dark",
         browserUrl: parsed.browserUrl ?? "",
+        browserPanelOpen: parsed.browserPanelOpen ?? parsed.viewMode === "browser",
+        browserPanelWidth: clampBrowserPanelWidth(parsed.browserPanelWidth),
         workspaceBackground: isWorkspaceBackgroundId(parsed.workspaceBackground)
           ? parsed.workspaceBackground
           : DEFAULT_APPEARANCE.workspaceBackground,
@@ -310,6 +321,16 @@ function loadPersistedUIState(): Partial<AppState> {
 }
 
 const MAX_FOCUSED_SESSIONS = 16;
+const DEFAULT_BROWSER_PANEL_WIDTH = 560;
+const MIN_BROWSER_PANEL_WIDTH = 360;
+const MAX_BROWSER_PANEL_WIDTH = 900;
+
+function clampBrowserPanelWidth(width: unknown): number {
+  if (typeof width !== "number" || !Number.isFinite(width)) {
+    return DEFAULT_BROWSER_PANEL_WIDTH;
+  }
+  return Math.min(MAX_BROWSER_PANEL_WIDTH, Math.max(MIN_BROWSER_PANEL_WIDTH, Math.round(width)));
+}
 
 const persisted = loadPersistedUIState();
 
@@ -447,6 +468,10 @@ export const useStore = create<AppState>((set) => ({
   // Embedded browser preview
   browserUrl: (persisted.browserUrl as string) ?? "",
   setBrowserUrl: (url) => set({ browserUrl: url }),
+  browserPanelOpen: (persisted.browserPanelOpen as boolean) ?? false,
+  setBrowserPanelOpen: (open) => set({ browserPanelOpen: open }),
+  browserPanelWidth: clampBrowserPanelWidth(persisted.browserPanelWidth),
+  setBrowserPanelWidth: (width) => set({ browserPanelWidth: clampBrowserPanelWidth(width) }),
 
   // Appearance
   workspaceBackground:
@@ -566,6 +591,8 @@ useStore.subscribe((state) => {
         diffWrap: state.diffWrap,
         diffTheme: state.diffTheme,
         browserUrl: state.browserUrl,
+        browserPanelOpen: state.browserPanelOpen,
+        browserPanelWidth: state.browserPanelWidth,
         workspaceBackground: state.workspaceBackground,
         terminalTheme: state.terminalTheme,
         terminalFontFamily: state.terminalFontFamily,

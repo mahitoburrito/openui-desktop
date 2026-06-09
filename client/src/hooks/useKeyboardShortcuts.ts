@@ -21,6 +21,8 @@ export function useKeyboardShortcuts() {
         setCommandPaletteOpen,
         activityCenterOpen,
         setActivityCenterOpen,
+        browserPanelOpen,
+        setBrowserPanelOpen,
       } = useStore.getState();
 
       // Escape — close transient panels first
@@ -47,12 +49,18 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Escape — exit focus / diff / browser mode
+      // Escape - close browser dock before exiting the current workspace mode
+      if (e.key === "Escape" && browserPanelOpen) {
+        e.preventDefault();
+        setBrowserPanelOpen(false);
+        return;
+      }
+
+      // Escape — exit focus / diff mode
       if (
         e.key === "Escape" &&
         (viewMode === "focus" ||
-          viewMode === "diff" ||
-          viewMode === "browser")
+          viewMode === "diff")
       ) {
         e.preventDefault();
         setViewMode("canvas");
@@ -69,7 +77,7 @@ export function useKeyboardShortcuts() {
       // Cmd+Shift+B — toggle embedded browser
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "b" || e.key === "B")) {
         e.preventDefault();
-        setViewMode(viewMode === "browser" ? "canvas" : "browser");
+        setBrowserPanelOpen(!browserPanelOpen);
         return;
       }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { motion } from "framer-motion";
 import {
   Minimize2,
@@ -31,7 +31,14 @@ interface NativeBrowserState {
 }
 
 export function BrowserView() {
-  const { viewMode, setViewMode, browserUrl, setBrowserUrl } = useStore();
+  const {
+    browserUrl,
+    setBrowserUrl,
+    browserPanelOpen,
+    setBrowserPanelOpen,
+    browserPanelWidth,
+    setBrowserPanelWidth,
+  } = useStore();
 
   const isNativeBrowser = Boolean(window.electronAPI?.isElectron);
   const [input, setInput] = useState(browserUrl);
@@ -51,8 +58,6 @@ export function BrowserView() {
   const loadedRef = useRef(false);
 
   useEffect(() => {
-    if (viewMode !== "browser") return;
-
     setInput(browserUrl);
 
     const nextSrc = browserUrl ? normalizeUrl(browserUrl) : "";
@@ -63,7 +68,7 @@ export function BrowserView() {
     setLoadFailed(false);
     loadedRef.current = false;
     setLoadKey((k) => k + 1);
-  }, [browserUrl, isNativeBrowser, nativeState.url, src, viewMode]);
+  }, [browserUrl, isNativeBrowser, nativeState.url, src]);
 
   useEffect(() => {
     if (!isNativeBrowser || !window.electronAPI) return;
@@ -78,7 +83,7 @@ export function BrowserView() {
   }, [isNativeBrowser, setBrowserUrl]);
 
   const syncNativeBounds = useCallback(() => {
-    if (!isNativeBrowser || !window.electronAPI || viewMode !== "browser") return;
+    if (!isNativeBrowser || !window.electronAPI || !browserPanelOpen) return;
     const rect = contentRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return;
     void window.electronAPI.invoke("browser:setBounds", {
@@ -87,10 +92,10 @@ export function BrowserView() {
       width: rect.width,
       height: rect.height,
     });
-  }, [isNativeBrowser, viewMode]);
+  }, [browserPanelOpen, isNativeBrowser]);
 
   useEffect(() => {
-    if (!isNativeBrowser || viewMode !== "browser") return;
+    if (!isNativeBrowser || !browserPanelOpen) return;
     syncNativeBounds();
     const observer = new ResizeObserver(syncNativeBounds);
     if (contentRef.current) observer.observe(contentRef.current);
@@ -99,11 +104,11 @@ export function BrowserView() {
       observer.disconnect();
       window.removeEventListener("resize", syncNativeBounds);
     };
-  }, [isNativeBrowser, syncNativeBounds, viewMode]);
+  }, [browserPanelOpen, isNativeBrowser, syncNativeBounds]);
 
   useEffect(() => {
     if (!isNativeBrowser || !window.electronAPI) return;
-    if (viewMode !== "browser") {
+    if (!browserPanelOpen) {
       void window.electronAPI.invoke("browser:hide");
       return;
     }
@@ -113,7 +118,59 @@ export function BrowserView() {
     }
     syncNativeBounds();
     void window.electronAPI.invoke("browser:open", src);
-  }, [isNativeBrowser, src, syncNativeBounds, viewMode]);
+  }, [browserPanelOpen, isNativeBrowser, src, syncNativeBounds]);
+
+  const clampPanelWidth = useCallback(
+    (width: number) => {
+      const minWidth = 360;
+      const maxWidth = Math.max(minWidth, Math.min(900, window.innerWidth - 520));
+      return Math.min(maxWidth, Math.max(minWidth, Math.round(width)));
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!browserPanelOpen) return;
+    const handleResize = () => {
+      setBrowserPanelWidth(clampPanelWidth(browserPanelWidth));
+      requestAnimationFrame(syncNativeBounds);
+    };
+    window.addEventListener("resize", handleResize);
+    handleResize();
+    return () => window.removeEventListener("resize", handleResize);
+  }, [
+    browserPanelOpen,
+    browserPanelWidth,
+    clampPanelWidth,
+    setBrowserPanelWidth,
+    syncNativeBounds,
+  ]);
+
+  const beginResize = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = browserPanelWidth;
+
+      const handleMove = (moveEvent: MouseEvent) => {
+        setBrowserPanelWidth(clampPanelWidth(startWidth + startX - moveEvent.clientX));
+        requestAnimationFrame(syncNativeBounds);
+      };
+
+      const handleUp = () => {
+        document.removeEventListener("mousemove", handleMove);
+        document.removeEventListener("mouseup", handleUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      document.addEventListener("mousemove", handleMove);
+      document.addEventListener("mouseup", handleUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [browserPanelWidth, clampPanelWidth, setBrowserPanelWidth, syncNativeBounds],
+  );
 
   const navigate = (raw: string) => {
     const url = normalizeUrl(raw);
@@ -124,6 +181,7 @@ export function BrowserView() {
     setLoadFailed(false);
     loadedRef.current = false;
     setLoadKey((k) => k + 1);
+    setBrowserPanelOpen(true);
   };
 
   // Many sites send X-Frame-Options/CSP that block embedding. The iframe's
@@ -138,7 +196,7 @@ export function BrowserView() {
     return () => clearTimeout(timer);
   }, [src, loadKey, isNativeBrowser]);
 
-  if (viewMode !== "browser") return null;
+  if (!browserPanelOpen) return null;
 
   const reload = () => {
     if (isNativeBrowser) {
@@ -173,11 +231,18 @@ export function BrowserView() {
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="absolute inset-0 z-30 bg-canvas flex flex-col"
+      initial={{ x: "100%", opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: "100%", opacity: 0 }}
+      transition={{ type: "spring", stiffness: 400, damping: 42 }}
+      className="absolute right-0 top-0 bottom-0 z-30 bg-canvas-dark border-l border-border flex flex-col shadow-2xl"
+      style={{ width: browserPanelWidth }}
     >
+      <div
+        onMouseDown={beginResize}
+        className="absolute left-0 top-0 bottom-0 z-20 w-1.5 cursor-col-resize hover:bg-blue-500/40 transition-colors"
+      />
+
       {/* Top bar */}
       <div className="flex-shrink-0 h-10 px-3 flex items-center gap-2 bg-canvas-dark border-b border-border">
         <button
@@ -236,12 +301,11 @@ export function BrowserView() {
         )}
 
         <button
-          onClick={() => setViewMode("canvas")}
-          className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] text-zinc-400 hover:text-white hover:bg-surface-active transition-colors"
-          title="Exit browser (Escape)"
+          onClick={() => setBrowserPanelOpen(false)}
+          className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
+          title="Close browser dock (Escape)"
         >
-          <Minimize2 className="w-3 h-3" />
-          Canvas
+          <Minimize2 className="w-3.5 h-3.5" />
         </button>
       </div>
 

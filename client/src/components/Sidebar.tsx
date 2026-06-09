@@ -66,6 +66,8 @@ export function Sidebar() {
     setNewSessionModalOpen,
     setNewSessionForNodeId,
     terminalTheme,
+    browserPanelOpen,
+    browserPanelWidth,
   } = useStore();
 
   const session = selectedNodeId ? sessions.get(selectedNodeId) : null;
@@ -252,7 +254,10 @@ export function Sidebar() {
           exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 40 }}
           className="fixed right-0 top-14 bottom-0 z-50 flex flex-col bg-canvas-dark border-l border-border"
-          style={{ width: sidebarWidth }}
+          style={{
+            width: sidebarWidth,
+            right: browserPanelOpen ? browserPanelWidth : 0,
+          }}
         >
           {/* Resize handle */}
           <div

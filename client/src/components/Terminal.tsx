@@ -196,7 +196,7 @@ function maybeAutoOpenLocalPreview(entry: CachedTerminal, output: string) {
   if (!url || isCurrentOpenUiUrl(url)) return;
 
   const store = useStore.getState();
-  if (store.viewMode === "browser" && store.browserUrl === url) return;
+  if (store.browserPanelOpen && store.browserUrl === url) return;
 
   const key = `${entry.nodeId}:${url}`;
   const now = Date.now();
@@ -205,7 +205,7 @@ function maybeAutoOpenLocalPreview(entry: CachedTerminal, output: string) {
   recentAutoPreviewOpens.set(key, now);
 
   store.setBrowserUrl(url);
-  store.setViewMode("browser");
+  store.setBrowserPanelOpen(true);
 }
 
 function connectWs(

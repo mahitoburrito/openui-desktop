@@ -1,4 +1,4 @@
-import { Bell, Folder, Maximize2, Plus, Search, Trash2 } from "lucide-react";
+import { Bell, Folder, Globe, Maximize2, Plus, Search, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
 import { destroyCachedTerminal } from "./Terminal";
@@ -23,6 +23,9 @@ export function Header() {
     setActivityCenterOpen,
     agentActivityEvents,
     activityLastSeenAt,
+    browserPanelOpen,
+    setBrowserPanelOpen,
+    browserUrl,
   } = useStore();
 
   const selectedSession = selectedNodeId ? sessions.get(selectedNodeId) : null;
@@ -97,6 +100,14 @@ export function Header() {
           title="Search commands (Cmd+K)"
         >
           <Search className="h-4 w-4" />
+        </button>
+        <button
+          onClick={() => setBrowserPanelOpen(!browserPanelOpen)}
+          className={`${commandButton} ${browserPanelOpen ? "bg-surface-active text-zinc-100" : ""}`}
+          title={browserUrl ? `Web preview: ${browserUrl}` : "Web preview (Cmd+Shift+B)"}
+          aria-label="Web preview"
+        >
+          <Globe className="h-4 w-4" />
         </button>
         <button
           onClick={openFocusMode}
