@@ -6,6 +6,21 @@ const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const TITLE_MAX_INPUT_CHARS = 5000;
 const TITLE_MAX_WORDS = 3;
+const GEMINI_TITLE_SYSTEM_PROMPT = [
+  "Name an OpenUI desktop agent session from the user's first prompt.",
+  "Return only a concise title: 1 to 3 words, hard maximum 3 words.",
+  "Prefer a concrete object plus task, product plus feature, or bug plus surface.",
+  "Preserve exact repo, product, ticket, feature, bug, local URL, or file names when they are the clearest signal.",
+  "Ignore assistant-routing phrasing such as please, can you, use Codex, use Claude, or use Gemini.",
+  "Do not mention the agent name unless the user's task is specifically about that agent.",
+  "Avoid generic labels: Session, Task, Work, Help, Fix, Update, Coding, Investigation.",
+  "No quotes, emoji, markdown, full sentences, trailing punctuation, or extra explanation.",
+  "Use title case unless preserving a user-provided identifier or casing.",
+  "Examples:",
+  "Prompt: make openui automatically show localhost in the side browser panel -> OpenUI Browser Dock",
+  "Prompt: review PRB-17 Linear enrichment bug -> PRB-17 Enrichment",
+  "Prompt: fix Stripe checkout loading spinner -> Stripe Checkout Spinner",
+].join("\n");
 
 function getLaunchCwd(): string {
   return process.env.LAUNCH_CWD || homedir();
@@ -197,8 +212,7 @@ export async function generateSessionTitle({
           systemInstruction: {
             parts: [
               {
-                text:
-                  "Create a concise desktop session title from the user's first prompt. Use 1 to 3 words, with a hard maximum of 3 words. Return only the title. No quotes, emoji, trailing punctuation, or generic labels like Session. Preserve concrete product, repo, feature, bug, or task names.",
+                text: GEMINI_TITLE_SYSTEM_PROMPT,
               },
             ],
           },
