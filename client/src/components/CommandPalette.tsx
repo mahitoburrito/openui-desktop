@@ -26,7 +26,11 @@ import {
   type TerminalThemeId,
   type WorkspaceBackgroundId,
 } from "../theme/appearance";
-import { buildTitleClusterCanvasLayout, persistAgentPositions } from "../utils/canvasLayout";
+import {
+  buildTitleClusterCanvasLayout,
+  fetchTitleClusterPlan,
+  persistAgentPositions,
+} from "../utils/canvasLayout";
 
 interface Command {
   id: string;
@@ -194,7 +198,8 @@ export function CommandPalette() {
 
   const commands = useMemo<Command[]>(() => {
     const cleanCanvas = async () => {
-      const nextNodes = buildTitleClusterCanvasLayout(nodes, sessions);
+      const plan = await fetchTitleClusterPlan(nodes, sessions).catch(() => null);
+      const nextNodes = buildTitleClusterCanvasLayout(nodes, sessions, plan);
       setNodes(nextNodes);
       // Let React Flow apply the new positions before framing them, else
       // fitView measures stale coords and the tidied grid lands off-screen.
@@ -344,10 +349,10 @@ export function CommandPalette() {
       },
       {
         id: "clean-canvas",
-        title: "Sort: Auto by title",
-        hint: "Arrange sessions into title clusters, with untitled sessions by recency",
+        title: "Sort: Title blast radius",
+        hint: "Cluster sessions by title using Gemini when available, with local fallback",
         icon: Sparkles,
-        keywords: "sort arrange layout canvas",
+        keywords: "sort arrange layout canvas title blast radius llm judge",
         run: cleanCanvas,
       },
       {

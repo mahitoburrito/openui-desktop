@@ -5,22 +5,51 @@ import { homedir } from "os";
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const TITLE_MAX_INPUT_CHARS = 5000;
-const TITLE_MAX_WORDS = 3;
+const TITLE_MAX_WORDS = 12;
+const TITLE_MAX_CHARS = 140;
 const GEMINI_TITLE_SYSTEM_PROMPT = [
-  "Name an OpenUI desktop agent session from the user's first prompt.",
-  "Return only a concise title: 1 to 3 words, hard maximum 3 words.",
-  "Prefer a concrete object plus task, product plus feature, or bug plus surface.",
+  "Name an OpenUI desktop agent session from the user's prompts over time.",
+  "Return only a useful descriptive session title. Use as many words as needed, but stay under 12 words and 140 characters.",
+  "Prefer a concrete product plus feature, bug plus surface, or objective plus repo.",
+  "If later prompts change the actual work, update the title to describe the current session, not just the first prompt.",
   "Preserve exact repo, product, ticket, feature, bug, local URL, or file names when they are the clearest signal.",
   "Ignore assistant-routing phrasing such as please, can you, use Codex, use Claude, or use Gemini.",
   "Do not mention the agent name unless the user's task is specifically about that agent.",
-  "Avoid generic labels: Session, Task, Work, Help, Fix, Update, Coding, Investigation.",
+  "Avoid generic standalone labels: Session, Task, Work, Help, Fix, Update, Coding, Investigation.",
   "No quotes, emoji, markdown, full sentences, trailing punctuation, or extra explanation.",
   "Use title case unless preserving a user-provided identifier or casing.",
   "Examples:",
-  "Prompt: make openui automatically show localhost in the side browser panel -> OpenUI Browser Dock",
-  "Prompt: review PRB-17 Linear enrichment bug -> PRB-17 Enrichment",
-  "Prompt: fix Stripe checkout loading spinner -> Stripe Checkout Spinner",
+  "Prompts: make openui automatically show localhost in the side browser panel -> OpenUI Localhost Browser Dock",
+  "Prompts: review PRB-17 Linear enrichment bug -> PRB-17 Linear Enrichment Review",
+  "Prompts: fix Stripe checkout loading spinner, then test web checkout -> Stripe Checkout Loading State",
 ].join("\n");
+const GEMINI_SORT_SYSTEM_PROMPT = [
+  "You are sorting OpenUI desktop agent cards by blast radius using their titles.",
+  "Blast radius means the likely shared product, repo, feature, bug, user workflow, or code surface impacted by the session.",
+  "Use titles as the primary evidence. Use repo, branch, ticket, status, and recency only to break ties.",
+  "Act as an LLM judge: cluster sessions that appear to affect the same blast radius even when their titles use different words.",
+  "Keep unrelated sessions separate. Do not invent missing work.",
+  "Order groups by operational importance: waiting/error/running sessions first, then larger or riskier blast radius, then recent work.",
+  "Return strict JSON only with this shape: {\"groups\":[{\"label\":\"2-6 word blast radius label\",\"reason\":\"short reason\",\"nodeIds\":[\"node-id\"]}]}",
+  "Every input nodeId must appear exactly once. Do not include markdown or commentary.",
+].join("\n");
+
+export interface TitleSortInput {
+  nodeId: string;
+  title: string;
+  agentName?: string;
+  status?: string;
+  repo?: string;
+  branch?: string;
+  ticketTitle?: string;
+  createdAt?: string;
+}
+
+export interface TitleSortGroup {
+  label: string;
+  reason?: string;
+  nodeIds: string[];
+}
 
 function getLaunchCwd(): string {
   return process.env.LAUNCH_CWD || homedir();
@@ -153,7 +182,7 @@ function normalizeTitle(value: string): string {
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, TITLE_MAX_WORDS);
-  return words.join(" ").slice(0, 60).trim();
+  return words.join(" ").slice(0, TITLE_MAX_CHARS).trim();
 }
 
 export function fallbackSessionTitle(input: string): string {
@@ -170,12 +199,14 @@ export function fallbackSessionTitle(input: string): string {
 
 export async function generateSessionTitle({
   prompt,
+  promptHistory,
   agentName,
   cwd,
   ticketTitle,
   gitBranch,
 }: {
   prompt: string;
+  promptHistory?: string[];
   agentName?: string;
   cwd?: string;
   ticketTitle?: string;
@@ -186,8 +217,11 @@ export async function generateSessionTitle({
   if (!apiKey) return fallback;
 
   const model = getGeminiModel();
-  const safePrompt = cleanPrompt(prompt);
-  if (!safePrompt) return fallback;
+  const safePromptHistory = (promptHistory && promptHistory.length > 0 ? promptHistory : [prompt])
+    .map(cleanPrompt)
+    .filter(Boolean)
+    .slice(-8);
+  if (safePromptHistory.length === 0) return fallback;
 
   const context = [
     agentName ? `Agent: ${agentName}` : "",
@@ -221,14 +255,18 @@ export async function generateSessionTitle({
               role: "user",
               parts: [
                 {
-                  text: `${context}\n\nUser prompt:\n${safePrompt}`,
+                  text: [
+                    context,
+                    "User prompts, oldest to newest:",
+                    ...safePromptHistory.map((item, index) => `${index + 1}. ${item}`),
+                  ].filter(Boolean).join("\n"),
                 },
               ],
             },
           ],
           generationConfig: {
             temperature: 0.2,
-            maxOutputTokens: 12,
+            maxOutputTokens: 48,
           },
         }),
       },
@@ -246,5 +284,109 @@ export async function generateSessionTitle({
     return title || fallback;
   } catch {
     return fallback;
+  }
+}
+
+function parseJsonObject(value: string): any | null {
+  const trimmed = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+export async function generateTitleSortGroups(items: TitleSortInput[]): Promise<TitleSortGroup[] | null> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey || items.length === 0) return null;
+
+  const model = getGeminiModel();
+  const payload = items.map((item) => ({
+    nodeId: item.nodeId,
+    title: cleanPrompt(item.title).slice(0, 180),
+    agentName: item.agentName,
+    status: item.status,
+    repo: item.repo,
+    branch: item.branch,
+    ticketTitle: item.ticketTitle ? cleanPrompt(item.ticketTitle).slice(0, 180) : undefined,
+    createdAt: item.createdAt,
+  }));
+
+  try {
+    const bearer = isBearerCredential(apiKey);
+    const res = await fetch(
+      `${GEMINI_API}/models/${encodeURIComponent(model)}:generateContent${bearer ? "" : `?key=${encodeURIComponent(apiKey)}`}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(bearer ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: GEMINI_SORT_SYSTEM_PROMPT }],
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `Cluster these sessions by title blast radius:\n${JSON.stringify(payload)}`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: Math.min(4096, 512 + items.length * 96),
+          },
+        }),
+      },
+    );
+
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+    const raw =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part.text || "")
+        .join(" ") || "";
+    const parsed = parseJsonObject(raw);
+    if (!parsed || !Array.isArray(parsed.groups)) return null;
+
+    const inputIds = new Set(items.map((item) => item.nodeId));
+    const seen = new Set<string>();
+    const groups: TitleSortGroup[] = [];
+    for (const group of parsed.groups) {
+      if (!group || !Array.isArray(group.nodeIds)) continue;
+      const nodeIds: string[] = group.nodeIds
+        .filter((id: unknown): id is string => typeof id === "string" && inputIds.has(id) && !seen.has(id));
+      if (nodeIds.length === 0) continue;
+      nodeIds.forEach((id: string) => seen.add(id));
+      const label = normalizeTitle(String(group.label || "Related Work")) || "Related Work";
+      groups.push({
+        label,
+        reason: typeof group.reason === "string" ? group.reason.slice(0, 180) : undefined,
+        nodeIds,
+      });
+    }
+
+    for (const item of items) {
+      if (!seen.has(item.nodeId)) {
+        groups.push({ label: normalizeTitle(item.title) || "Related Work", nodeIds: [item.nodeId] });
+      }
+    }
+
+    return groups.length > 0 ? groups : null;
+  } catch {
+    return null;
   }
 }

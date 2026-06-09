@@ -76,6 +76,8 @@ export interface Session {
   // Auto-naming from first query
   firstInputBuffer?: string;
   nameGenerated?: boolean;
+  generatedTitle?: string;
+  titlePromptHistory?: string[];
   // Soft delete
   pendingDelete?: boolean;
   deleteTimeout?: ReturnType<typeof setTimeout>;
@@ -112,6 +114,8 @@ export interface PersistedNode {
   originalCwd?: string;
   createdAt: string;
   customName?: string;
+  generatedTitle?: string;
+  titlePromptHistory?: string[];
   customColor?: string;
   notes?: string;
   icon?: string;

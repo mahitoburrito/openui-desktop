@@ -63,6 +63,8 @@ export function saveState(sessions: Map<string, Session>) {
       originalCwd: session.originalCwd,
       createdAt: session.createdAt,
       customName: session.customName,
+      generatedTitle: session.generatedTitle,
+      titlePromptHistory: session.titlePromptHistory,
       customColor: session.customColor,
       notes: session.notes,
       icon: session.icon,

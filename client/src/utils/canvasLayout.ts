@@ -24,6 +24,17 @@ const TITLE_CLUSTER_COLORS = [
   "oklch(72% 0.11 310)",
 ];
 
+export interface TitleClusterGroup {
+  label: string;
+  nodeIds: string[];
+  reason?: string;
+}
+
+export interface TitleClusterPlan {
+  source: "gemini" | "fallback" | "empty";
+  groups: TitleClusterGroup[];
+}
+
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   waiting_input: 0,
   error: 1,
@@ -224,6 +235,7 @@ export function buildCleanCanvasLayout(
 export function buildTitleClusterCanvasLayout(
   nodes: Node[],
   sessions: Map<string, AgentSession>,
+  plan?: TitleClusterPlan | null,
 ): Node[] {
   const manualNodes = nodes.filter((node) => !isTitleCluster(node));
   const manualCategories = manualNodes.filter((node) => node.type === "category");
@@ -231,29 +243,58 @@ export function buildTitleClusterCanvasLayout(
 
   if (agentNodes.length === 0) return manualNodes;
 
-  const groups = new Map<string, { title: string; hasTitle: boolean; agents: Node[] }>();
-  for (const agent of agentNodes) {
-    const session = sessions.get(agent.id);
-    const title = sessionTitle(session, agent);
-    const groupTitle = title || "Untitled, recent first";
-    const id = titleClusterId(groupTitle);
-    const existing = groups.get(id);
-    if (existing) {
-      existing.agents.push(agent);
-    } else {
-      groups.set(id, { title: groupTitle, hasTitle: !!title, agents: [agent] });
-    }
-  }
+  const agentById = new Map(agentNodes.map((agent) => [agent.id, agent]));
+  let orderedGroups: [string, { title: string; hasTitle: boolean; agents: Node[] }][] = [];
 
-  const orderedGroups = Array.from(groups.entries()).sort(([, a], [, b]) => {
-    if (a.hasTitle !== b.hasTitle) return a.hasTitle ? -1 : 1;
-    if (!a.hasTitle && !b.hasTitle) {
-      const newestA = Math.max(...a.agents.map((agent) => nodeCreatedAt(agent.id, sessions)));
-      const newestB = Math.max(...b.agents.map((agent) => nodeCreatedAt(agent.id, sessions)));
-      return newestB - newestA;
+  if (plan?.groups?.length) {
+    const used = new Set<string>();
+    orderedGroups = plan.groups
+      .map((group, index): [string, { title: string; hasTitle: boolean; agents: Node[] }] | null => {
+        const agents = group.nodeIds
+          .map((id) => agentById.get(id))
+          .filter((agent): agent is Node => Boolean(agent) && !used.has(agent.id));
+        if (agents.length === 0) return null;
+        agents.forEach((agent) => used.add(agent.id));
+        const title = group.label?.trim() || "Related Work";
+        return [
+          `${titleClusterId(title)}-${index}`,
+          { title, hasTitle: true, agents },
+        ];
+      })
+      .filter((group): group is [string, { title: string; hasTitle: boolean; agents: Node[] }] => Boolean(group));
+
+    const remainingAgents = agentNodes.filter((agent) => !used.has(agent.id));
+    if (remainingAgents.length > 0) {
+      orderedGroups.push([
+        titleClusterId("Untitled, recent first"),
+        { title: "Untitled, recent first", hasTitle: false, agents: remainingAgents },
+      ]);
     }
-    return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-  });
+  } else {
+    const groups = new Map<string, { title: string; hasTitle: boolean; agents: Node[] }>();
+    for (const agent of agentNodes) {
+      const session = sessions.get(agent.id);
+      const title = sessionTitle(session, agent);
+      const groupTitle = title || "Untitled, recent first";
+      const id = titleClusterId(groupTitle);
+      const existing = groups.get(id);
+      if (existing) {
+        existing.agents.push(agent);
+      } else {
+        groups.set(id, { title: groupTitle, hasTitle: !!title, agents: [agent] });
+      }
+    }
+
+    orderedGroups = Array.from(groups.entries()).sort(([, a], [, b]) => {
+      if (a.hasTitle !== b.hasTitle) return a.hasTitle ? -1 : 1;
+      if (!a.hasTitle && !b.hasTitle) {
+        const newestA = Math.max(...a.agents.map((agent) => nodeCreatedAt(agent.id, sessions)));
+        const newestB = Math.max(...b.agents.map((agent) => nodeCreatedAt(agent.id, sessions)));
+        return newestB - newestA;
+      }
+      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+    });
+  }
 
   const agentPositions = new Map<string, { x: number; y: number }>();
   const clusterNodes: Node[] = [];
@@ -295,6 +336,33 @@ export function buildTitleClusterCanvasLayout(
   });
 
   return [...manualCategories, ...clusterNodes, ...movedAgents];
+}
+
+export async function fetchTitleClusterPlan(
+  nodes: Node[],
+  sessions: Map<string, AgentSession>,
+): Promise<TitleClusterPlan | null> {
+  const agentNodes = nodes.filter((node) => node.type === "agent");
+  if (agentNodes.length === 0) return null;
+
+  const res = await fetch("/api/layout/title-clusters", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      nodes: agentNodes.map((node) => {
+        const session = sessions.get(node.id);
+        return {
+          id: node.id,
+          label: typeof node.data?.label === "string" ? node.data.label : "",
+          sessionId: session?.sessionId,
+        };
+      }),
+    }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!Array.isArray(data?.groups)) return null;
+  return data as TitleClusterPlan;
 }
 
 export async function persistAgentPositions(nodes: Node[]): Promise<void> {

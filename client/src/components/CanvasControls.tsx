@@ -2,7 +2,11 @@ import { motion } from "framer-motion";
 import { Plus, FolderPlus, Sparkles } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../stores/useStore";
-import { buildTitleClusterCanvasLayout, persistAgentPositions } from "../utils/canvasLayout";
+import {
+  buildTitleClusterCanvasLayout,
+  fetchTitleClusterPlan,
+  persistAgentPositions,
+} from "../utils/canvasLayout";
 
 const CATEGORY_COLORS = ["#D97652", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#14B8A6"];
 
@@ -56,7 +60,8 @@ export function CanvasControls() {
   };
 
   const handleCleanCanvas = async () => {
-    const nextNodes = buildTitleClusterCanvasLayout(nodes, sessions);
+    const plan = await fetchTitleClusterPlan(nodes, sessions).catch(() => null);
+    const nextNodes = buildTitleClusterCanvasLayout(nodes, sessions, plan);
     setNodes(nextNodes);
     // Frame the tidied grid after React Flow applies the new positions.
     requestAnimationFrame(() =>
@@ -75,7 +80,7 @@ export function CanvasControls() {
         className={buttonClass}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
-        title="Auto sort by session title"
+        title="Auto sort by title blast radius"
       >
         <Sparkles className="w-4 h-4" />
       </motion.button>

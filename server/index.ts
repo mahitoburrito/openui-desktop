@@ -160,27 +160,27 @@ export async function startServer(): Promise<number> {
                 session.pty.write(msg.data);
                 session.lastInputTime = Date.now();
 
-                // Auto-generate session name from first query
-                if (!session.nameGenerated && !session.customName) {
-                  if (session.firstInputBuffer === undefined) {
-                    session.firstInputBuffer = "";
+                // Keep auto-generated titles fresh from submitted terminal prompts.
+                // Claude's UserPromptSubmit hook is better structured; this is the
+                // fallback for agents or shells without that hook.
+                if (session.firstInputBuffer === undefined) {
+                  session.firstInputBuffer = "";
+                }
+                if (msg.data.includes("\r") || msg.data.includes("\n")) {
+                  const remaining = msg.data.split(/[\r\n]/)[0];
+                  session.firstInputBuffer += remaining;
+                  const query = session.firstInputBuffer.trim();
+                  if (query.length > 0) {
+                    scheduleSessionTitleGeneration(sessionId, query);
                   }
-                  if (msg.data.includes("\r") || msg.data.includes("\n")) {
-                    const remaining = msg.data.split(/[\r\n]/)[0];
-                    session.firstInputBuffer += remaining;
-                    const query = session.firstInputBuffer.trim();
-                    if (query.length > 0) {
-                      scheduleSessionTitleGeneration(sessionId, query);
-                    }
-                    session.firstInputBuffer = undefined;
-                  } else {
-                    if (msg.data === "\x7f" || msg.data === "\b") {
-                      session.firstInputBuffer = session.firstInputBuffer.slice(0, -1);
-                    } else if (msg.data.length === 1 && msg.data.charCodeAt(0) >= 32) {
-                      session.firstInputBuffer += msg.data;
-                    } else if (msg.data.length > 1 && !msg.data.startsWith("\x1b")) {
-                      session.firstInputBuffer += msg.data;
-                    }
+                  session.firstInputBuffer = "";
+                } else {
+                  if (msg.data === "\x7f" || msg.data === "\b") {
+                    session.firstInputBuffer = session.firstInputBuffer.slice(0, -1);
+                  } else if (msg.data.length === 1 && msg.data.charCodeAt(0) >= 32) {
+                    session.firstInputBuffer += msg.data;
+                  } else if (msg.data.length > 1 && !msg.data.startsWith("\x1b")) {
+                    session.firstInputBuffer += msg.data;
                   }
                 }
               }

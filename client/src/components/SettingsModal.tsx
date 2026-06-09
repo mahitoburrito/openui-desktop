@@ -796,14 +796,14 @@ function IntegrationsTab({
                 </button>
               </div>
               <p className="text-xs text-zinc-500">
-                New sessions are titled from the first submitted prompt. If Gemini is unavailable,
-                OpenUI falls back to a local title.
+                Session titles keep updating from submitted prompts while the name is still auto-generated.
+                Sort can also use Gemini to cluster titles by blast radius.
               </p>
             </>
           ) : (
             <>
               <p className="text-xs text-zinc-500">
-                Add a Gemini API key to generate concise titles automatically from each session's first prompt.
+                Add a Gemini API key to generate richer session titles over time and sort title clusters by blast radius.
               </p>
               <div className="flex gap-2">
                 <div className="relative flex-1">

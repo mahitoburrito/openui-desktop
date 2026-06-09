@@ -40,6 +40,9 @@ import {
 import {
   loadTitleGenerationConfig,
   saveTitleGenerationApiKey,
+  generateTitleSortGroups,
+  type TitleSortGroup,
+  type TitleSortInput,
 } from "../services/titleGenerator";
 
 function getLaunchCwd(): string {
@@ -93,6 +96,131 @@ function buildTitlePrompt(initialPrompt: unknown): string | undefined {
   const starterPrompt =
     typeof initialPrompt === "string" ? initialPrompt.trim().slice(0, AGENT_RULES_MAX_CHARS) : "";
   return starterPrompt || undefined;
+}
+
+const SORT_STATUS_PRIORITY: Record<string, number> = {
+  waiting_input: 0,
+  error: 1,
+  running: 2,
+  tool_calling: 3,
+  creating: 4,
+  idle: 5,
+  disconnected: 6,
+};
+
+const TITLE_SORT_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "app",
+  "auto",
+  "build",
+  "can",
+  "code",
+  "coding",
+  "do",
+  "fix",
+  "for",
+  "help",
+  "in",
+  "investigation",
+  "make",
+  "of",
+  "on",
+  "please",
+  "review",
+  "session",
+  "task",
+  "the",
+  "to",
+  "update",
+  "work",
+]);
+
+function titleSortPriority(item: TitleSortInput): number {
+  return SORT_STATUS_PRIORITY[item.status || ""] ?? 99;
+}
+
+function titleTokens(value: string): string[] {
+  const ticket = value.match(/\b[A-Z][A-Z0-9]+-\d+\b/);
+  const words = value
+    .toLowerCase()
+    .replace(/\bhttps?:\/\/[^\s]+/g, " local-url ")
+    .replace(/[^a-z0-9-]+/g, " ")
+    .split(/\s+/)
+    .filter((word) => word && word.length > 1 && !TITLE_SORT_STOP_WORDS.has(word));
+  return ticket ? [ticket[0].toLowerCase(), ...words] : words;
+}
+
+function labelFromTokens(tokens: string[], fallback: string): string {
+  const label = tokens
+    .slice(0, 3)
+    .map((token) =>
+      /^[a-z]+-\d+$/i.test(token)
+        ? token.toUpperCase()
+        : token.charAt(0).toUpperCase() + token.slice(1),
+    )
+    .join(" ");
+  return label || fallback || "Related Work";
+}
+
+function fallbackTitleSortGroups(items: TitleSortInput[]): TitleSortGroup[] {
+  const sorted = [...items].sort((a, b) => {
+    const priority = titleSortPriority(a) - titleSortPriority(b);
+    if (priority !== 0) return priority;
+    return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+  });
+
+  const groups = new Map<string, TitleSortGroup>();
+  for (const item of sorted) {
+    const tokens = titleTokens(`${item.title} ${item.ticketTitle || ""}`);
+    const repoToken = (item.repo || "").split("/").filter(Boolean).pop()?.toLowerCase();
+    const key =
+      tokens.find((token) => /^[a-z]+-\d+$/i.test(token)) ||
+      (repoToken && tokens[0] ? `${repoToken}:${tokens[0]}` : tokens.slice(0, 2).join(":")) ||
+      item.nodeId;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.nodeIds.push(item.nodeId);
+    } else {
+      groups.set(key, {
+        label: labelFromTokens(tokens, item.title),
+        reason: "Local title-token blast-radius fallback",
+        nodeIds: [item.nodeId],
+      });
+    }
+  }
+
+  return Array.from(groups.values());
+}
+
+function validateTitleSortGroups(
+  groups: TitleSortGroup[] | null,
+  items: TitleSortInput[],
+): TitleSortGroup[] | null {
+  if (!groups || groups.length === 0) return null;
+  const allowedIds = new Set(items.map((item) => item.nodeId));
+  const seen = new Set<string>();
+  const cleaned: TitleSortGroup[] = [];
+
+  for (const group of groups) {
+    const nodeIds = group.nodeIds.filter((id) => allowedIds.has(id) && !seen.has(id));
+    if (nodeIds.length === 0) continue;
+    nodeIds.forEach((id) => seen.add(id));
+    cleaned.push({
+      label: group.label?.trim() || "Related Work",
+      reason: group.reason,
+      nodeIds,
+    });
+  }
+
+  for (const item of items) {
+    if (!seen.has(item.nodeId)) {
+      cleaned.push({ label: item.title || "Related Work", nodeIds: [item.nodeId] });
+    }
+  }
+
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 apiRoutes.get("/config", (c) => {
@@ -1187,6 +1315,46 @@ apiRoutes.get("/sessions/changes", async (c) => {
   return c.json({ summaries });
 });
 
+apiRoutes.post("/layout/title-clusters", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const nodeInputs = Array.isArray(body.nodes) ? body.nodes : [];
+
+  const items: TitleSortInput[] = nodeInputs
+    .map((node: any): TitleSortInput | null => {
+      const nodeId = typeof node?.id === "string" ? node.id : "";
+      const session = nodeId ? Array.from(sessions.values()).find((item) => item.nodeId === nodeId) : null;
+      if (!nodeId || !session || session.pendingDelete) return null;
+      const label = typeof node?.label === "string" ? node.label.trim() : "";
+      return {
+        nodeId,
+        title:
+          session.customName ||
+          session.ticketTitle ||
+          (label && label !== session.agentName && label !== session.agentId ? label : "") ||
+          session.agentName,
+        agentName: session.agentName,
+        status: session.status,
+        repo: session.originalCwd || session.cwd,
+        branch: session.gitBranch,
+        ticketTitle: session.ticketTitle,
+        createdAt: session.createdAt,
+      };
+    })
+    .filter((item: TitleSortInput | null): item is TitleSortInput => Boolean(item));
+
+  if (items.length === 0) {
+    return c.json({ source: "empty", groups: [] });
+  }
+
+  const judgedGroups = await generateTitleSortGroups(items).catch(() => null);
+  const validJudgedGroups = validateTitleSortGroups(judgedGroups, items);
+  if (validJudgedGroups) {
+    return c.json({ source: "gemini", groups: validJudgedGroups });
+  }
+
+  return c.json({ source: "fallback", groups: fallbackTitleSortGroups(items) });
+});
+
 apiRoutes.get("/sessions/:sessionId/status", (c) => {
   const sessionId = c.req.param("sessionId");
   const session = sessions.get(sessionId);
@@ -1392,7 +1560,13 @@ apiRoutes.patch("/sessions/:sessionId", async (c) => {
   if (!session) return c.json({ error: "Session not found" }, 404);
 
   const updates = await c.req.json();
-  if (updates.customName !== undefined) session.customName = updates.customName;
+  if (updates.customName !== undefined) {
+    session.customName = updates.customName;
+    if (!updates.customName) {
+      session.generatedTitle = undefined;
+      session.nameGenerated = false;
+    }
+  }
   if (updates.customColor !== undefined) session.customColor = updates.customColor;
   if (updates.notes !== undefined) session.notes = updates.notes;
 
@@ -1459,6 +1633,7 @@ apiRoutes.post("/sessions/:sessionId/undo-delete", (c) => {
 apiRoutes.post("/status-update", async (c) => {
   const body = await c.req.json();
   const { status, openuiSessionId, claudeSessionId, hookEvent, toolName } = body;
+  const userPrompt = typeof body.userPrompt === "string" ? body.userPrompt.trim() : "";
 
   log(`[plugin-hook] ${hookEvent || "unknown"}: status=${status} tool=${toolName || "none"} openui=${openuiSessionId || "none"}`);
 
@@ -1467,15 +1642,17 @@ apiRoutes.post("/status-update", async (c) => {
   }
 
   let session = null;
+  let matchedSessionId = typeof openuiSessionId === "string" ? openuiSessionId : "";
 
   if (openuiSessionId) {
     session = sessions.get(openuiSessionId);
   }
 
   if (!session && claudeSessionId) {
-    for (const [, s] of sessions) {
+    for (const [id, s] of sessions) {
       if (s.claudeSessionId === claudeSessionId) {
         session = s;
+        matchedSessionId = id;
         break;
       }
     }
@@ -1484,6 +1661,10 @@ apiRoutes.post("/status-update", async (c) => {
   if (session) {
     if (claudeSessionId && !session.claudeSessionId) {
       session.claudeSessionId = claudeSessionId;
+    }
+
+    if (userPrompt && matchedSessionId) {
+      scheduleSessionTitleGeneration(matchedSessionId, userPrompt);
     }
 
     let effectiveStatus = status;

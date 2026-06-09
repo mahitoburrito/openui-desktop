@@ -407,6 +407,18 @@ async function main() {
     const promptContent = await readFile(join(promptRepo, "prompt.txt"), "utf8");
     await assert(promptContent.includes("Persistent OpenUI agent rules:"), "agent rules heading missing from launch prompt");
     await assert(promptContent.includes("Always include the OpenUI smoke rule."), "saved agent rules missing from launch prompt");
+    const sortPlan = await api("/api/layout/title-clusters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nodes: [{ id: "node-prompt-test", label: "OpenUI Browser Dock" }],
+      }),
+    });
+    await assert(Array.isArray(sortPlan.groups), "title cluster sort did not return groups");
+    await assert(
+      sortPlan.groups.some((group) => Array.isArray(group.nodeIds) && group.nodeIds.includes("node-prompt-test")),
+      "title cluster sort omitted the test session",
+    );
     await api(`/api/sessions/${promptSession.sessionId}`, { method: "DELETE" });
 
     console.log("OpenUI feature smoke tests passed");

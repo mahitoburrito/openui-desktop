@@ -290,8 +290,11 @@ export async function createMultiRepoWorktrees(params: {
 }
 
 const MAX_BUFFER_SIZE = 5000;
+const TITLE_PROMPT_HISTORY_LIMIT = 8;
+const TITLE_UPDATE_DEBOUNCE_MS = 1200;
 
 export const sessions = new Map<string, Session>();
+const titleGenerationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Actual port the server is listening on — set by setServerPort() after bind
 let serverPort: number = 6968;
@@ -312,25 +315,50 @@ function broadcastSessionName(sessionId: string, name: string) {
 export function scheduleSessionTitleGeneration(sessionId: string, prompt: string) {
   const session = sessions.get(sessionId);
   const titlePrompt = prompt.trim();
-  if (!session || !titlePrompt || session.customName || session.nameGenerated) return;
+  if (!session || !titlePrompt) return;
 
+  // A user-edited name lives in the same field as generated titles. Only keep
+  // ripening while the visible name is still the title OpenUI generated.
+  if (session.customName && session.customName !== session.generatedTitle) return;
+
+  const history = session.titlePromptHistory ?? [];
+  if (history[history.length - 1] !== titlePrompt) {
+    session.titlePromptHistory = [...history, titlePrompt].slice(-TITLE_PROMPT_HISTORY_LIMIT);
+  }
   session.nameGenerated = true;
 
-  void generateSessionTitle({
-    prompt: titlePrompt,
-    agentName: session.agentName,
-    cwd: session.cwd,
-    ticketTitle: session.ticketTitle,
-    gitBranch: session.gitBranch,
-  }).then((name) => {
-    const current = sessions.get(sessionId);
-    if (!current || current.customName) return;
-    current.customName = name;
-    saveState(sessions);
-    broadcastSessionName(sessionId, name);
-  }).catch((error: any) => {
-    logError(`[PRBE_ERROR_titleGeneration] [session] Failed to generate title for ${sessionId}: ${error?.message || error}`);
-  });
+  const existingTimer = titleGenerationTimers.get(sessionId);
+  if (existingTimer) clearTimeout(existingTimer);
+
+  const timer = setTimeout(() => {
+    titleGenerationTimers.delete(sessionId);
+    const currentAtStart = sessions.get(sessionId);
+    if (!currentAtStart) return;
+
+    void generateSessionTitle({
+      prompt: titlePrompt,
+      promptHistory: currentAtStart.titlePromptHistory,
+      agentName: currentAtStart.agentName,
+      cwd: currentAtStart.cwd,
+      ticketTitle: currentAtStart.ticketTitle,
+      gitBranch: currentAtStart.gitBranch,
+    }).then((name) => {
+      const current = sessions.get(sessionId);
+      if (!current) return;
+      if (current.customName && current.customName !== current.generatedTitle) return;
+      if (!name || name === current.generatedTitle) return;
+
+      current.customName = name;
+      current.generatedTitle = name;
+      current.nameGenerated = true;
+      saveState(sessions);
+      broadcastSessionName(sessionId, name);
+    }).catch((error: any) => {
+      logError(`[PRBE_ERROR_titleGeneration] [session] Failed to generate title for ${sessionId}: ${error?.message || error}`);
+    });
+  }, TITLE_UPDATE_DEBOUNCE_MS);
+
+  titleGenerationTimers.set(sessionId, timer);
 }
 
 export function getActiveSessionCount(): number {
@@ -684,6 +712,8 @@ export async function restoreSessions() {
       lastInputTime: 0,
       recentOutputSize: 0,
       customName: node.customName,
+      generatedTitle: node.generatedTitle,
+      titlePromptHistory: node.titlePromptHistory,
       customColor: node.customColor,
       notes: node.notes,
       nodeId: node.nodeId,
