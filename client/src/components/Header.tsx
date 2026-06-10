@@ -23,6 +23,7 @@ export function Header() {
     setActivityCenterOpen,
     agentActivityEvents,
     activityLastSeenAt,
+    viewMode,
     browserPanelOpen,
     setBrowserPanelOpen,
     browserUrl,
@@ -30,6 +31,7 @@ export function Header() {
 
   const selectedSession = selectedNodeId ? sessions.get(selectedNodeId) : null;
   const canOpenFocusMode = !!selectedSession || focusedSessionIds.length > 0;
+  const canOpenBrowserPreview = viewMode === "focus" || canOpenFocusMode;
   const unreadActivityCount = agentActivityEvents.filter(
     (event) => event.createdAt > activityLastSeenAt,
   ).length;
@@ -41,6 +43,20 @@ export function Header() {
     }
     setSidebarOpen(false);
     setViewMode("focus");
+  };
+
+  const openBrowserPreview = () => {
+    if (viewMode === "focus") {
+      setBrowserPanelOpen(!browserPanelOpen);
+      return;
+    }
+    if (!canOpenFocusMode) return;
+    if (selectedNodeId && selectedSession) {
+      addFocusedSession(selectedNodeId);
+    }
+    setSidebarOpen(false);
+    setViewMode("focus");
+    setBrowserPanelOpen(true);
   };
 
   const deleteSelectedSession = async () => {
@@ -102,9 +118,20 @@ export function Header() {
           <Search className="h-4 w-4" />
         </button>
         <button
-          onClick={() => setBrowserPanelOpen(!browserPanelOpen)}
-          className={`${commandButton} ${browserPanelOpen ? "bg-surface-active text-zinc-100" : ""}`}
-          title={browserUrl ? `Web preview: ${browserUrl}` : "Web preview (Cmd+Shift+B)"}
+          onClick={openBrowserPreview}
+          disabled={!canOpenBrowserPreview}
+          className={`${commandButton} ${
+            viewMode === "focus" && browserPanelOpen ? "bg-surface-active text-zinc-100" : ""
+          }`}
+          title={
+            viewMode === "focus"
+              ? browserUrl
+                ? `Web preview: ${browserUrl}`
+                : "Web preview (Cmd+Shift+B)"
+              : canOpenFocusMode
+                ? "Open web preview in focus mode"
+                : "Select or pin a session to preview a browser"
+          }
           aria-label="Web preview"
         >
           <Globe className="h-4 w-4" />

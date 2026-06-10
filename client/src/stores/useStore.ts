@@ -190,6 +190,9 @@ interface AppState {
   setStatusFilter: (filter: StatusFilter) => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  // Collapsed project groups in the session list (keyed by group path)
+  collapsedSessionGroups: string[];
+  toggleSessionGroup: (groupKey: string) => void;
 
   // Focus Mode (multi-terminal view)
   viewMode: ViewMode;
@@ -272,6 +275,9 @@ function loadPersistedUIState(): Partial<AppState> {
           : "canvas";
       return {
         sessionListOpen: parsed.sessionListOpen ?? true,
+        collapsedSessionGroups: Array.isArray(parsed.collapsedSessionGroups)
+          ? parsed.collapsedSessionGroups.slice(0, 100)
+          : [],
         viewMode: persistedViewMode,
         focusedSessionIds: parsed.focusedSessionIds ?? [],
         splitRatios: parsed.splitRatios ?? {},
@@ -321,9 +327,9 @@ function loadPersistedUIState(): Partial<AppState> {
 }
 
 const MAX_FOCUSED_SESSIONS = 16;
-const DEFAULT_BROWSER_PANEL_WIDTH = 560;
+const DEFAULT_BROWSER_PANEL_WIDTH = 720;
 const MIN_BROWSER_PANEL_WIDTH = 360;
-const MAX_BROWSER_PANEL_WIDTH = 900;
+const MAX_BROWSER_PANEL_WIDTH = 1100;
 
 function clampBrowserPanelWidth(width: unknown): number {
   if (typeof width !== "number" || !Number.isFinite(width)) {
@@ -415,6 +421,13 @@ export const useStore = create<AppState>((set) => ({
   setStatusFilter: (filter) => set({ statusFilter: filter }),
   searchQuery: "",
   setSearchQuery: (query) => set({ searchQuery: query }),
+  collapsedSessionGroups: (persisted.collapsedSessionGroups as string[]) ?? [],
+  toggleSessionGroup: (groupKey) =>
+    set((state) => ({
+      collapsedSessionGroups: state.collapsedSessionGroups.includes(groupKey)
+        ? state.collapsedSessionGroups.filter((key) => key !== groupKey)
+        : [...state.collapsedSessionGroups, groupKey],
+    })),
 
   // Focus Mode
   viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
@@ -581,6 +594,7 @@ useStore.subscribe((state) => {
       STORAGE_KEY,
       JSON.stringify({
         sessionListOpen: state.sessionListOpen,
+        collapsedSessionGroups: state.collapsedSessionGroups,
         viewMode: state.viewMode,
         focusedSessionIds: state.focusedSessionIds,
         splitRatios: state.splitRatios,

@@ -15,6 +15,7 @@ export function useKeyboardShortcuts() {
         focusedSessionIds,
         sessions,
         nodes,
+        selectedNodeId,
         setSelectedNodeId,
         setSidebarOpen,
         addFocusedSession,
@@ -49,8 +50,8 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Escape - close browser dock before exiting the current workspace mode
-      if (e.key === "Escape" && browserPanelOpen) {
+      // Escape - close focus-mode browser dock before exiting focus mode
+      if (e.key === "Escape" && viewMode === "focus" && browserPanelOpen) {
         e.preventDefault();
         setBrowserPanelOpen(false);
         return;
@@ -77,6 +78,17 @@ export function useKeyboardShortcuts() {
       // Cmd+Shift+B — toggle embedded browser
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "b" || e.key === "B")) {
         e.preventDefault();
+        if (viewMode !== "focus") {
+          if (selectedNodeId && sessions.has(selectedNodeId)) {
+            addFocusedSession(selectedNodeId);
+          } else if (focusedSessionIds.length === 0) {
+            return;
+          }
+          setSidebarOpen(false);
+          setViewMode("focus");
+          setBrowserPanelOpen(true);
+          return;
+        }
         setBrowserPanelOpen(!browserPanelOpen);
         return;
       }

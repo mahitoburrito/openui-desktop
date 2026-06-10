@@ -9,3 +9,4 @@ client/node_modules/
 resources/default-config.json
 .gstack/
 test-results/
+release-staged/

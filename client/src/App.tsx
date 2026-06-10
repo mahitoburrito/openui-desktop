@@ -168,6 +168,7 @@ function AppContent() {
   const workspace = getWorkspaceBackground(workspaceBackground);
   const positionUpdateTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasRestoredRef = useRef(false);
+  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
 
   // Initialize PRBE IPC listeners
   usePRBEIPC();
@@ -571,7 +572,7 @@ function AppContent() {
       <div className="flex-1 relative min-h-0">
         <div
           className="absolute inset-y-0 left-0 min-w-0 transition-[right] duration-300"
-          style={{ right: browserPanelOpen ? browserPanelWidth : 0 }}
+          style={{ right: browserDockOpen ? browserPanelWidth : 0 }}
         >
           {/* Session List Panel (left sidebar) */}
           <SessionListPanel />
@@ -646,8 +647,8 @@ function AppContent() {
           <PRBEPanel />
         </div>
 
-        {/* Embedded browser dock */}
-        <BrowserView />
+        {/* Embedded browser dock, scoped to focus mode so the canvas never gets squeezed. */}
+        {viewMode === "focus" && <BrowserView />}
       </div>
 
       <NewSessionModal

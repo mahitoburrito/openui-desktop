@@ -252,7 +252,7 @@ export function buildTitleClusterCanvasLayout(
       .map((group, index): [string, { title: string; hasTitle: boolean; agents: Node[] }] | null => {
         const agents = group.nodeIds
           .map((id) => agentById.get(id))
-          .filter((agent): agent is Node => Boolean(agent) && !used.has(agent.id));
+          .filter((agent): agent is Node => agent !== undefined && !used.has(agent.id));
         if (agents.length === 0) return null;
         agents.forEach((agent) => used.add(agent.id));
         const title = group.label?.trim() || "Related Work";

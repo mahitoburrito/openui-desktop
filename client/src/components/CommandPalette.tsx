@@ -118,6 +118,7 @@ export function CommandPalette() {
     selectedNodeId,
     setSelectedNodeId,
     setSidebarOpen,
+    viewMode,
     addFocusedSession,
     focusedSessionIds,
     nodes,
@@ -402,12 +403,28 @@ export function CommandPalette() {
       },
       {
         id: "browser",
-        title: "Open web preview",
-        hint: "Preview a localhost URL or website in an embedded browser",
+        title: viewMode === "focus" ? "Open web preview" : "Open web preview in focus mode",
+        hint:
+          viewMode === "focus"
+            ? "Preview a localhost URL or website in an embedded browser"
+            : focusedSessionIds.length > 0
+              ? "Switch to focus mode and open the embedded browser"
+              : "Pin a session to focus mode first",
         icon: Globe,
         surface: Boolean(browserUrl || browserPanelOpen),
         keywords: "browser preview headless web localhost",
-        run: () => setBrowserPanelOpen(true),
+        run: () => {
+          if (viewMode !== "focus") {
+            if (selectedNodeId && sessions.has(selectedNodeId)) {
+              addFocusedSession(selectedNodeId);
+            } else if (focusedSessionIds.length === 0) {
+              return;
+            }
+            setSidebarOpen(false);
+            setViewMode("focus");
+          }
+          setBrowserPanelOpen(true);
+        },
       },
       {
         id: "focus",
@@ -572,6 +589,7 @@ export function CommandPalette() {
     setWorkspaceBackground,
     taskRoot,
     updateSession,
+    viewMode,
   ]);
 
   const filtered = useMemo(() => {

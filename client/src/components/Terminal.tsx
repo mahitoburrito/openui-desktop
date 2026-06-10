@@ -115,6 +115,8 @@ interface CachedTerminal {
   ws: WebSocket | null;
   kittyModeStack: number[];
   previewScanBuffer: string;
+  pendingPreviewUrl: string | null;
+  lastUserInputAt: number;
   alive: boolean;
   nodeId: string;
   updateSession: (nodeId: string, update: Record<string, unknown>) => void;
@@ -126,6 +128,16 @@ const cache = new Map<string, CachedTerminal>();
 const recentAutoPreviewOpens = new Map<string, number>();
 const AUTO_PREVIEW_SCAN_LIMIT = 1200;
 const AUTO_PREVIEW_COOLDOWN_MS = 45_000;
+// Echo of the user's own typing repaints the TUI frame; skip URL scanning
+// for this long after any keystroke so half-typed prompts never get glued
+// onto a previously printed URL.
+const TYPING_SUPPRESS_MS = 2000;
+// Statuses that mean "the run is over" — the only moment auto-preview is
+// allowed to navigate the browser dock.
+const RUN_DONE_STATUSES: ReadonlySet<AgentStatus> = new Set([
+  "idle",
+  "waiting_input",
+]);
 
 export function destroyCachedTerminal(sessionId: string) {
   const entry = cache.get(sessionId);
@@ -167,7 +179,9 @@ function buildTheme(color: string, themeId: TerminalThemeId) {
 function createSendInput(sessionId: string) {
   return (data: string) => {
     const e = cache.get(sessionId);
-    if (e?.ws?.readyState === WebSocket.OPEN) {
+    if (!e) return;
+    e.lastUserInputAt = Date.now();
+    if (e.ws?.readyState === WebSocket.OPEN) {
       e.ws.send(JSON.stringify({ type: "input", data }));
     }
   };
@@ -183,8 +197,20 @@ function isCurrentOpenUiUrl(url: string): boolean {
   }
 }
 
-function maybeAutoOpenLocalPreview(entry: CachedTerminal, output: string) {
+// Scan output for local preview URLs but DON'T navigate yet — just remember
+// the latest candidate. Navigation only happens at end-of-run (see
+// flushPendingLocalPreview), so the browser dock never changes mid-stream or
+// while the user is typing a prompt.
+function capturePendingLocalPreview(entry: CachedTerminal, output: string) {
   if (!output) return;
+
+  // TUI repaints triggered by the user's own keystrokes glue typed text onto
+  // previously printed URLs ("simple.html" + half a prompt). Drop the scan
+  // buffer and skip entirely while typing.
+  if (Date.now() - (entry.lastUserInputAt || 0) < TYPING_SUPPRESS_MS) {
+    entry.previewScanBuffer = "";
+    return;
+  }
 
   const scanText = stripAnsiForUrlScan(`${entry.previewScanBuffer || ""}${output}`);
   entry.previewScanBuffer = scanText.slice(-AUTO_PREVIEW_SCAN_LIMIT);
@@ -195,8 +221,19 @@ function maybeAutoOpenLocalPreview(entry: CachedTerminal, output: string) {
   const url = urls[urls.length - 1];
   if (!url || isCurrentOpenUiUrl(url)) return;
 
+  entry.pendingPreviewUrl = url;
+}
+
+// Apply the captured preview URL once the agent's run is over.
+function flushPendingLocalPreview(entry: CachedTerminal) {
+  const url = entry.pendingPreviewUrl;
+  if (!url) return;
+  entry.pendingPreviewUrl = null;
+
   const store = useStore.getState();
-  if (store.browserPanelOpen && store.browserUrl === url) return;
+  const isFocusedSession =
+    store.viewMode === "focus" && store.focusedSessionIds.includes(entry.nodeId);
+  if (isFocusedSession && store.browserPanelOpen && store.browserUrl === url) return;
 
   const key = `${entry.nodeId}:${url}`;
   const now = Date.now();
@@ -205,7 +242,9 @@ function maybeAutoOpenLocalPreview(entry: CachedTerminal, output: string) {
   recentAutoPreviewOpens.set(key, now);
 
   store.setBrowserUrl(url);
-  store.setBrowserPanelOpen(true);
+  if (isFocusedSession) {
+    store.setBrowserPanelOpen(true);
+  }
 }
 
 function connectWs(
@@ -290,7 +329,7 @@ function connectWs(
           isFirstMessage = false;
           entry.term.write("\x1b[2J\x1b[H\x1b[0m");
         }
-        maybeAutoOpenLocalPreview(entry, output);
+        capturePendingLocalPreview(entry, output);
         entry.term.write(output);
       } else if (msg.type === "status") {
         entry.updateSession(entry.nodeId, {
@@ -298,12 +337,16 @@ function connectWs(
           isRestored: msg.isRestored,
           currentTool: msg.currentTool,
         });
+        // Only navigate the browser dock once the run has finished.
+        if (RUN_DONE_STATUSES.has(msg.status as AgentStatus)) {
+          flushPendingLocalPreview(entry);
+        }
       } else if (msg.type === "nameGenerated") {
         entry.updateSession(entry.nodeId, { customName: msg.name });
       }
     } catch {
       if (typeof event.data === "string") {
-        maybeAutoOpenLocalPreview(entry, event.data);
+        capturePendingLocalPreview(entry, event.data);
       }
       entry.term.write(event.data);
     }
@@ -374,6 +417,12 @@ export function Terminal({
   useEffect(() => {
     if (!containerRef.current || !sessionId) return;
 
+    // Captured so cleanups only detach the terminal from THIS container.
+    // Another mount point (canvas card / focus pane / sidebar) may have
+    // adopted the wrapperDiv by the time our cleanup runs — removing it
+    // from its new parent leaves that pane black.
+    const container = containerRef.current;
+
     const existing = cache.get(sessionId);
 
     if (existing?.alive) {
@@ -383,7 +432,7 @@ export function Terminal({
       existing.cwd = cwd;
       existing.onOpenFile = onOpenFile;
 
-      containerRef.current.appendChild(existing.wrapperDiv);
+      container.appendChild(existing.wrapperDiv);
 
       const f1 = setTimeout(() => existing.fitAddon.fit(), 50);
       const f2 = setTimeout(() => existing.fitAddon.fit(), 300);
@@ -419,8 +468,8 @@ export function Terminal({
         clearTimeout(f2);
         clearTimeout(resizeTimer);
         ro.disconnect();
-        if (existing.wrapperDiv.parentNode) {
-          existing.wrapperDiv.parentNode.removeChild(existing.wrapperDiv);
+        if (existing.wrapperDiv.parentNode === container) {
+          container.removeChild(existing.wrapperDiv);
         }
       };
     }
@@ -450,7 +499,7 @@ export function Terminal({
     term.open(wrapperDiv);
     term.write("\x1b[0m\x1b[?25h");
 
-    containerRef.current.appendChild(wrapperDiv);
+    container.appendChild(wrapperDiv);
 
     const entry: CachedTerminal = {
       term,
@@ -459,6 +508,8 @@ export function Terminal({
       ws: null,
       kittyModeStack: [0],
       previewScanBuffer: "",
+      pendingPreviewUrl: null,
+      lastUserInputAt: 0,
       alive: true,
       nodeId,
       updateSession,
@@ -574,9 +625,10 @@ export function Terminal({
       clearTimeout(fit2);
       clearTimeout(resizeTimer);
       ro.disconnect();
-      // Detach from DOM but keep the terminal alive in cache
-      if (wrapperDiv.parentNode) {
-        wrapperDiv.parentNode.removeChild(wrapperDiv);
+      // Detach from DOM but keep the terminal alive in cache. Only detach
+      // if we still own it — another pane may have adopted it.
+      if (wrapperDiv.parentNode === container) {
+        container.removeChild(wrapperDiv);
       }
     };
   }, [sessionId]); // Only remount when sessionId changes

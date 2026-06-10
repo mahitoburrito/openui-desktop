@@ -244,6 +244,7 @@ export function Sidebar() {
   const isDisconnected = session?.status === "disconnected";
   const terminalPalette = getTerminalTheme(terminalTheme);
   const headerIconId = (node?.data?.icon as string) || session?.agentId;
+  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
 
   return (
     <AnimatePresence>
@@ -256,7 +257,7 @@ export function Sidebar() {
           className="fixed right-0 top-14 bottom-0 z-50 flex flex-col bg-canvas-dark border-l border-border"
           style={{
             width: sidebarWidth,
-            right: browserPanelOpen ? browserPanelWidth : 0,
+            right: browserDockOpen ? browserPanelWidth : 0,
           }}
         >
           {/* Resize handle */}

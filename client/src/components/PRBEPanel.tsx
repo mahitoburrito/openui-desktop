@@ -77,7 +77,8 @@ export function PRBEPanel() {
     startInvestigation,
     stopInvestigation,
   } = usePRBEStore();
-  const { browserPanelOpen, browserPanelWidth } = useStore();
+  const { viewMode, browserPanelOpen, browserPanelWidth } = useStore();
+  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
 
   const [query, setQuery] = useState("");
   const [followUpMessage, setFollowUpMessage] = useState("");
@@ -123,7 +124,7 @@ export function PRBEPanel() {
           exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 40 }}
           className="fixed right-0 top-14 bottom-0 z-40 w-[480px] flex flex-col bg-canvas-dark border-l border-border"
-          style={{ right: browserPanelOpen ? browserPanelWidth : 0 }}
+          style={{ right: browserDockOpen ? browserPanelWidth : 0 }}
         >
           {/* Header */}
           <div className="flex-shrink-0 px-4 py-3 border-b border-border flex items-center gap-3">

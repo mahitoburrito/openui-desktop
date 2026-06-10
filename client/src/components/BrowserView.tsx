@@ -22,6 +22,12 @@ function normalizeUrl(input: string): string {
   return `https://${trimmed}`;
 }
 
+// The native WebContentsView paints above ALL renderer DOM, so a resize
+// handle drawn at the panel's left edge would be unreachable below the top
+// bar. Inset the native view by this many px to leave a grabbable rail
+// along the full divider height.
+const RESIZE_GUTTER = 8;
+
 interface NativeBrowserState {
   url: string;
   title: string;
@@ -56,6 +62,37 @@ export function BrowserView() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const loadedRef = useRef(false);
+  const syncFrameRef = useRef<number | null>(null);
+  const autoFitAppliedRef = useRef(false);
+  const dragWidthRef = useRef(browserPanelWidth);
+  const dragFrameRef = useRef<number | null>(null);
+
+  const clampPanelWidth = useCallback(
+    (width: number) => {
+      const minWidth = 360;
+      const maxWidth = Math.max(minWidth, Math.min(1100, window.innerWidth - 360));
+      return Math.min(maxWidth, Math.max(minWidth, Math.round(width)));
+    },
+    [],
+  );
+
+  const preferredPanelWidth = useCallback(() => {
+    return clampPanelWidth(Math.max(720, window.innerWidth * 0.58));
+  }, [clampPanelWidth]);
+
+  useEffect(() => {
+    return () => {
+      if (syncFrameRef.current !== null) {
+        cancelAnimationFrame(syncFrameRef.current);
+      }
+      if (dragFrameRef.current !== null) {
+        cancelAnimationFrame(dragFrameRef.current);
+      }
+      if (isNativeBrowser && window.electronAPI) {
+        void window.electronAPI.invoke("browser:hide");
+      }
+    };
+  }, [isNativeBrowser]);
 
   useEffect(() => {
     setInput(browserUrl);
@@ -82,29 +119,60 @@ export function BrowserView() {
     return () => window.electronAPI?.removeAllListeners("browser:state");
   }, [isNativeBrowser, setBrowserUrl]);
 
+  // Width is passed explicitly so drag handlers can sync against the live
+  // drag width — reading browserPanelWidth here would close over the value
+  // at drag start and leave the native view painted at the old size.
+  const syncNativeBoundsFor = useCallback(
+    (panelWidth: number) => {
+      if (!isNativeBrowser || !window.electronAPI || !browserPanelOpen) return;
+      const rect = contentRef.current?.getBoundingClientRect();
+      if (!rect || rect.height <= 0) return;
+
+      const x = Math.max(0, window.innerWidth - panelWidth + RESIZE_GUTTER);
+      const y = Math.max(0, rect.top);
+      const width = Math.max(1, window.innerWidth - x);
+      const height = Math.max(1, Math.min(rect.height, window.innerHeight - y));
+
+      void window.electronAPI.invoke("browser:setBounds", {
+        x,
+        y,
+        width,
+        height,
+      });
+    },
+    [browserPanelOpen, isNativeBrowser],
+  );
+
   const syncNativeBounds = useCallback(() => {
-    if (!isNativeBrowser || !window.electronAPI || !browserPanelOpen) return;
-    const rect = contentRef.current?.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return;
-    void window.electronAPI.invoke("browser:setBounds", {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height,
+    syncNativeBoundsFor(browserPanelWidth);
+  }, [browserPanelWidth, syncNativeBoundsFor]);
+
+  const scheduleNativeBoundsSync = useCallback(() => {
+    if (!isNativeBrowser || !browserPanelOpen) return;
+    if (syncFrameRef.current !== null) {
+      cancelAnimationFrame(syncFrameRef.current);
+    }
+    syncFrameRef.current = requestAnimationFrame(() => {
+      syncFrameRef.current = requestAnimationFrame(() => {
+        syncFrameRef.current = null;
+        syncNativeBounds();
+      });
     });
-  }, [browserPanelOpen, isNativeBrowser]);
+  }, [browserPanelOpen, isNativeBrowser, syncNativeBounds]);
 
   useEffect(() => {
     if (!isNativeBrowser || !browserPanelOpen) return;
-    syncNativeBounds();
-    const observer = new ResizeObserver(syncNativeBounds);
+    scheduleNativeBoundsSync();
+    const observer = new ResizeObserver(scheduleNativeBoundsSync);
     if (contentRef.current) observer.observe(contentRef.current);
-    window.addEventListener("resize", syncNativeBounds);
+    window.addEventListener("resize", scheduleNativeBoundsSync);
+    window.visualViewport?.addEventListener("resize", scheduleNativeBoundsSync);
     return () => {
       observer.disconnect();
-      window.removeEventListener("resize", syncNativeBounds);
+      window.removeEventListener("resize", scheduleNativeBoundsSync);
+      window.visualViewport?.removeEventListener("resize", scheduleNativeBoundsSync);
     };
-  }, [browserPanelOpen, isNativeBrowser, syncNativeBounds]);
+  }, [browserPanelOpen, isNativeBrowser, scheduleNativeBoundsSync]);
 
   useEffect(() => {
     if (!isNativeBrowser || !window.electronAPI) return;
@@ -116,24 +184,33 @@ export function BrowserView() {
       void window.electronAPI.invoke("browser:hide");
       return;
     }
-    syncNativeBounds();
+    scheduleNativeBoundsSync();
     void window.electronAPI.invoke("browser:open", src);
-  }, [browserPanelOpen, isNativeBrowser, src, syncNativeBounds]);
+  }, [browserPanelOpen, isNativeBrowser, scheduleNativeBoundsSync, src]);
 
-  const clampPanelWidth = useCallback(
-    (width: number) => {
-      const minWidth = 360;
-      const maxWidth = Math.max(minWidth, Math.min(900, window.innerWidth - 520));
-      return Math.min(maxWidth, Math.max(minWidth, Math.round(width)));
-    },
-    [],
-  );
+  useEffect(() => {
+    if (!browserPanelOpen) {
+      autoFitAppliedRef.current = false;
+      return;
+    }
+    if (autoFitAppliedRef.current) return;
+    autoFitAppliedRef.current = true;
+    setBrowserPanelWidth(clampPanelWidth(Math.max(browserPanelWidth, preferredPanelWidth())));
+    scheduleNativeBoundsSync();
+  }, [
+    browserPanelOpen,
+    browserPanelWidth,
+    clampPanelWidth,
+    preferredPanelWidth,
+    scheduleNativeBoundsSync,
+    setBrowserPanelWidth,
+  ]);
 
   useEffect(() => {
     if (!browserPanelOpen) return;
     const handleResize = () => {
       setBrowserPanelWidth(clampPanelWidth(browserPanelWidth));
-      requestAnimationFrame(syncNativeBounds);
+      scheduleNativeBoundsSync();
     };
     window.addEventListener("resize", handleResize);
     handleResize();
@@ -142,8 +219,8 @@ export function BrowserView() {
     browserPanelOpen,
     browserPanelWidth,
     clampPanelWidth,
+    scheduleNativeBoundsSync,
     setBrowserPanelWidth,
-    syncNativeBounds,
   ]);
 
   const beginResize = useCallback(
@@ -151,10 +228,21 @@ export function BrowserView() {
       event.preventDefault();
       const startX = event.clientX;
       const startWidth = browserPanelWidth;
+      dragWidthRef.current = startWidth;
 
       const handleMove = (moveEvent: MouseEvent) => {
-        setBrowserPanelWidth(clampPanelWidth(startWidth + startX - moveEvent.clientX));
-        requestAnimationFrame(syncNativeBounds);
+        const next = clampPanelWidth(startWidth + startX - moveEvent.clientX);
+        setBrowserPanelWidth(next);
+        // Sync the native view against the explicit drag width (rAF-throttled).
+        // The state-driven sync path lags a render behind the mouse and the
+        // listeners attached here never see the re-rendered callbacks.
+        dragWidthRef.current = next;
+        if (dragFrameRef.current === null) {
+          dragFrameRef.current = requestAnimationFrame(() => {
+            dragFrameRef.current = null;
+            syncNativeBoundsFor(dragWidthRef.current);
+          });
+        }
       };
 
       const handleUp = () => {
@@ -162,6 +250,8 @@ export function BrowserView() {
         document.removeEventListener("mouseup", handleUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        // Final settle so the view matches exactly where the drag ended.
+        syncNativeBoundsFor(dragWidthRef.current);
       };
 
       document.addEventListener("mousemove", handleMove);
@@ -169,7 +259,7 @@ export function BrowserView() {
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
     },
-    [browserPanelWidth, clampPanelWidth, setBrowserPanelWidth, syncNativeBounds],
+    [browserPanelWidth, clampPanelWidth, setBrowserPanelWidth, syncNativeBoundsFor],
   );
 
   const navigate = (raw: string) => {
@@ -237,11 +327,17 @@ export function BrowserView() {
       transition={{ type: "spring", stiffness: 400, damping: 42 }}
       className="absolute right-0 top-0 bottom-0 z-30 bg-canvas-dark border-l border-border flex flex-col shadow-2xl"
       style={{ width: browserPanelWidth }}
+      onAnimationComplete={scheduleNativeBoundsSync}
     >
+      {/* Full-height resize rail. The native view is inset by RESIZE_GUTTER,
+          so this strip stays clickable from top bar to bottom edge. */}
       <div
         onMouseDown={beginResize}
-        className="absolute left-0 top-0 bottom-0 z-20 w-1.5 cursor-col-resize hover:bg-blue-500/40 transition-colors"
-      />
+        title="Drag to resize"
+        className="group absolute left-0 top-0 bottom-0 z-20 w-2 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors"
+      >
+        <div className="absolute left-[3px] top-1/2 -translate-y-1/2 h-12 w-[2px] rounded-full bg-zinc-700 group-hover:bg-blue-400 transition-colors" />
+      </div>
 
       {/* Top bar */}
       <div className="flex-shrink-0 h-10 px-3 flex items-center gap-2 bg-canvas-dark border-b border-border">

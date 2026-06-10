@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ChevronRight, Folder, GitBranch, Pin, Search, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  GitBranch,
+  Pin,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useReactFlow, type Node } from "@xyflow/react";
 import { useStore, type AgentSession, type AgentStatus } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
+import { destroyCachedTerminal } from "./Terminal";
 
 const statusDot: Record<AgentStatus, string> = {
   creating: "#818CF8",
@@ -37,6 +47,31 @@ function sessionCreatedAt(entry: SessionEntry): number {
   return new Date(entry.session.createdAt).getTime() || 0;
 }
 
+// Chrome/Dia-style tab group palette — stable per project name.
+const GROUP_COLORS = [
+  "#3B82F6", "#EF4444", "#FBBF24", "#22C55E", "#EC4899", "#8B5CF6", "#14B8A6", "#D97652",
+];
+
+function groupKeyFor(session: AgentSession): string {
+  return session.originalCwd || session.cwd || "Other";
+}
+
+function groupColorFor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  }
+  return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length];
+}
+
+type SessionGroup = {
+  key: string;
+  name: string;
+  color: string;
+  entries: SessionEntry[];
+  newestAt: number;
+};
+
 export function SessionListPanel() {
   const {
     sessionListOpen,
@@ -53,6 +88,11 @@ export function SessionListPanel() {
     addFocusedSession,
     removeFocusedSession,
     focusedSessionIds,
+    collapsedSessionGroups,
+    toggleSessionGroup,
+    removeSession,
+    removeNode,
+    setDeleteToast,
   } = useStore();
 
   const reactFlow = useReactFlow();
@@ -63,15 +103,18 @@ export function SessionListPanel() {
 
   const inFocusMode = viewMode === "focus";
 
-  const { allOnlineSessions, visibleSessions } = useMemo(() => {
+  const isSearching = searchQuery.trim().length > 0;
+
+  const { allOnlineSessions, sessionGroups, offlineEntries } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const entries = Array.from(sessions.entries())
-      .map(([nodeId, session]) => ({
-        nodeId,
-        session,
-        node: nodes.find((node) => node.id === nodeId),
-      }))
-      .filter((entry) => entry.session.status !== "disconnected") as SessionEntry[];
+    const allEntries = Array.from(sessions.entries()).map(([nodeId, session]) => ({
+      nodeId,
+      session,
+      node: nodes.find((node) => node.id === nodeId),
+    })) as SessionEntry[];
+
+    const offline = allEntries.filter((entry) => entry.session.status === "disconnected");
+    const entries = allEntries.filter((entry) => entry.session.status !== "disconnected");
 
     const statusFiltered = entries.filter((entry) => {
       if (statusFilter === "all") return true;
@@ -94,12 +137,114 @@ export function SessionListPanel() {
         })
       : statusFiltered;
 
+    // Newest first everywhere: inside groups, and groups by their newest session.
     const sorted = [...filtered].sort((a, b) => sessionCreatedAt(b) - sessionCreatedAt(a));
+
+    const groupsByKey = new Map<string, SessionGroup>();
+    for (const entry of sorted) {
+      const key = groupKeyFor(entry.session);
+      let group = groupsByKey.get(key);
+      if (!group) {
+        const name = key.split("/").pop() || key;
+        group = { key, name, color: groupColorFor(name), entries: [], newestAt: 0 };
+        groupsByKey.set(key, group);
+      }
+      group.entries.push(entry);
+      group.newestAt = Math.max(group.newestAt, sessionCreatedAt(entry));
+    }
+
+    const groups = Array.from(groupsByKey.values()).sort((a, b) => b.newestAt - a.newestAt);
+
     return {
       allOnlineSessions: sorted,
-      visibleSessions: sorted.slice(0, visibleCount),
+      sessionGroups: groups,
+      offlineEntries: offline,
     };
-  }, [nodes, searchQuery, sessions, statusFilter, visibleCount]);
+  }, [nodes, searchQuery, sessions, statusFilter]);
+
+  // Cap rendered rows across groups, expanding with "View more".
+  const visibleGroups = useMemo(() => {
+    const out: SessionGroup[] = [];
+    let budget = visibleCount;
+    for (const group of sessionGroups) {
+      if (budget <= 0) break;
+      const collapsed = !isSearching && collapsedSessionGroups.includes(group.key);
+      if (collapsed) {
+        out.push({ ...group, entries: [] });
+        continue;
+      }
+      const take = group.entries.slice(0, budget);
+      budget -= take.length;
+      out.push({ ...group, entries: take });
+    }
+    return out;
+  }, [collapsedSessionGroups, isSearching, sessionGroups, visibleCount]);
+
+  const renderedCount = visibleGroups.reduce((sum, group) => sum + group.entries.length, 0);
+  const collapsedCount = sessionGroups.reduce(
+    (sum, group) =>
+      !isSearching && collapsedSessionGroups.includes(group.key) ? sum + group.entries.length : sum,
+    0,
+  );
+  const hasMore = renderedCount + collapsedCount < allOnlineSessions.length;
+
+  const handleClearOffline = useCallback(async () => {
+    if (offlineEntries.length === 0) return;
+    const confirmed = window.confirm(
+      `Clear ${offlineEntries.length} offline session${offlineEntries.length === 1 ? "" : "s"}? You'll have 5 seconds to undo.`,
+    );
+    if (!confirmed) return;
+
+    const cleared: { sessionId: string; nodeId: string; sessionName: string }[] = [];
+    await Promise.all(
+      offlineEntries.map(async (entry) => {
+        try {
+          const res = await fetch(`/api/sessions/${entry.session.sessionId}/soft-delete`, {
+            method: "POST",
+          });
+          if (!res.ok) return;
+        } catch {
+          return;
+        }
+        cleared.push({
+          sessionId: entry.session.sessionId,
+          nodeId: entry.nodeId,
+          sessionName: getSessionTitle(entry),
+        });
+      }),
+    );
+
+    if (cleared.length === 0) return;
+
+    for (const item of cleared) {
+      destroyCachedTerminal(item.sessionId);
+      removeFocusedSession(item.nodeId);
+      removeSession(item.nodeId);
+      removeNode(item.nodeId);
+      if (selectedNodeId === item.nodeId) {
+        setSelectedNodeId(null);
+        setSidebarOpen(false);
+      }
+    }
+
+    const timeout = setTimeout(() => setDeleteToast(null), 5000);
+    setDeleteToast({
+      sessionId: cleared[0].sessionId,
+      nodeId: cleared[0].nodeId,
+      sessionName: cleared[0].sessionName,
+      items: cleared,
+      timeout,
+    });
+  }, [
+    offlineEntries,
+    removeFocusedSession,
+    removeNode,
+    removeSession,
+    selectedNodeId,
+    setDeleteToast,
+    setSelectedNodeId,
+    setSidebarOpen,
+  ]);
 
   useEffect(() => {
     setVisibleCount(12);
@@ -225,6 +370,17 @@ export function SessionListPanel() {
           </span>
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-zinc-700">{allOnlineSessions.length}</span>
+            {offlineEntries.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearOffline}
+                className="flex h-5 items-center gap-1 rounded px-1 text-zinc-600 transition-colors hover:bg-surface-active hover:text-red-400"
+                title={`Clear ${offlineEntries.length} offline session${offlineEntries.length === 1 ? "" : "s"}`}
+              >
+                <Trash2 className="h-3 w-3" />
+                <span className="text-[10px]">{offlineEntries.length}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -271,7 +427,45 @@ export function SessionListPanel() {
           </div>
         ) : (
           <>
-            {visibleSessions.map(({ nodeId, session, node }) => {
+            {visibleGroups.map((group) => {
+              const isCollapsed = !isSearching && collapsedSessionGroups.includes(group.key);
+              const totalInGroup =
+                sessionGroups.find((g) => g.key === group.key)?.entries.length ?? 0;
+              return (
+                <div key={group.key} className="mb-0.5">
+                  {/* Dia/Chrome-style tab group header */}
+                  <button
+                    type="button"
+                    onClick={() => toggleSessionGroup(group.key)}
+                    className="group/header flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-surface"
+                    title={group.key}
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="h-3 w-3 flex-shrink-0 text-zinc-600" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3 flex-shrink-0 text-zinc-600" />
+                    )}
+                    <span
+                      className="h-2 w-2 flex-shrink-0 rounded-full"
+                      style={{ backgroundColor: group.color }}
+                    />
+                    <span
+                      className="truncate text-[10px] font-semibold uppercase tracking-wider"
+                      style={{ color: group.color }}
+                    >
+                      {group.name}
+                    </span>
+                    <span className="ml-auto flex-shrink-0 text-[9px] text-zinc-600">
+                      {totalInGroup}
+                    </span>
+                  </button>
+
+                  {!isCollapsed && (
+                    <div
+                      className="ml-[13px] border-l pl-0"
+                      style={{ borderColor: `${group.color}40` }}
+                    >
+                      {group.entries.map(({ nodeId, session, node }) => {
               const isSelected = selectedNodeId === nodeId;
               const displayName = getSessionTitle({ nodeId, session, node });
               const displayColor = getAgentAccentColor(
@@ -357,9 +551,14 @@ export function SessionListPanel() {
                   </button>
                 </div>
               );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
             })}
 
-            {visibleCount < allOnlineSessions.length && (
+            {hasMore && (
               <div className="px-3 py-2">
                 <button
                   type="button"
