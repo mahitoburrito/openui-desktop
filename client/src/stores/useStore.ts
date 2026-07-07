@@ -288,7 +288,12 @@ function loadPersistedUIState(): Partial<AppState> {
         diffWrap: parsed.diffWrap ?? false,
         diffTheme: parsed.diffTheme ?? "github-dark",
         browserUrl: parsed.browserUrl ?? "",
-        browserPanelOpen: parsed.browserPanelOpen ?? parsed.viewMode === "browser",
+        // Only restore an open browser dock when there is a URL to show —
+        // a bare dock restored after relaunch is noise, not a preview.
+        browserPanelOpen:
+          (parsed.browserPanelOpen ?? parsed.viewMode === "browser") &&
+          typeof parsed.browserUrl === "string" &&
+          parsed.browserUrl.length > 0,
         browserPanelWidth: clampBrowserPanelWidth(parsed.browserPanelWidth),
         workspaceBackground: isWorkspaceBackgroundId(parsed.workspaceBackground)
           ? parsed.workspaceBackground
@@ -431,7 +436,14 @@ export const useStore = create<AppState>((set) => ({
 
   // Focus Mode
   viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
-  setViewMode: (mode) => set({ viewMode: mode }),
+  // Leaving focus mode also closes the browser dock — it only renders in
+  // focus mode, and leaving it "open" makes it pop back up unrequested the
+  // next time focus mode is entered.
+  setViewMode: (mode) =>
+    set((state) => ({
+      viewMode: mode,
+      browserPanelOpen: mode === "focus" ? state.browserPanelOpen : false,
+    })),
   focusedSessionIds: persisted.focusedSessionIds ?? [],
   addFocusedSession: (nodeId) =>
     set((state) => ({

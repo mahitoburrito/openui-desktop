@@ -85,6 +85,7 @@ export function SessionListPanel() {
     setSelectedNodeId,
     setSidebarOpen,
     viewMode,
+    setViewMode,
     addFocusedSession,
     removeFocusedSession,
     focusedSessionIds,
@@ -310,6 +311,18 @@ export function SessionListPanel() {
     [addFocusedSession, nodes, reactFlow, setSelectedNodeId, setSidebarOpen, viewMode],
   );
 
+  // Double-click mirrors AgentNode: pin the session and jump into focus mode.
+  const handleSessionDoubleClick = useCallback(
+    (nodeId: string) => {
+      setSelectedNodeId(nodeId);
+      addFocusedSession(nodeId);
+      setViewMode("focus");
+      setSidebarOpen(false);
+      setFocusRailOpen(false);
+    },
+    [addFocusedSession, setSelectedNodeId, setSidebarOpen, setViewMode],
+  );
+
   const handleSessionPinToggle = useCallback(
     (nodeId: string, isPinned: boolean) => {
       if (isPinned) {
@@ -473,7 +486,7 @@ export function SessionListPanel() {
                 session.customColor || session.color,
               );
               const iconId = (node?.data?.icon as string) || session.agentId;
-              const dirName = session.cwd?.split("/").pop() || "";
+              const dirName = session.cwd?.split("/").filter(Boolean).pop() || session.cwd || "";
               const statusColor = statusDot[session.status] || statusDot.idle;
               const isPinned = focusedSessionIds.includes(nodeId);
 
@@ -489,7 +502,9 @@ export function SessionListPanel() {
                   <button
                     type="button"
                     onClick={() => handleSessionClick(nodeId)}
+                    onDoubleClick={() => handleSessionDoubleClick(nodeId)}
                     className="flex min-w-0 flex-1 items-start gap-2.5 py-2 pl-3 text-left"
+                    title="Double-click to focus"
                   >
                     <div
                       className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md"
@@ -536,7 +551,7 @@ export function SessionListPanel() {
                   <button
                     type="button"
                     onClick={() => handleSessionPinToggle(nodeId, isPinned)}
-                    className={`mt-2 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
+                    className={`mt-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
                       isPinned
                         ? "text-zinc-100 bg-surface-active"
                         : "text-zinc-600 hover:bg-surface-active hover:text-zinc-200"

@@ -77,6 +77,9 @@ async function startServer() {
     cwd: ROOT,
     env: {
       ...process.env,
+      GEMINI_API_KEY: "",
+      GOOGLE_API_KEY: "",
+      HOME: launchCwd,
       PORT: String(PORT),
       LAUNCH_CWD: launchCwd,
       OPENUI_QUIET: "1",
@@ -419,6 +422,123 @@ async function main() {
       sortPlan.groups.some((group) => Array.isArray(group.nodeIds) && group.nodeIds.includes("node-prompt-test")),
       "title cluster sort omitted the test session",
     );
+
+    const outboundLinkedInSession = await api("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: "test",
+        agentName: "Outbound Test",
+        command: "cat > outbound-linkedin.txt",
+        cwd: promptRepo,
+        nodeId: "node-outbound-linkedin",
+        customName: "LinkedIn founder outbound messages",
+      }),
+    });
+    const outboundBookfaceSession = await api("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: "test",
+        agentName: "Outbound Test",
+        command: "cat > outbound-bookface.txt",
+        cwd: promptRepo,
+        nodeId: "node-outbound-bookface",
+        customName: "Bookface batchmate outreach list",
+      }),
+    });
+    const checkoutSession = await api("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: "test",
+        agentName: "Checkout Test",
+        command: "cat > checkout.txt",
+        cwd: promptRepo,
+        nodeId: "node-checkout-stripe",
+        customName: "Stripe checkout loading bug",
+      }),
+    });
+    const outboundSortPlan = await api("/api/layout/title-clusters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nodes: [
+          { id: "node-outbound-linkedin", label: "LinkedIn founder outbound messages" },
+          { id: "node-outbound-bookface", label: "Bookface batchmate outreach list" },
+          { id: "node-checkout-stripe", label: "Stripe checkout loading bug" },
+        ],
+      }),
+    });
+    const outboundGroup = outboundSortPlan.groups.find((group) =>
+      Array.isArray(group.nodeIds) &&
+      group.nodeIds.includes("node-outbound-linkedin") &&
+      group.nodeIds.includes("node-outbound-bookface")
+    );
+    await assert(outboundGroup, "outbound work across LinkedIn and Bookface should be grouped together");
+    await assert(
+      !outboundGroup.nodeIds.includes("node-checkout-stripe"),
+      "unrelated checkout work should not be grouped with outbound work",
+    );
+    await api(`/api/sessions/${outboundLinkedInSession.sessionId}`, { method: "DELETE" });
+    await api(`/api/sessions/${outboundBookfaceSession.sessionId}`, { method: "DELETE" });
+    await api(`/api/sessions/${checkoutSession.sessionId}`, { method: "DELETE" });
+
+    const intentSessions = [
+      { nodeId: "node-ide-titles", customName: "Session titles sorting cleanup" },
+      { nodeId: "node-ide-sidebar", customName: "OpenUI sidebar polish" },
+      { nodeId: "node-ide-notifications", customName: "Notification parsing tweaks" },
+      { nodeId: "node-exp-runs", customName: "Manage experimentation runs" },
+      { nodeId: "node-exp-dashboard", customName: "Experiments dashboard setup" },
+      { nodeId: "node-stripe-webhook", customName: "Stripe webhook retries bug" },
+    ];
+    const intentSessionIds = [];
+    for (const { nodeId, customName } of intentSessions) {
+      const created = await api("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: "test",
+          agentName: "Intent Test",
+          command: `cat > ${nodeId}.txt`,
+          cwd: promptRepo,
+          nodeId,
+          customName,
+        }),
+      });
+      intentSessionIds.push(created.sessionId);
+    }
+    const intentSortPlan = await api("/api/layout/title-clusters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nodes: intentSessions.map(({ nodeId, customName }) => ({ id: nodeId, label: customName })),
+      }),
+    });
+    const ideGroup = intentSortPlan.groups.find((group) =>
+      Array.isArray(group.nodeIds) && group.nodeIds.includes("node-ide-titles"),
+    );
+    await assert(
+      ideGroup &&
+        ideGroup.nodeIds.includes("node-ide-sidebar") &&
+        ideGroup.nodeIds.includes("node-ide-notifications"),
+      "IDE tweaking sessions should be grouped together by content",
+    );
+    const experimentsGroup = intentSortPlan.groups.find((group) =>
+      Array.isArray(group.nodeIds) && group.nodeIds.includes("node-exp-runs"),
+    );
+    await assert(
+      experimentsGroup && experimentsGroup.nodeIds.includes("node-exp-dashboard"),
+      "experimentation sessions should be grouped together by content",
+    );
+    await assert(
+      !ideGroup.nodeIds.includes("node-stripe-webhook") &&
+        !experimentsGroup.nodeIds.includes("node-stripe-webhook"),
+      "unrelated webhook work should stay outside intent groups",
+    );
+    for (const sessionId of intentSessionIds) {
+      await api(`/api/sessions/${sessionId}`, { method: "DELETE" });
+    }
     await api(`/api/sessions/${promptSession.sessionId}`, { method: "DELETE" });
 
     console.log("OpenUI feature smoke tests passed");

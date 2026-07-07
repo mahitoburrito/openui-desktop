@@ -137,6 +137,127 @@ const TITLE_SORT_STOP_WORDS = new Set([
   "work",
 ]);
 
+const TITLE_SORT_CHANNEL_TOKENS = new Set([
+  "bookface",
+  "email",
+  "emails",
+  "github",
+  "linear",
+  "linkedin",
+  "notion",
+  "slack",
+  "twitter",
+  "x",
+  "yc",
+]);
+
+const TITLE_SORT_OUTBOUND_DIRECT_TOKENS = new Set([
+  "lead",
+  "leads",
+  "outbound",
+  "outreach",
+  "prospect",
+  "prospecting",
+  "prospects",
+  "reachout",
+  "sales",
+]);
+
+const TITLE_SORT_OUTBOUND_CONTEXT_TOKENS = new Set([
+  "batchmate",
+  "batchmates",
+  "companies",
+  "company",
+  "contact",
+  "contacts",
+  "customer",
+  "customers",
+  "dm",
+  "dms",
+  "founder",
+  "founders",
+  "intro",
+  "intros",
+  "list",
+  "lists",
+  "message",
+  "messages",
+  "messaging",
+  "partner",
+  "partners",
+]);
+
+// Any one of these alone marks a session as IDE/OpenUI work.
+const TITLE_SORT_IDE_DIRECT_TOKENS = new Set([
+  "ide",
+  "openui",
+  "openui-desktop",
+  "sidebar",
+  "keybinding",
+  "keybindings",
+  "statusline",
+]);
+
+// IDE surfaces that need a companion tweak-verb to count (too generic alone).
+const TITLE_SORT_IDE_SURFACE_TOKENS = new Set([
+  "browser",
+  "canvas",
+  "dock",
+  "editor",
+  "notification",
+  "notifications",
+  "pane",
+  "panel",
+  "sessions",
+  "terminal",
+  "title",
+  "titles",
+  "toolbar",
+]);
+
+const TITLE_SORT_IDE_TWEAK_TOKENS = new Set([
+  "clean",
+  "cleanup",
+  "cluster",
+  "clusters",
+  "clustering",
+  "dock",
+  "flow",
+  "flows",
+  "group",
+  "grouped",
+  "grouping",
+  "layout",
+  "parse",
+  "parsed",
+  "parsing",
+  "polish",
+  "polishing",
+  "rename",
+  "renaming",
+  "sort",
+  "sorted",
+  "sorting",
+  "theme",
+  "titling",
+  "tweak",
+  "tweaking",
+  "tweaks",
+  "ui",
+  "ux",
+]);
+
+const TITLE_SORT_EXPERIMENT_TOKENS = new Set([
+  "ab-test",
+  "ab-tests",
+  "eval",
+  "evals",
+  "experiment",
+  "experimentation",
+  "experimentations",
+  "experiments",
+]);
+
 function titleSortPriority(item: TitleSortInput): number {
   return SORT_STATUS_PRIORITY[item.status || ""] ?? 99;
 }
@@ -146,22 +267,102 @@ function titleTokens(value: string): string[] {
   const words = value
     .toLowerCase()
     .replace(/\bhttps?:\/\/[^\s]+/g, " local-url ")
+    .replace(/\breach\s+out\b/g, " reachout ")
     .replace(/[^a-z0-9-]+/g, " ")
     .split(/\s+/)
     .filter((word) => word && word.length > 1 && !TITLE_SORT_STOP_WORDS.has(word));
   return ticket ? [ticket[0].toLowerCase(), ...words] : words;
 }
 
+function allTitleSortText(item: TitleSortInput): string {
+  return [
+    item.title,
+    item.ticketTitle,
+    ...(item.promptHistory || []),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function titleCaseSortToken(token: string): string {
+  const acronym = {
+    api: "API",
+    cli: "CLI",
+    pr: "PR",
+    sdk: "SDK",
+    ui: "UI",
+    yc: "YC",
+  }[token];
+  if (acronym) return acronym;
+  return /^[a-z]+-\d+$/i.test(token)
+    ? token.toUpperCase()
+    : token.charAt(0).toUpperCase() + token.slice(1);
+}
+
 function labelFromTokens(tokens: string[], fallback: string): string {
   const label = tokens
     .slice(0, 3)
-    .map((token) =>
-      /^[a-z]+-\d+$/i.test(token)
-        ? token.toUpperCase()
-        : token.charAt(0).toUpperCase() + token.slice(1),
-    )
+    .map(titleCaseSortToken)
     .join(" ");
   return label || fallback || "Related Work";
+}
+
+function hasAny(tokenSet: Set<string>, wanted: Set<string>): boolean {
+  for (const token of wanted) if (tokenSet.has(token)) return true;
+  return false;
+}
+
+// Local (no-LLM) intent grouping for session cards. Sessions cluster by the
+// content of the work — the durable intent — not by whichever words happen to
+// lead their titles. Each rule below is a content signature: either a direct
+// token that alone claims the session, or a surface+verb pair for tokens too
+// generic on their own. Rules are checked in order; first match wins. Sessions
+// matching no rule fall through to ticket-id / repo+token keying.
+// NOTE: TITLE_SORT_STOP_WORDS are stripped before matching — rules must not
+// rely on filtered words like "fix", "session", "app", or "review".
+function semanticTitleSortGroup(tokens: string[]): { key: string; label: string; reason: string } | null {
+  const tokenSet = new Set(tokens);
+
+  // Outbound: prospecting/outreach work belongs together regardless of the
+  // channel (LinkedIn, Bookface, email, ...) it flows through.
+  const hasDirectOutbound = hasAny(tokenSet, TITLE_SORT_OUTBOUND_DIRECT_TOKENS);
+  const hasChannel = hasAny(tokenSet, TITLE_SORT_CHANNEL_TOKENS);
+  const hasOutboundContext = hasAny(tokenSet, TITLE_SORT_OUTBOUND_CONTEXT_TOKENS);
+  if (hasDirectOutbound || (hasChannel && hasOutboundContext)) {
+    return {
+      key: "intent:outbound",
+      label: tokenSet.has("founder") || tokenSet.has("founders") || tokenSet.has("batchmate") || tokenSet.has("batchmates")
+        ? "Founder Outreach"
+        : "Outbound",
+      reason: "Local intent fallback grouped outbound work across channels",
+    };
+  }
+
+  // Experiments: setting up, running, or managing experimentation/evals.
+  if (hasAny(tokenSet, TITLE_SORT_EXPERIMENT_TOKENS)) {
+    return {
+      key: "intent:experiments",
+      label: "Experiments",
+      reason: "Local intent fallback grouped experimentation work",
+    };
+  }
+
+  // IDE tweaks: anything about tweaking OpenUI itself — sidebar, session
+  // titles/grouping, notifications, browser dock, terminal, themes. One
+  // group whether the session says "ide" outright or pairs an IDE surface
+  // with a tweak verb ("session titles sorting", "notification parsing").
+  const hasDirectIde = hasAny(tokenSet, TITLE_SORT_IDE_DIRECT_TOKENS);
+  const hasIdeSurface = hasAny(tokenSet, TITLE_SORT_IDE_SURFACE_TOKENS);
+  const hasIdeTweak = hasAny(tokenSet, TITLE_SORT_IDE_TWEAK_TOKENS);
+  if (hasDirectIde || (hasIdeSurface && hasIdeTweak)) {
+    return {
+      key: "intent:ide-tweaks",
+      label: "IDE Tweaks",
+      reason: "Local intent fallback grouped IDE/OpenUI tweaking work",
+    };
+  }
+
+  return null;
 }
 
 function fallbackTitleSortGroups(items: TitleSortInput[]): TitleSortGroup[] {
@@ -173,19 +374,22 @@ function fallbackTitleSortGroups(items: TitleSortInput[]): TitleSortGroup[] {
 
   const groups = new Map<string, TitleSortGroup>();
   for (const item of sorted) {
-    const tokens = titleTokens(`${item.title} ${item.ticketTitle || ""}`);
+    const tokens = titleTokens(allTitleSortText(item));
     const repoToken = (item.repo || "").split("/").filter(Boolean).pop()?.toLowerCase();
+    const semanticGroup = semanticTitleSortGroup(tokens);
+    const keyTokens = tokens.filter((token) => !TITLE_SORT_CHANNEL_TOKENS.has(token));
     const key =
+      semanticGroup?.key ||
       tokens.find((token) => /^[a-z]+-\d+$/i.test(token)) ||
-      (repoToken && tokens[0] ? `${repoToken}:${tokens[0]}` : tokens.slice(0, 2).join(":")) ||
+      (repoToken && keyTokens[0] ? `${repoToken}:${keyTokens[0]}` : keyTokens.slice(0, 2).join(":")) ||
       item.nodeId;
     const existing = groups.get(key);
     if (existing) {
       existing.nodeIds.push(item.nodeId);
     } else {
       groups.set(key, {
-        label: labelFromTokens(tokens, item.title),
-        reason: "Local title-token blast-radius fallback",
+        label: semanticGroup?.label || labelFromTokens(keyTokens.length > 0 ? keyTokens : tokens, item.title),
+        reason: semanticGroup?.reason || "Local title-token intent fallback",
         nodeIds: [item.nodeId],
       });
     }
@@ -1337,6 +1541,7 @@ apiRoutes.post("/layout/title-clusters", async (c) => {
         repo: session.originalCwd || session.cwd,
         branch: session.gitBranch,
         ticketTitle: session.ticketTitle,
+        promptHistory: session.titlePromptHistory?.slice(-5),
         createdAt: session.createdAt,
       };
     })
