@@ -73,11 +73,15 @@ function ensureView(): WebContentsView {
 
 function applyBounds() {
   if (!view || !lastBounds) return;
+  // The renderer measures in CSS pixels, but setBounds takes DIPs. These
+  // diverge whenever the window is zoomed (Cmd +/- via the default View
+  // menu), leaving the native view offset and clipped at the window edge.
+  const zoom = host && !host.isDestroyed() ? host.webContents.getZoomFactor() : 1;
   view.setBounds({
-    x: Math.max(0, Math.round(lastBounds.x)),
-    y: Math.max(0, Math.round(lastBounds.y)),
-    width: Math.max(1, Math.round(lastBounds.width)),
-    height: Math.max(1, Math.round(lastBounds.height)),
+    x: Math.max(0, Math.round(lastBounds.x * zoom)),
+    y: Math.max(0, Math.round(lastBounds.y * zoom)),
+    width: Math.max(1, Math.round(lastBounds.width * zoom)),
+    height: Math.max(1, Math.round(lastBounds.height * zoom)),
   });
 }
 
