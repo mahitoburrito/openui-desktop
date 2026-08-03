@@ -1,15 +1,16 @@
-import { MessageSquare, WifiOff, GitBranch, Folder, Wrench, Layers, Loader2 } from "lucide-react";
-import { AgentStatus } from "../../stores/useStore";
+import { GitBranch, Folder, Wrench, Layers, Loader2, RotateCcw, FileDiff } from "lucide-react";
+import { AgentStatus, type AgentChangeSummary, type CheckpointSummary } from "../../stores/useStore";
+import { AgentIcon } from "../AgentIcon";
 
 // Status config with visual priority levels
 const statusConfig: Record<AgentStatus, { label: string; color: string; bgColor: string; isActive?: boolean; needsAttention?: boolean }> = {
-  creating: { label: "Creating...", color: "#818CF8", bgColor: "#818CF815", isActive: true },
-  running: { label: "Working", color: "#22C55E", bgColor: "#22C55E15", isActive: true },
-  tool_calling: { label: "Working", color: "#22C55E", bgColor: "#22C55E15", isActive: true },
-  waiting_input: { label: "Needs Input", color: "#F97316", bgColor: "#F9731620", needsAttention: true },
-  idle: { label: "Idle", color: "#FBBF24", bgColor: "#FBBF2415", needsAttention: true },
+  creating: { label: "Starting", color: "#8B93FF", bgColor: "#8B93FF12", isActive: true },
+  running: { label: "Working", color: "#79C68B", bgColor: "#79C68B12", isActive: true },
+  tool_calling: { label: "Working", color: "#79C68B", bgColor: "#79C68B12", isActive: true },
+  waiting_input: { label: "Needs input", color: "#D6A64B", bgColor: "#D6A64B14", needsAttention: true },
+  idle: { label: "Idle", color: "#8A8F98", bgColor: "#8A8F9812" },
   disconnected: { label: "Offline", color: "#6B7280", bgColor: "#6B728015" },
-  error: { label: "Error", color: "#EF4444", bgColor: "#EF444415", needsAttention: true },
+  error: { label: "Error", color: "#E06464", bgColor: "#E0646414", needsAttention: true },
 };
 
 // Tool name display mapping
@@ -31,7 +32,6 @@ interface AgentNodeCardProps {
   selected: boolean;
   displayColor: string;
   displayName: string;
-  Icon: any;
   agentId: string;
   status: AgentStatus;
   currentTool?: string;
@@ -41,13 +41,17 @@ interface AgentNodeCardProps {
   ticketId?: string;
   ticketTitle?: string;
   worktreePaths?: Record<string, string>;
+  launchCheckpoint?: CheckpointSummary;
+  changeSummary?: AgentChangeSummary;
+  isRestoringCheckpoint?: boolean;
+  onRestoreLaunchCheckpoint?: () => void;
+  onReviewChanges?: () => void;
 }
 
 export function AgentNodeCard({
   selected,
   displayColor,
   displayName,
-  Icon,
   agentId,
   status,
   currentTool,
@@ -57,9 +61,12 @@ export function AgentNodeCard({
   ticketId,
   ticketTitle,
   worktreePaths,
+  launchCheckpoint,
+  changeSummary,
+  isRestoringCheckpoint = false,
+  onRestoreLaunchCheckpoint,
+  onReviewChanges,
 }: AgentNodeCardProps) {
-  // agentId is available for future use if needed
-  void agentId;
   const statusInfo = statusConfig[status] || statusConfig.idle;
   const isActive = statusInfo.isActive;
   const isToolCalling = status === "tool_calling";
@@ -71,162 +78,140 @@ export function AgentNodeCard({
 
   // Get display name for current tool
   const toolDisplay = currentTool ? (toolDisplayNames[currentTool] || currentTool) : null;
+  const changedFileCount = changeSummary?.changedFileCount ?? 0;
 
   return (
     <div
-      className={`relative w-[220px] rounded-lg transition-all duration-300 cursor-pointer ${
-        selected ? "ring-1 ring-white/20" : ""
+      className={`relative w-[220px] rounded-lg border transition-colors duration-150 cursor-pointer ${
+        selected ? "ring-1 ring-zinc-200/25" : ""
       }`}
       style={{
-        backgroundColor: "#1a1a1a",
-        border: needsAttention
-          ? `2px solid ${statusInfo.color}`
-          : isActive
-          ? `1px solid ${statusInfo.color}40`
-          : "1px solid #2a2a2a",
-        boxShadow: needsAttention
-          ? `0 0 16px ${statusInfo.color}40, 0 0 32px ${statusInfo.color}20, 0 4px 12px rgba(0, 0, 0, 0.4)`
-          : isActive
-          ? `0 0 12px ${statusInfo.color}15, 0 4px 12px rgba(0, 0, 0, 0.4)`
+        backgroundColor: "#171818",
+        borderColor: needsAttention
+          ? `${statusInfo.color}99`
           : selected
-          ? "0 8px 24px rgba(0, 0, 0, 0.6)"
-          : "0 4px 12px rgba(0, 0, 0, 0.4)",
+            ? "#52525b"
+            : isActive
+              ? `${statusInfo.color}4d`
+              : "#2a2d2c",
+        boxShadow: selected ? "0 8px 22px rgba(0, 0, 0, 0.35)" : "0 2px 8px rgba(0, 0, 0, 0.26)",
       }}
     >
-      {/* Animated effects for different states */}
-      {isActive && !needsAttention && (
-        <div
-          className="absolute inset-0 rounded-lg pointer-events-none"
-          style={{
-            background: `linear-gradient(90deg, transparent, ${statusInfo.color}20, transparent)`,
-            backgroundSize: '200% 100%',
-            animation: 'shimmer 2s ease-in-out infinite',
-          }}
-        />
-      )}
-      {/* Pulsing border for attention states */}
-      {needsAttention && (
-        <div
-          className="absolute inset-0 rounded-lg pointer-events-none"
-          style={{
-            border: `2px solid ${statusInfo.color}`,
-            animation: 'attention-pulse 1.5s ease-in-out infinite',
-          }}
-        />
-      )}
-
-      {/* Color bar at top */}
-      <div className="h-1 rounded-t-lg" style={{ backgroundColor: displayColor }} />
-
-      {/* Status banner */}
-      <div
-        className="px-3 py-1.5 flex items-center justify-between relative"
-        style={{ backgroundColor: statusInfo.bgColor }}
-      >
-        <div className="flex items-center gap-2">
-          {/* Status indicator - animated ring for active */}
-          <div className="relative flex items-center justify-center">
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: statusInfo.color }}
-            />
-            {isActive && (
-              <div
-                className="absolute w-3 h-3 rounded-full animate-ping"
-                style={{
-                  backgroundColor: statusInfo.color,
-                  opacity: 0.4,
-                  animationDuration: '1.5s'
-                }}
-              />
-            )}
-          </div>
-          <span className="text-xs font-medium" style={{ color: statusInfo.color }}>
-            {statusInfo.label}
-          </span>
-          {/* Show current tool when tool_calling */}
-          {isToolCalling && toolDisplay && (
-            <span className="text-[10px] text-zinc-400 flex items-center gap-1">
-              <Wrench className="w-2.5 h-2.5" />
-              {toolDisplay}
-            </span>
-          )}
-        </div>
-        {status === "creating" && (
-          <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: statusInfo.color }} />
-        )}
-        {status === "waiting_input" && (
-          <MessageSquare className="w-3.5 h-3.5" style={{ color: statusInfo.color }} />
-        )}
-        {status === "disconnected" && (
-          <WifiOff className="w-3.5 h-3.5" style={{ color: statusInfo.color }} />
-        )}
-      </div>
-
-      <div className="p-3 relative">
-        {/* Agent name and icon */}
-        <div className="flex items-center gap-2.5">
+      <div className="p-3">
+        <div className="flex items-start gap-2.5">
           <div
-            className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: `${displayColor}20` }}
+            className="relative w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: `${displayColor}18` }}
           >
-            <Icon className="w-5 h-5" style={{ color: displayColor }} />
+            <AgentIcon agentId={agentId} className="h-[18px] w-[18px]" style={{ color: displayColor }} />
+            <span
+              className="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full border border-canvas-dark"
+              style={{ backgroundColor: displayColor }}
+            />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-white truncate leading-tight">{displayName}</h3>
-            <p className="text-[10px] text-zinc-500">{agentId}</p>
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <h3 className="min-w-0 truncate text-sm font-medium leading-tight text-zinc-100">
+                {displayName}
+              </h3>
+              <span className="flex flex-shrink-0 items-center gap-1 text-[10px]" style={{ color: statusInfo.color }}>
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: statusInfo.color }} />
+                {statusInfo.label}
+              </span>
+            </div>
+            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-zinc-500">
+              {status === "creating" && <Loader2 className="w-3 h-3 animate-spin" style={{ color: statusInfo.color }} />}
+              {isToolCalling && toolDisplay ? (
+                <>
+                  <Wrench className="w-3 h-3 flex-shrink-0" />
+                  <span className="truncate">{toolDisplay}</span>
+                </>
+              ) : (
+                <span className="truncate">{agentId}</span>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Ticket info */}
         {ticketId && (
-          <div className="mt-2.5 px-2 py-1.5 rounded-md bg-indigo-500/10 border border-indigo-500/20">
+          <div className="mt-2.5 rounded-md border border-zinc-700/70 bg-zinc-900/45 px-2 py-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono font-semibold text-indigo-400">{ticketId}</span>
+              <span className="text-[10px] font-mono font-semibold text-zinc-300">{ticketId}</span>
             </div>
             {ticketTitle && (
-              <p className="text-[10px] text-indigo-300/70 truncate mt-0.5">{ticketTitle}</p>
+              <p className="text-[10px] text-zinc-500 truncate mt-0.5">{ticketTitle}</p>
             )}
           </div>
         )}
 
         {/* Repo & Branch */}
         {(dirName || gitBranch || (worktreePaths && Object.keys(worktreePaths).length > 1)) && (
-          <div className="mt-2 space-y-1">
+          <div className="mt-2 flex min-w-0 items-center gap-2 text-[10px] text-zinc-500">
             {dirName && (
-              <div className="flex items-center gap-1.5">
-                <Folder className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0" />
-                <span className="text-[11px] text-zinc-400 font-mono truncate">{dirName}</span>
+              <div className="flex min-w-0 items-center gap-1">
+                <Folder className="w-3 h-3 flex-shrink-0" />
+                <span className="font-mono truncate">{dirName}</span>
               </div>
             )}
             {gitBranch && (
-              <div className="flex items-center gap-1.5">
-                <GitBranch className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
-                <span className="text-[11px] text-purple-400 font-mono truncate">{gitBranch}</span>
+              <div className="flex min-w-0 items-center gap-1">
+                <GitBranch className="w-3 h-3 flex-shrink-0" />
+                <span className="font-mono truncate">{gitBranch}</span>
               </div>
             )}
             {worktreePaths && Object.keys(worktreePaths).length > 1 && (
-              <div className="flex items-center gap-1.5" title={Object.entries(worktreePaths).map(([n, p]) => `${n}: ${p}`).join('\n')}>
-                <Layers className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
-                <span className="text-[10px] text-cyan-400 font-medium">{Object.keys(worktreePaths).length} repos</span>
+              <div className="flex flex-shrink-0 items-center gap-1" title={Object.entries(worktreePaths).map(([n, p]) => `${n}: ${p}`).join('\n')}>
+                <Layers className="w-3 h-3 flex-shrink-0" />
+                <span>{Object.keys(worktreePaths).length} repos</span>
               </div>
             )}
           </div>
         )}
 
-      </div>
+        {(changedFileCount > 0 || launchCheckpoint) && (
+          <div className="mt-2 flex items-center gap-1.5">
+            {changedFileCount > 0 && changeSummary && onReviewChanges && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onReviewChanges();
+                }}
+                className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-zinc-700/80 bg-zinc-900/45 px-2 py-1.5 text-left text-[10px] text-zinc-300 transition-colors hover:border-zinc-500 hover:bg-zinc-800"
+                title={changeSummary.files.map((file) => file.path).join("\n")}
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <FileDiff className="w-3 h-3 flex-shrink-0" />
+                  <span className="truncate">{changedFileCount} changed</span>
+                </span>
+                <span className="flex flex-shrink-0 items-center gap-1 font-mono text-zinc-500">
+                  +{changeSummary.added}/-{changeSummary.removed}
+                </span>
+              </button>
+            )}
 
-      {/* CSS for animations */}
-      <style>{`
-        @keyframes shimmer {
-          0% { background-position: -200% 0; }
-          100% { background-position: 200% 0; }
-        }
-        @keyframes attention-pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-      `}</style>
+            {launchCheckpoint && onRestoreLaunchCheckpoint && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRestoreLaunchCheckpoint();
+                }}
+                disabled={isRestoringCheckpoint}
+                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-zinc-700/80 bg-zinc-900/45 text-zinc-500 transition-colors hover:border-zinc-500 hover:text-zinc-200 disabled:opacity-50"
+                title="Restore the repo to the checkpoint saved before this session started"
+              >
+                {isRestoringCheckpoint ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-3 h-3" />
+                )}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

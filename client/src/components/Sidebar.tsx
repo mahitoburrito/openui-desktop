@@ -22,6 +22,8 @@ import {
   Check,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
+import { getTerminalTheme } from "../theme/appearance";
+import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { Terminal } from "./Terminal";
 import { InPaneMarkdown } from "./InPaneMarkdown";
 
@@ -36,7 +38,7 @@ const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
 };
 
 const presetColors = [
-  "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"
+  "#D97652", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"
 ];
 
 const iconOptions = [
@@ -54,6 +56,7 @@ export function Sidebar() {
   const {
     sidebarOpen,
     setSidebarOpen,
+    viewMode,
     selectedNodeId,
     sessions,
     setSelectedNodeId,
@@ -62,10 +65,19 @@ export function Sidebar() {
     nodes,
     setNewSessionModalOpen,
     setNewSessionForNodeId,
+    terminalTheme,
+    browserPanelOpen,
+    browserPanelWidth,
   } = useStore();
 
   const session = selectedNodeId ? sessions.get(selectedNodeId) : null;
   const node = selectedNodeId ? nodes.find(n => n.id === selectedNodeId) : null;
+
+  useEffect(() => {
+    if (viewMode === "focus" && sidebarOpen) {
+      setSidebarOpen(false);
+    }
+  }, [sidebarOpen, setSidebarOpen, viewMode]);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
@@ -224,9 +236,15 @@ export function Sidebar() {
     }
   }, []);
 
-  const displayColor = editColor || session?.customColor || session?.color || "#888";
+  const displayColor = getAgentAccentColor(
+    session?.agentId,
+    editColor || session?.customColor || session?.color || undefined,
+  );
   const statusInfo = statusConfig[session?.status || "idle"];
   const isDisconnected = session?.status === "disconnected";
+  const terminalPalette = getTerminalTheme(terminalTheme);
+  const headerIconId = (node?.data?.icon as string) || session?.agentId;
+  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
 
   return (
     <AnimatePresence>
@@ -237,7 +255,10 @@ export function Sidebar() {
           exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 40 }}
           className="fixed right-0 top-14 bottom-0 z-50 flex flex-col bg-canvas-dark border-l border-border"
-          style={{ width: sidebarWidth }}
+          style={{
+            width: sidebarWidth,
+            right: browserDockOpen ? browserPanelWidth : 0,
+          }}
         >
           {/* Resize handle */}
           <div
@@ -248,9 +269,19 @@ export function Sidebar() {
           <div className="flex-shrink-0 px-4 py-3 border-b border-border">
             <div className="flex items-center gap-3">
               <div
-                className="w-3 h-3 rounded-full flex-shrink-0"
-                style={{ backgroundColor: displayColor }}
-              />
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border"
+                style={{
+                  backgroundColor: `${displayColor}16`,
+                  borderColor: `${displayColor}40`,
+                }}
+              >
+                <AgentIcon
+                  agentId={session.agentId}
+                  iconId={headerIconId}
+                  className="h-5 w-5"
+                  style={{ color: displayColor }}
+                />
+              </div>
               <div className="flex-1 min-w-0">
                 <h2 className="text-sm font-medium text-white truncate">
                   {session.customName || session.agentName}
@@ -258,9 +289,14 @@ export function Sidebar() {
                 <div className="flex items-center gap-2 mt-0.5">
                   <div
                     className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: statusInfo.color }}
+                    style={{
+                      backgroundColor: statusInfo.color,
+                      boxShadow: `0 0 0 3px ${statusInfo.color}18`,
+                    }}
                   />
-                  <span className="text-[10px] text-zinc-500">{statusInfo.label}</span>
+                  <span className="text-[10px]" style={{ color: statusInfo.color }}>
+                    {statusInfo.label}
+                  </span>
                 </div>
               </div>
               
@@ -459,16 +495,25 @@ export function Sidebar() {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
           >
-            <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center justify-between">
+            <div
+              className="flex-shrink-0 border-b px-4 py-2 flex items-center justify-between"
+              style={{
+                backgroundColor: terminalPalette.surface,
+                borderColor: terminalPalette.border,
+              }}
+            >
               <div className="flex items-center gap-2">
-                <TerminalIcon className="w-3.5 h-3.5 text-zinc-500" />
-                <span className="text-xs text-zinc-500">Terminal</span>
+                <TerminalIcon className="w-3.5 h-3.5" style={{ color: displayColor }} />
+                <span className="text-xs" style={{ color: terminalPalette.foreground }}>
+                  Terminal
+                </span>
               </div>
               <div className="flex items-center gap-2">
                 {/* File attach button */}
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-surface-active transition-colors"
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors hover:bg-surface-active"
+                  style={{ color: terminalPalette.muted }}
                   title="Attach files"
                 >
                   <Paperclip className="w-3.5 h-3.5" />
@@ -494,7 +539,13 @@ export function Sidebar() {
 
             {/* File upload status bar */}
             {(isUploading || lastUpload) && (
-              <div className="flex-shrink-0 border-b border-border bg-[#111]">
+              <div
+                className="flex-shrink-0 border-b"
+                style={{
+                  backgroundColor: terminalPalette.surface,
+                  borderColor: terminalPalette.border,
+                }}
+              >
                 {isUploading ? (
                   <div className="px-3 py-1.5 flex items-center gap-2">
                     <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
@@ -603,7 +654,13 @@ export function Sidebar() {
               </div>
             )}
 
-            <div className="flex-1 min-h-0 bg-[#0d0d0d] relative overflow-hidden">
+            <div
+              className="flex-1 min-h-0 relative overflow-hidden"
+              style={{
+                backgroundColor: terminalPalette.background,
+                boxShadow: `inset 0 0 0 1px ${terminalPalette.border}`,
+              }}
+            >
               {session.status === "creating" ? (
                 <div className="flex flex-col items-center justify-center h-full gap-3">
                   <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
@@ -644,7 +701,13 @@ export function Sidebar() {
           </div>
 
           {/* Details */}
-          <div className="flex-shrink-0 border-t border-border">
+          <div
+            className="flex-shrink-0 border-t"
+            style={{
+              backgroundColor: terminalPalette.surface,
+              borderColor: terminalPalette.border,
+            }}
+          >
             <div className="p-4 space-y-2">
               {session.notes && !isEditing && (
                 <p className="text-xs text-zinc-400 italic mb-3 pb-3 border-b border-border">
@@ -652,14 +715,14 @@ export function Sidebar() {
                 </p>
               )}
               <div className="flex items-center gap-2 text-xs">
-                <Clock className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+                <Clock className="w-3 h-3 flex-shrink-0" style={{ color: terminalPalette.ansi.blue }} />
                 <span className="text-zinc-500">Started</span>
                 <span className="text-zinc-400 font-mono ml-auto">
                   {new Date(session.createdAt).toLocaleTimeString()}
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs">
-                <Folder className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+                <Folder className="w-3 h-3 flex-shrink-0" style={{ color: terminalPalette.ansi.yellow }} />
                 <span className="text-zinc-500">Directory</span>
                 <span className="text-zinc-400 font-mono ml-auto truncate max-w-[180px]" title={session.cwd}>
                   {session.cwd.split('/').slice(-2).join('/')}
@@ -667,9 +730,9 @@ export function Sidebar() {
               </div>
               {session.gitBranch && (
                 <div className="flex items-center gap-2 text-xs">
-                  <GitBranch className="w-3 h-3 text-zinc-600 flex-shrink-0" />
+                  <GitBranch className="w-3 h-3 flex-shrink-0" style={{ color: displayColor }} />
                   <span className="text-zinc-500">Branch</span>
-                  <span className="text-purple-400 font-mono ml-auto">
+                  <span className="font-mono ml-auto" style={{ color: displayColor }}>
                     {session.gitBranch}
                   </span>
                 </div>

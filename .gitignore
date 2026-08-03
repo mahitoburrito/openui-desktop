@@ -7,3 +7,7 @@ client/node_modules/
 .openui-desktop/
 .env
 resources/default-config.json
+.gstack/
+test-results/
+release-staged/
+resources/build-info.json

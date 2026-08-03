@@ -1,15 +1,23 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import type { LucideIcon } from "lucide-react";
 import {
   X, Key, Check, AlertCircle, Loader2, ExternalLink, Bug,
-  SlidersHorizontal, Puzzle,
+  SlidersHorizontal, Puzzle, Palette, Type, Monitor, Minus, Plus, Bell, FileText, Sparkles,
 } from "lucide-react";
 import { usePRBEStore } from "../stores/usePRBEStore";
+import { useStore } from "../stores/useStore";
+import {
+  TERMINAL_FONT_FAMILIES,
+  TERMINAL_THEMES,
+  WORKSPACE_BACKGROUNDS,
+  type TerminalFontFamilyId,
+  type TerminalThemeId,
+  type WorkspaceBackgroundId,
+} from "../theme/appearance";
 
-const NOTIF_STORAGE_KEY = "openui-desktop-notifications";
-
-type SettingsTab = "general" | "integrations";
+type SettingsTab = "general" | "appearance" | "integrations";
 
 interface SettingsModalProps {
   open: boolean;
@@ -66,8 +74,9 @@ function SectionHeader({ title }: { title: string }) {
   );
 }
 
-const TABS: { id: SettingsTab; label: string; icon: typeof SlidersHorizontal }[] = [
+const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "appearance", label: "Appearance", icon: Palette },
   { id: "integrations", label: "Integrations", icon: Puzzle },
 ];
 
@@ -85,17 +94,28 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [createWorktree, setCreateWorktree] = useState(true);
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
   const [autoCareful, setAutoCareful] = useState(true);
-  const [desktopNotifications, setDesktopNotifications] = useState(
-    () => localStorage.getItem(NOTIF_STORAGE_KEY) === "true",
-  );
-  const [notifPermission, setNotifPermission] = useState(Notification.permission);
+  const [agentRules, setAgentRules] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
   const prbeStore = usePRBEStore();
+  const {
+    workspaceBackground,
+    setWorkspaceBackground,
+    terminalTheme,
+    setTerminalTheme,
+    terminalFontFamily,
+    setTerminalFontFamily,
+    terminalFontSize,
+    setTerminalFontSize,
+  } = useStore();
   const [prbeApiKey, setPrbeApiKey] = useState("");
   const [hasPrbeKey, setHasPrbeKey] = useState(false);
   const [isPrbeBuiltIn, setIsPrbeBuiltIn] = useState(false);
   const [isPrbeSaving, setIsPrbeSaving] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [hasGeminiKey, setHasGeminiKey] = useState(false);
+  const [geminiModel, setGeminiModel] = useState("gemini-2.5-flash");
+  const [isGeminiSaving, setIsGeminiSaving] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -115,6 +135,21 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           setCreateWorktree(config.createWorktree ?? true);
           setAutoCareful(config.autoCareful ?? true);
           setTicketPromptTemplate(config.ticketPromptTemplate || "");
+        })
+        .catch(console.error);
+
+      fetch("/api/title-generation/config")
+        .then((res) => res.json())
+        .then((config) => {
+          setHasGeminiKey(config.hasApiKey);
+          setGeminiModel(config.model || "gemini-2.5-flash");
+        })
+        .catch(console.error);
+
+      fetch("/api/agent-rules")
+        .then((res) => res.json())
+        .then((config) => {
+          setAgentRules(config.rules || "");
         })
         .catch(console.error);
     }
@@ -151,6 +186,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           autoCareful,
           ticketPromptTemplate: ticketPromptTemplate || undefined,
         }),
+      });
+      await fetch("/api/agent-rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rules: agentRules }),
       });
       if (apiKey.trim()) setHasExistingKey(true);
       setApiKey("");
@@ -216,6 +256,44 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     }
   };
 
+  const handleGeminiSave = async () => {
+    if (!geminiApiKey.trim()) return;
+    setIsGeminiSaving(true);
+    try {
+      const res = await fetch("/api/title-generation/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: geminiApiKey.trim() }),
+      });
+      const config = await res.json();
+      setHasGeminiKey(config.hasApiKey);
+      setGeminiModel(config.model || "gemini-2.5-flash");
+      setGeminiApiKey("");
+    } catch (e) {
+      console.error("Failed to save Gemini config:", e);
+    } finally {
+      setIsGeminiSaving(false);
+    }
+  };
+
+  const handleGeminiRemoveKey = async () => {
+    setIsGeminiSaving(true);
+    try {
+      const res = await fetch("/api/title-generation/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "" }),
+      });
+      const config = await res.json();
+      setHasGeminiKey(config.hasApiKey);
+      setGeminiApiKey("");
+    } catch (e) {
+      console.error("Failed to remove Gemini config:", e);
+    } finally {
+      setIsGeminiSaving(false);
+    }
+  };
+
   return createPortal(
     <AnimatePresence>
       {open && (
@@ -275,18 +353,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       setCreateWorktree={setCreateWorktree}
                       autoCareful={autoCareful}
                       setAutoCareful={setAutoCareful}
-                      desktopNotifications={desktopNotifications}
-                      notifPermission={notifPermission}
-                      onToggleNotifications={async (enabled) => {
-                        if (enabled && Notification.permission === "default") {
-                          const result = await Notification.requestPermission();
-                          setNotifPermission(result);
-                          if (result !== "granted") return;
-                        }
-                        if (enabled && Notification.permission === "denied") return;
-                        setDesktopNotifications(enabled);
-                        localStorage.setItem(NOTIF_STORAGE_KEY, String(enabled));
-                      }}
+                      agentRules={agentRules}
+                      setAgentRules={setAgentRules}
+                    />}
+                    {tab === "appearance" && <AppearanceTab
+                      workspaceBackground={workspaceBackground}
+                      setWorkspaceBackground={setWorkspaceBackground}
+                      terminalTheme={terminalTheme}
+                      setTerminalTheme={setTerminalTheme}
+                      terminalFontFamily={terminalFontFamily}
+                      setTerminalFontFamily={setTerminalFontFamily}
+                      terminalFontSize={terminalFontSize}
+                      setTerminalFontSize={setTerminalFontSize}
                     />}
                     {tab === "integrations" && <IntegrationsTab
                       apiKey={apiKey}
@@ -306,25 +384,43 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       isPrbeSaving={isPrbeSaving}
                       handlePrbeSave={handlePrbeSave}
                       handlePrbeRemoveKey={handlePrbeRemoveKey}
+                      geminiApiKey={geminiApiKey}
+                      setGeminiApiKey={setGeminiApiKey}
+                      hasGeminiKey={hasGeminiKey}
+                      geminiModel={geminiModel}
+                      isGeminiSaving={isGeminiSaving}
+                      handleGeminiSave={handleGeminiSave}
+                      handleGeminiRemoveKey={handleGeminiRemoveKey}
                     />}
                   </div>
                 </div>
 
                 {/* Footer */}
                 <div className="px-5 py-3.5 border-t border-border flex justify-end gap-2 flex-shrink-0">
-                  <button
-                    onClick={onClose}
-                    className="px-3 py-1.5 rounded-md text-sm text-zinc-400 hover:text-white hover:bg-canvas transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={isSaving || (!!apiKey.trim() && !validationResult?.valid)}
-                    className="px-4 py-1.5 rounded-md text-sm font-medium bg-white text-canvas hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {isSaving ? "Saving..." : "Save"}
-                  </button>
+                  {tab === "appearance" ? (
+                    <button
+                      onClick={onClose}
+                      className="px-4 py-1.5 rounded-md text-sm font-medium bg-zinc-200 text-zinc-950 hover:bg-zinc-100 transition-colors"
+                    >
+                      Done
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={onClose}
+                        className="px-3 py-1.5 rounded-md text-sm text-zinc-400 hover:text-white hover:bg-canvas transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSave}
+                        disabled={isSaving || (!!apiKey.trim() && !validationResult?.valid)}
+                        className="px-4 py-1.5 rounded-md text-sm font-medium bg-white text-canvas hover:bg-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isSaving ? "Saving..." : "Save"}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -338,6 +434,200 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
 /* ─── Tab content components ─── */
 
+function AppearanceTab({
+  workspaceBackground,
+  setWorkspaceBackground,
+  terminalTheme,
+  setTerminalTheme,
+  terminalFontFamily,
+  setTerminalFontFamily,
+  terminalFontSize,
+  setTerminalFontSize,
+}: {
+  workspaceBackground: WorkspaceBackgroundId;
+  setWorkspaceBackground: (v: WorkspaceBackgroundId) => void;
+  terminalTheme: TerminalThemeId;
+  setTerminalTheme: (v: TerminalThemeId) => void;
+  terminalFontFamily: TerminalFontFamilyId;
+  setTerminalFontFamily: (v: TerminalFontFamilyId) => void;
+  terminalFontSize: number;
+  setTerminalFontSize: (v: number) => void;
+}) {
+  const selectedTerminalTheme =
+    TERMINAL_THEMES.find((theme) => theme.id === terminalTheme) ?? TERMINAL_THEMES[0];
+  const selectedFont =
+    TERMINAL_FONT_FAMILIES.find((font) => font.id === terminalFontFamily) ??
+    TERMINAL_FONT_FAMILIES[0];
+
+  return (
+    <>
+      <SectionHeader title="Workspace" />
+      <div className="rounded-lg border border-border bg-canvas/40">
+        <div className="p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Monitor className="w-4 h-4 text-zinc-500" />
+            <div>
+              <div className="text-sm text-zinc-200">Canvas background</div>
+              <div className="text-xs text-zinc-500">Used behind agent cards and categories</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {WORKSPACE_BACKGROUNDS.map((background) => {
+              const selected = workspaceBackground === background.id;
+              return (
+                <button
+                  key={background.id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setWorkspaceBackground(background.id)}
+                  className={`rounded-lg border p-3 text-left transition-colors ${
+                    selected
+                      ? "border-zinc-300 bg-zinc-800"
+                      : "border-border bg-canvas/40 hover:border-zinc-600 hover:bg-zinc-800/50"
+                  }`}
+                >
+                  <div className="mb-2 flex h-8 overflow-hidden rounded-md border border-zinc-950/10">
+                    {background.preview.map((color) => (
+                      <div key={color} className="flex-1" style={{ background: color }} />
+                    ))}
+                  </div>
+                  <div className="text-sm font-medium text-zinc-100">{background.name}</div>
+                  <div className="text-xs text-zinc-500">{background.description}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <SectionHeader title="Terminal" />
+      <div className="rounded-lg border border-border bg-canvas/40">
+        <div className="p-4 space-y-4">
+          <div>
+            <div className="mb-3 flex items-center gap-2">
+              <Palette className="w-4 h-4 text-zinc-500" />
+              <div>
+                <div className="text-sm text-zinc-200">Terminal background</div>
+                <div className="text-xs text-zinc-500">Applies to sidebar and focus terminals</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {TERMINAL_THEMES.map((theme) => {
+                const selected = terminalTheme === theme.id;
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => setTerminalTheme(theme.id)}
+                    className={`rounded-lg border p-3 text-left transition-colors ${
+                      selected
+                        ? "border-zinc-300 bg-zinc-800"
+                        : "border-border bg-canvas/40 hover:border-zinc-600 hover:bg-zinc-800/50"
+                    }`}
+                  >
+                    <div className="mb-2 flex h-8 overflow-hidden rounded-md border border-zinc-950/10">
+                      {theme.preview.map((color) => (
+                        <div key={color} className="flex-1" style={{ backgroundColor: color }} />
+                      ))}
+                    </div>
+                    <div className="text-sm font-medium text-zinc-100">{theme.name}</div>
+                    <div className="text-xs text-zinc-500">{theme.description}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="border-t border-border pt-4">
+            <div className="mb-3 flex items-center gap-2">
+              <Type className="w-4 h-4 text-zinc-500" />
+              <div>
+                <div className="text-sm text-zinc-200">Terminal type</div>
+                <div className="text-xs text-zinc-500">Font family and scale for agent output</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {TERMINAL_FONT_FAMILIES.map((font) => (
+                <button
+                  key={font.id}
+                  type="button"
+                  aria-pressed={terminalFontFamily === font.id}
+                  onClick={() => setTerminalFontFamily(font.id)}
+                  className={`px-2.5 py-1.5 rounded-md text-xs transition-colors ${
+                    terminalFontFamily === font.id
+                      ? "bg-zinc-200 text-zinc-950"
+                      : "bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700"
+                  }`}
+                  style={{ fontFamily: font.stack }}
+                >
+                  {font.name}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setTerminalFontSize(terminalFontSize - 1)}
+                className="w-7 h-7 rounded-md bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition-colors flex items-center justify-center"
+                title="Decrease font size"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <input
+                type="range"
+                min={11}
+                max={18}
+                step={1}
+                value={terminalFontSize}
+                onChange={(e) => setTerminalFontSize(Number(e.target.value))}
+                className="flex-1 accent-zinc-200"
+                aria-label="Terminal font size"
+              />
+              <button
+                type="button"
+                onClick={() => setTerminalFontSize(terminalFontSize + 1)}
+                className="w-7 h-7 rounded-md bg-zinc-800 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition-colors flex items-center justify-center"
+                title="Increase font size"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+              <div className="w-10 text-right text-xs font-mono text-zinc-400">
+                {terminalFontSize}px
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="rounded-lg border p-3"
+            style={{
+              backgroundColor: selectedTerminalTheme.background,
+              borderColor: selectedTerminalTheme.border,
+              color: selectedTerminalTheme.foreground,
+              fontFamily: selectedFont.stack,
+              fontSize: terminalFontSize,
+            }}
+          >
+            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: selectedTerminalTheme.muted }}>
+              <span>codex</span>
+              <span>main</span>
+              <span>~/openui</span>
+            </div>
+            <div className="mt-2 leading-relaxed">
+              <span style={{ color: selectedTerminalTheme.ansi.green }}>$</span>{" "}
+              <span>claude code</span>
+            </div>
+            <div className="leading-relaxed" style={{ color: selectedTerminalTheme.muted }}>
+              polishing terminal pane, theme and font applied
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function GeneralTab({
   defaultBaseBranch,
   setDefaultBaseBranch,
@@ -345,9 +635,8 @@ function GeneralTab({
   setCreateWorktree,
   autoCareful,
   setAutoCareful,
-  desktopNotifications,
-  notifPermission,
-  onToggleNotifications,
+  agentRules,
+  setAgentRules,
 }: {
   defaultBaseBranch: string;
   setDefaultBaseBranch: (v: string) => void;
@@ -355,28 +644,47 @@ function GeneralTab({
   setCreateWorktree: (v: boolean) => void;
   autoCareful: boolean;
   setAutoCareful: (v: boolean) => void;
-  desktopNotifications: boolean;
-  notifPermission: NotificationPermission;
-  onToggleNotifications: (v: boolean) => void;
+  agentRules: string;
+  setAgentRules: (v: string) => void;
 }) {
   return (
     <>
+      <SectionHeader title="Agents" />
+      <div className="rounded-lg border border-border bg-canvas/40">
+        <div className="p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <FileText className="w-4 h-4 text-zinc-500" />
+            <div>
+              <div className="text-sm text-zinc-200">Agent rules</div>
+              <div className="text-xs text-zinc-500">Prepended to new Codex and Claude sessions</div>
+            </div>
+          </div>
+          <textarea
+            value={agentRules}
+            onChange={(e) => setAgentRules(e.target.value)}
+            maxLength={12000}
+            rows={6}
+            placeholder={"Always inspect the repo before editing.\nKeep changes scoped.\nRun the relevant tests before finishing."}
+            className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors resize-y min-h-[120px] font-mono leading-relaxed"
+          />
+          <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-600">
+            <span>Saved locally in OpenUI settings.</span>
+            <span>{agentRules.length}/12000</span>
+          </div>
+        </div>
+      </div>
+
       <SectionHeader title="Notifications" />
       <div className="rounded-lg border border-border bg-canvas/40">
         <div className="px-4">
           <SettingRow
-            title="Desktop notifications"
-            description="Notify when a session finishes or needs input (only when window is unfocused)"
+            title="Activity bell"
+            description="Unread agent events show as a red badge in the header. Toast cards stay hidden."
             last
           >
-            <div className="flex items-center gap-2">
-              {notifPermission === "denied" && (
-                <span className="text-xs text-red-400">Blocked by browser</span>
-              )}
-              <Toggle
-                checked={desktopNotifications && notifPermission === "granted"}
-                onChange={onToggleNotifications}
-              />
+            <div className="relative flex h-7 w-7 items-center justify-center rounded-md border border-border bg-canvas text-zinc-300">
+              <Bell className="h-3.5 w-3.5" />
+              <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-canvas" />
             </div>
           </SettingRow>
         </div>
@@ -424,6 +732,13 @@ function IntegrationsTab({
   isPrbeSaving,
   handlePrbeSave,
   handlePrbeRemoveKey,
+  geminiApiKey,
+  setGeminiApiKey,
+  hasGeminiKey,
+  geminiModel,
+  isGeminiSaving,
+  handleGeminiSave,
+  handleGeminiRemoveKey,
 }: {
   apiKey: string;
   setApiKey: (v: string) => void;
@@ -442,9 +757,79 @@ function IntegrationsTab({
   isPrbeSaving: boolean;
   handlePrbeSave: () => void;
   handlePrbeRemoveKey: () => void;
+  geminiApiKey: string;
+  setGeminiApiKey: (v: string) => void;
+  hasGeminiKey: boolean;
+  geminiModel: string;
+  isGeminiSaving: boolean;
+  handleGeminiSave: () => void;
+  handleGeminiRemoveKey: () => void;
 }) {
   return (
     <>
+      {/* Gemini */}
+      <SectionHeader title="Session titles" />
+      <div className="rounded-lg border border-border bg-canvas/40">
+        <div className="px-4 py-3.5 space-y-3">
+          <div className="flex items-center gap-2">
+            <div
+              className="w-5 h-5 rounded flex items-center justify-center"
+              style={{ backgroundColor: "rgba(217, 118, 82, 0.16)" }}
+            >
+              <Sparkles className="w-3.5 h-3.5" style={{ color: "#E5A264" }} />
+            </div>
+            <span className="text-sm text-zinc-200">Gemini title generation</span>
+          </div>
+
+          {hasGeminiKey ? (
+            <>
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20">
+                <Check className="w-4 h-4 text-green-500" />
+                <span className="text-sm text-green-400">Gemini key configured</span>
+                <span className="ml-auto text-xs text-zinc-500">{geminiModel}</span>
+                <button
+                  onClick={handleGeminiRemoveKey}
+                  disabled={isGeminiSaving}
+                  className="text-xs text-zinc-500 hover:text-red-400 transition-colors disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </div>
+              <p className="text-xs text-zinc-500">
+                Session titles keep updating from submitted prompts while the name is still auto-generated.
+                Sort can also use Gemini to cluster titles by blast radius.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-zinc-500">
+                Add a Gemini API key to generate richer session titles over time and sort title clusters by blast radius.
+              </p>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                  <input
+                    type="password"
+                    value={geminiApiKey}
+                    onChange={(e) => setGeminiApiKey(e.target.value)}
+                    placeholder="AIza..."
+                    className="w-full pl-9 pr-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                  />
+                </div>
+                <button
+                  onClick={handleGeminiSave}
+                  disabled={!geminiApiKey.trim() || isGeminiSaving}
+                  className="px-3 py-2 rounded-md text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                  style={{ backgroundColor: "#B85C3D" }}
+                >
+                  {isGeminiSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Linear */}
       <SectionHeader title="Linear" />
       <div className="rounded-lg border border-border bg-canvas/40">

@@ -1,73 +1,75 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import {
-  Search,
-  X,
-  ChevronLeft,
+  ChevronDown,
   ChevronRight,
-  Maximize2,
-  Pin,
-  PinOff,
-  Filter,
-  Sparkles,
-  Code,
-  Cpu,
-  Zap,
-  Rocket,
-  Bot,
-  Brain,
-  Wand2,
   Folder,
   GitBranch,
-  MessageSquare,
-  WifiOff,
-  Wrench,
+  Pin,
+  Search,
+  Trash2,
+  X,
 } from "lucide-react";
-import { useStore, AgentStatus, StatusFilter } from "../stores/useStore";
-import { useReactFlow } from "@xyflow/react";
+import { useReactFlow, type Node } from "@xyflow/react";
+import { useStore, type AgentSession, type AgentStatus } from "../stores/useStore";
+import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
+import { destroyCachedTerminal } from "./Terminal";
 
-const iconMap: Record<string, any> = {
-  sparkles: Sparkles,
-  code: Code,
-  cpu: Cpu,
-  zap: Zap,
-  rocket: Rocket,
-  bot: Bot,
-  brain: Brain,
-  wand2: Wand2,
+const statusDot: Record<AgentStatus, string> = {
+  creating: "#818CF8",
+  running: "#22C55E",
+  tool_calling: "#22C55E",
+  waiting_input: "#D97652",
+  idle: "#8A8F98",
+  disconnected: "#6B7280",
+  error: "#EF4444",
 };
 
-const statusConfig: Record<AgentStatus, { label: string; color: string; sortPriority: number }> = {
-  waiting_input: { label: "Needs Input", color: "#F97316", sortPriority: 0 },
-  running: { label: "Working", color: "#22C55E", sortPriority: 1 },
-  tool_calling: { label: "Working", color: "#22C55E", sortPriority: 2 },
-  error: { label: "Error", color: "#EF4444", sortPriority: 3 },
-  creating: { label: "Creating...", color: "#818CF8", sortPriority: 4 },
-  idle: { label: "Idle", color: "#FBBF24", sortPriority: 5 },
-  disconnected: { label: "Offline", color: "#6B7280", sortPriority: 6 },
+type SessionEntry = {
+  nodeId: string;
+  session: AgentSession;
+  node: Node | undefined;
 };
 
-const filterOptions: { value: StatusFilter; label: string; color?: string }[] = [
-  { value: "all", label: "All" },
-  { value: "waiting_input", label: "Needs Input", color: "#F97316" },
-  { value: "running", label: "Running", color: "#22C55E" },
-  { value: "idle", label: "Idle", color: "#FBBF24" },
-  { value: "error", label: "Error", color: "#EF4444" },
-  { value: "disconnected", label: "Offline", color: "#6B7280" },
+function getSessionTitle(entry: SessionEntry): string {
+  const label = typeof entry.node?.data?.label === "string" ? entry.node.data.label.trim() : "";
+  const agentName = entry.session.agentName?.trim() || "";
+  const customName = entry.session.customName?.trim();
+  const ticketTitle = entry.session.ticketTitle?.trim();
+
+  if (customName) return customName;
+  if (ticketTitle) return ticketTitle;
+  if (label && label !== agentName && label !== entry.session.agentId) return label;
+  return agentName || "Session";
+}
+
+function sessionCreatedAt(entry: SessionEntry): number {
+  return new Date(entry.session.createdAt).getTime() || 0;
+}
+
+// Chrome/Dia-style tab group palette — stable per project name.
+const GROUP_COLORS = [
+  "#3B82F6", "#EF4444", "#FBBF24", "#22C55E", "#EC4899", "#8B5CF6", "#14B8A6", "#D97652",
 ];
 
-const toolDisplayNames: Record<string, string> = {
-  Read: "Reading",
-  Write: "Writing",
-  Edit: "Editing",
-  Bash: "Running",
-  Grep: "Searching",
-  Glob: "Finding",
-  Task: "Tasking",
-  WebFetch: "Fetching",
-  WebSearch: "Searching",
-  TodoWrite: "Planning",
-  AskUserQuestion: "Asking",
+function groupKeyFor(session: AgentSession): string {
+  return session.originalCwd || session.cwd || "Other";
+}
+
+function groupColorFor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  }
+  return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length];
+}
+
+type SessionGroup = {
+  key: string;
+  name: string;
+  color: string;
+  entries: SessionEntry[];
+  newestAt: number;
 };
 
 export function SessionListPanel() {
@@ -77,427 +79,499 @@ export function SessionListPanel() {
     sessions,
     nodes,
     statusFilter,
-    setStatusFilter,
     searchQuery,
     setSearchQuery,
     selectedNodeId,
     setSelectedNodeId,
     setSidebarOpen,
     viewMode,
-    setViewMode,
-    focusedSessionIds,
     addFocusedSession,
     removeFocusedSession,
+    focusedSessionIds,
+    collapsedSessionGroups,
+    toggleSessionGroup,
+    removeSession,
+    removeNode,
+    setDeleteToast,
   } = useStore();
 
   const reactFlow = useReactFlow();
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [showFilters, setShowFilters] = useState(false);
+  const focusRailCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [visibleCount, setVisibleCount] = useState(12);
+  const [focusRailOpen, setFocusRailOpen] = useState(false);
 
-  // Get sorted and filtered session list
-  const sessionList = useMemo(() => {
-    const entries = Array.from(sessions.entries()).map(([nodeId, session]) => ({
+  const inFocusMode = viewMode === "focus";
+
+  const isSearching = searchQuery.trim().length > 0;
+
+  const { allOnlineSessions, sessionGroups, offlineEntries } = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const allEntries = Array.from(sessions.entries()).map(([nodeId, session]) => ({
       nodeId,
       session,
-      node: nodes.find((n) => n.id === nodeId),
-    }));
+      node: nodes.find((node) => node.id === nodeId),
+    })) as SessionEntry[];
 
-    // Filter by status
-    let filtered = entries;
-    if (statusFilter !== "all") {
-      // Also include tool_calling when filtering for "running"
+    const offline = allEntries.filter((entry) => entry.session.status === "disconnected");
+    const entries = allEntries.filter((entry) => entry.session.status !== "disconnected");
+
+    const statusFiltered = entries.filter((entry) => {
+      if (statusFilter === "all") return true;
       if (statusFilter === "running") {
-        filtered = filtered.filter(
-          (e) => e.session.status === "running" || e.session.status === "tool_calling"
-        );
-      } else {
-        filtered = filtered.filter((e) => e.session.status === statusFilter);
+        return entry.session.status === "running" || entry.session.status === "tool_calling";
+      }
+      return entry.session.status === statusFilter;
+    });
+
+    const filtered = q
+      ? statusFiltered.filter((entry) => {
+          const title = getSessionTitle(entry).toLowerCase();
+          return (
+            title.includes(q) ||
+            entry.session.cwd.toLowerCase().includes(q) ||
+            (entry.session.gitBranch || "").toLowerCase().includes(q) ||
+            (entry.session.ticketId || "").toLowerCase().includes(q) ||
+            (entry.session.ticketTitle || "").toLowerCase().includes(q)
+          );
+        })
+      : statusFiltered;
+
+    // Newest first everywhere: inside groups, and groups by their newest session.
+    const sorted = [...filtered].sort((a, b) => sessionCreatedAt(b) - sessionCreatedAt(a));
+
+    const groupsByKey = new Map<string, SessionGroup>();
+    for (const entry of sorted) {
+      const key = groupKeyFor(entry.session);
+      let group = groupsByKey.get(key);
+      if (!group) {
+        const name = key.split("/").pop() || key;
+        group = { key, name, color: groupColorFor(name), entries: [], newestAt: 0 };
+        groupsByKey.set(key, group);
+      }
+      group.entries.push(entry);
+      group.newestAt = Math.max(group.newestAt, sessionCreatedAt(entry));
+    }
+
+    const groups = Array.from(groupsByKey.values()).sort((a, b) => b.newestAt - a.newestAt);
+
+    return {
+      allOnlineSessions: sorted,
+      sessionGroups: groups,
+      offlineEntries: offline,
+    };
+  }, [nodes, searchQuery, sessions, statusFilter]);
+
+  // Cap rendered rows across groups, expanding with "View more".
+  const visibleGroups = useMemo(() => {
+    const out: SessionGroup[] = [];
+    let budget = visibleCount;
+    for (const group of sessionGroups) {
+      if (budget <= 0) break;
+      const collapsed = !isSearching && collapsedSessionGroups.includes(group.key);
+      if (collapsed) {
+        out.push({ ...group, entries: [] });
+        continue;
+      }
+      const take = group.entries.slice(0, budget);
+      budget -= take.length;
+      out.push({ ...group, entries: take });
+    }
+    return out;
+  }, [collapsedSessionGroups, isSearching, sessionGroups, visibleCount]);
+
+  const renderedCount = visibleGroups.reduce((sum, group) => sum + group.entries.length, 0);
+  const collapsedCount = sessionGroups.reduce(
+    (sum, group) =>
+      !isSearching && collapsedSessionGroups.includes(group.key) ? sum + group.entries.length : sum,
+    0,
+  );
+  const hasMore = renderedCount + collapsedCount < allOnlineSessions.length;
+
+  const handleClearOffline = useCallback(async () => {
+    if (offlineEntries.length === 0) return;
+    const confirmed = window.confirm(
+      `Clear ${offlineEntries.length} offline session${offlineEntries.length === 1 ? "" : "s"}? You'll have 5 seconds to undo.`,
+    );
+    if (!confirmed) return;
+
+    const cleared: { sessionId: string; nodeId: string; sessionName: string }[] = [];
+    await Promise.all(
+      offlineEntries.map(async (entry) => {
+        try {
+          const res = await fetch(`/api/sessions/${entry.session.sessionId}/soft-delete`, {
+            method: "POST",
+          });
+          if (!res.ok) return;
+        } catch {
+          return;
+        }
+        cleared.push({
+          sessionId: entry.session.sessionId,
+          nodeId: entry.nodeId,
+          sessionName: getSessionTitle(entry),
+        });
+      }),
+    );
+
+    if (cleared.length === 0) return;
+
+    for (const item of cleared) {
+      destroyCachedTerminal(item.sessionId);
+      removeFocusedSession(item.nodeId);
+      removeSession(item.nodeId);
+      removeNode(item.nodeId);
+      if (selectedNodeId === item.nodeId) {
+        setSelectedNodeId(null);
+        setSidebarOpen(false);
       }
     }
 
-    // Filter by search query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (e) =>
-          (e.session.customName || e.session.agentName).toLowerCase().includes(q) ||
-          e.session.cwd.toLowerCase().includes(q) ||
-          (e.session.gitBranch || "").toLowerCase().includes(q) ||
-          (e.session.ticketId || "").toLowerCase().includes(q) ||
-          (e.session.ticketTitle || "").toLowerCase().includes(q)
-      );
+    const timeout = setTimeout(() => setDeleteToast(null), 5000);
+    setDeleteToast({
+      sessionId: cleared[0].sessionId,
+      nodeId: cleared[0].nodeId,
+      sessionName: cleared[0].sessionName,
+      items: cleared,
+      timeout,
+    });
+  }, [
+    offlineEntries,
+    removeFocusedSession,
+    removeNode,
+    removeSession,
+    selectedNodeId,
+    setDeleteToast,
+    setSelectedNodeId,
+    setSidebarOpen,
+  ]);
+
+  useEffect(() => {
+    setVisibleCount(12);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!inFocusMode) {
+      setFocusRailOpen(false);
+      return;
     }
+    setSessionListOpen(false);
+    setFocusRailOpen(false);
+  }, [inFocusMode, setSessionListOpen]);
 
-    // Sort: needs attention first, then by status priority, then by creation time
-    filtered.sort((a, b) => {
-      const aPriority = statusConfig[a.session.status]?.sortPriority ?? 99;
-      const bPriority = statusConfig[b.session.status]?.sortPriority ?? 99;
-      if (aPriority !== bPriority) return aPriority - bPriority;
-      return new Date(b.session.createdAt).getTime() - new Date(a.session.createdAt).getTime();
-    });
+  useEffect(
+    () => () => {
+      if (focusRailCloseTimerRef.current) {
+        clearTimeout(focusRailCloseTimerRef.current);
+      }
+    },
+    [],
+  );
 
-    return filtered;
-  }, [sessions, nodes, statusFilter, searchQuery]);
+  const openFocusRail = useCallback(() => {
+    if (focusRailCloseTimerRef.current) {
+      clearTimeout(focusRailCloseTimerRef.current);
+      focusRailCloseTimerRef.current = null;
+    }
+    setFocusRailOpen(true);
+  }, []);
 
-  // Status counts for filter badges
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: sessions.size };
-    sessions.forEach((session) => {
-      const s = session.status === "tool_calling" ? "running" : session.status;
-      counts[s] = (counts[s] || 0) + 1;
-    });
-    return counts;
-  }, [sessions]);
+  const scheduleFocusRailClose = useCallback(() => {
+    if (focusRailCloseTimerRef.current) {
+      clearTimeout(focusRailCloseTimerRef.current);
+    }
+    focusRailCloseTimerRef.current = setTimeout(() => {
+      setFocusRailOpen(false);
+      focusRailCloseTimerRef.current = null;
+    }, 450);
+  }, []);
 
   const handleSessionClick = useCallback(
     (nodeId: string) => {
       setSelectedNodeId(nodeId);
-      setSidebarOpen(true);
-      // Zoom to the node on the canvas
-      if (viewMode === "canvas") {
-        const node = nodes.find((n) => n.id === nodeId);
-        if (node) {
-          reactFlow.setCenter(node.position.x + 110, node.position.y + 60, {
-            zoom: 1.2,
-            duration: 400,
-          });
-        }
-      }
-    },
-    [setSelectedNodeId, setSidebarOpen, viewMode, nodes, reactFlow]
-  );
-
-  const handleSessionDoubleClick = useCallback(
-    (nodeId: string) => {
-      // Enter focus mode with this session
-      setViewMode("focus");
-      if (!focusedSessionIds.includes(nodeId)) {
+      if (viewMode === "focus") {
         addFocusedSession(nodeId);
+        setSidebarOpen(false);
+        setFocusRailOpen(false);
+        return;
+      }
+
+      setSidebarOpen(true);
+      if (viewMode !== "canvas") return;
+
+      const node = nodes.find((item) => item.id === nodeId);
+      if (node) {
+        reactFlow.setCenter(node.position.x + 110, node.position.y + 60, {
+          zoom: 1.2,
+          duration: 350,
+        });
       }
     },
-    [setViewMode, focusedSessionIds, addFocusedSession]
+    [addFocusedSession, nodes, reactFlow, setSelectedNodeId, setSidebarOpen, viewMode],
   );
 
-  const handlePinToggle = useCallback(
-    (e: React.MouseEvent, nodeId: string) => {
-      e.stopPropagation();
-      if (focusedSessionIds.includes(nodeId)) {
+  const handleSessionPinToggle = useCallback(
+    (nodeId: string, isPinned: boolean) => {
+      if (isPinned) {
         removeFocusedSession(nodeId);
       } else {
         addFocusedSession(nodeId);
       }
     },
-    [focusedSessionIds, addFocusedSession, removeFocusedSession]
+    [addFocusedSession, removeFocusedSession],
   );
 
-  const handleFocusClick = useCallback(
-    (e: React.MouseEvent, nodeId: string) => {
-      e.stopPropagation();
-      if (!focusedSessionIds.includes(nodeId)) {
-        addFocusedSession(nodeId);
-      }
-      setViewMode("focus");
-    },
-    [addFocusedSession, focusedSessionIds, setViewMode]
-  );
+  const showPanel = inFocusMode ? focusRailOpen : sessionListOpen;
 
-  // Keyboard shortcut: Cmd+K to focus search
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        if (!sessionListOpen) setSessionListOpen(true);
-        setTimeout(() => searchInputRef.current?.focus(), 100);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [sessionListOpen, setSessionListOpen]);
+  if (inFocusMode && !focusRailOpen) {
+    return (
+      <div
+        className="fixed left-0 top-14 bottom-0 z-[70] w-3"
+        onMouseEnter={openFocusRail}
+        title="Show sessions"
+      >
+        <div className="absolute left-0 top-1/2 h-16 w-1 -translate-y-1/2 rounded-r bg-zinc-500/30" />
+      </div>
+    );
+  }
 
-  // Collapsed state — just show a toggle button
-  if (!sessionListOpen) {
+  if (!showPanel) {
     return (
       <button
         onClick={() => setSessionListOpen(true)}
-        className="fixed left-0 top-14 z-40 flex items-center gap-1 px-1.5 py-3 bg-surface border-r border-b border-border rounded-br-lg text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
+        className="fixed left-0 top-14 z-40 flex items-center gap-1 rounded-br-lg border-b border-r border-border bg-surface px-1.5 py-3 text-zinc-500 transition-colors hover:bg-surface-active hover:text-white"
         title="Open session list (Cmd+\\)"
       >
-        <ChevronRight className="w-4 h-4" />
+        <ChevronRight className="h-4 w-4" />
       </button>
     );
   }
 
   return (
-    <motion.div
+    <motion.aside
       initial={{ x: "-100%", opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: "-100%", opacity: 0 }}
       transition={{ type: "spring", stiffness: 400, damping: 40 }}
-      className="fixed left-0 top-14 bottom-0 z-40 w-[280px] flex flex-col bg-canvas-dark border-r border-border"
+      onMouseEnter={() => {
+        if (inFocusMode) openFocusRail();
+      }}
+      onMouseLeave={() => {
+        if (inFocusMode) scheduleFocusRailClose();
+      }}
+      className={`fixed left-0 top-14 bottom-0 flex w-[280px] flex-col border-r border-border bg-canvas-dark ${
+        inFocusMode ? "z-[70] shadow-2xl" : "z-40"
+      }`}
     >
-      {/* Header */}
-      <div className="flex-shrink-0 px-3 py-2.5 border-b border-border">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+      <div className="flex-shrink-0 border-b border-border px-3 py-2.5">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
             Sessions
           </span>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-zinc-700">{allOnlineSessions.length}</span>
+            {offlineEntries.length > 0 && (
+              <button
+                type="button"
+                onClick={handleClearOffline}
+                className="flex h-5 items-center gap-1 rounded px-1 text-zinc-600 transition-colors hover:bg-surface-active hover:text-red-400"
+                title={`Clear ${offlineEntries.length} offline session${offlineEntries.length === 1 ? "" : "s"}`}
+              >
+                <Trash2 className="h-3 w-3" />
+                <span className="text-[10px]">{offlineEntries.length}</span>
+              </button>
+            )}
             <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={`w-6 h-6 rounded flex items-center justify-center transition-colors ${
-                statusFilter !== "all"
-                  ? "text-white bg-surface-active"
-                  : "text-zinc-500 hover:text-white hover:bg-surface-active"
-              }`}
-              title="Filter by status"
+              type="button"
+              onClick={() => {
+                if (inFocusMode) {
+                  setFocusRailOpen(false);
+                } else {
+                  setSessionListOpen(false);
+                }
+              }}
+              className="flex h-5 w-5 items-center justify-center rounded text-zinc-600 transition-colors hover:bg-surface-active hover:text-zinc-200"
+              title="Close sessions"
             >
-              <Filter className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => setSessionListOpen(false)}
-              className="w-6 h-6 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
-              title="Close panel (Cmd+\\)"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
+              <X className="h-3 w-3" />
             </button>
           </div>
         </div>
 
-        {/* Search */}
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
           <input
             ref={searchInputRef}
             type="text"
-            placeholder="Search sessions... (Cmd+K)"
+            placeholder="Search sessions"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-7 py-1.5 rounded-md bg-canvas border border-border text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            className="w-full rounded-md border border-border bg-canvas py-1.5 pl-8 pr-7 text-xs text-white placeholder-zinc-600 transition-colors focus:border-zinc-500 focus:outline-none"
           />
           {searchQuery && (
             <button
               onClick={() => setSearchQuery("")}
               className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+              title="Clear search"
             >
-              <X className="w-3 h-3" />
+              <X className="h-3 w-3" />
             </button>
           )}
         </div>
       </div>
 
-      {/* Status filters */}
-      <AnimatePresence>
-        {showFilters && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="flex-shrink-0 overflow-hidden border-b border-border"
-          >
-            <div className="px-3 py-2 flex flex-wrap gap-1.5">
-              {filterOptions.map((opt) => {
-                const count = statusCounts[opt.value] || 0;
-                const isActive = statusFilter === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => setStatusFilter(opt.value)}
-                    className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
-                      isActive
-                        ? "bg-white/10 text-white ring-1 ring-white/20"
-                        : "bg-canvas text-zinc-500 hover:text-zinc-300 hover:bg-surface-active"
-                    }`}
-                  >
-                    {opt.color && (
-                      <div
-                        className="w-1.5 h-1.5 rounded-full"
-                        style={{ backgroundColor: opt.color }}
-                      />
-                    )}
-                    {opt.label}
-                    {count > 0 && (
-                      <span className="text-zinc-600 ml-0.5">{count}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Session list */}
-      <div className="flex-1 overflow-y-auto">
-        {sessionList.length === 0 ? (
-          <div className="px-4 py-8 text-center">
-            <p className="text-xs text-zinc-600">
-              {sessions.size === 0
-                ? "No sessions yet"
-                : "No sessions match your filters"}
-            </p>
+      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+        {allOnlineSessions.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-zinc-600">
+            {sessions.size === 0 ? "No sessions yet" : "No online sessions"}
           </div>
         ) : (
-          <div className="py-1">
-            {sessionList.map(({ nodeId, session, node }, index) => {
+          <>
+            {visibleGroups.map((group) => {
+              const isCollapsed = !isSearching && collapsedSessionGroups.includes(group.key);
+              const totalInGroup =
+                sessionGroups.find((g) => g.key === group.key)?.entries.length ?? 0;
+              return (
+                <div key={group.key} className="mb-0.5">
+                  {/* Dia/Chrome-style tab group header */}
+                  <button
+                    type="button"
+                    onClick={() => toggleSessionGroup(group.key)}
+                    className="group/header flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-surface"
+                    title={group.key}
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="h-3 w-3 flex-shrink-0 text-zinc-600" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3 flex-shrink-0 text-zinc-600" />
+                    )}
+                    <span
+                      className="h-2 w-2 flex-shrink-0 rounded-full"
+                      style={{ backgroundColor: group.color }}
+                    />
+                    <span
+                      className="truncate text-[10px] font-semibold uppercase tracking-wider"
+                      style={{ color: group.color }}
+                    >
+                      {group.name}
+                    </span>
+                    <span className="ml-auto flex-shrink-0 text-[9px] text-zinc-600">
+                      {totalInGroup}
+                    </span>
+                  </button>
+
+                  {!isCollapsed && (
+                    <div
+                      className="ml-[13px] border-l pl-0"
+                      style={{ borderColor: `${group.color}40` }}
+                    >
+                      {group.entries.map(({ nodeId, session, node }) => {
               const isSelected = selectedNodeId === nodeId;
-              const isPinned = focusedSessionIds.includes(nodeId);
-              const status = statusConfig[session.status] || statusConfig.idle;
-              const displayName = session.customName || session.agentName;
-              const displayColor = session.customColor || session.color || "#888";
-              const iconId = (node?.data?.icon as string) || "cpu";
-              const Icon = iconMap[iconId] || Cpu;
+              const displayName = getSessionTitle({ nodeId, session, node });
+              const displayColor = getAgentAccentColor(
+                session.agentId,
+                session.customColor || session.color,
+              );
+              const iconId = (node?.data?.icon as string) || session.agentId;
               const dirName = session.cwd?.split("/").pop() || "";
-              const toolDisplay = session.currentTool
-                ? toolDisplayNames[session.currentTool] || session.currentTool
-                : null;
+              const statusColor = statusDot[session.status] || statusDot.idle;
+              const isPinned = focusedSessionIds.includes(nodeId);
 
               return (
                 <div
                   key={nodeId}
-                  onClick={() => handleSessionClick(nodeId)}
-                  onDoubleClick={() => handleSessionDoubleClick(nodeId)}
-                  className={`group relative px-3 py-2 cursor-pointer transition-all border-l-2 ${
+                  className={`group/session flex w-full items-start gap-2 border-l-2 pr-2 text-left transition-colors ${
                     isSelected
-                      ? "bg-surface-active border-l-white"
-                      : "border-l-transparent hover:bg-surface hover:border-l-zinc-600"
+                      ? "border-l-zinc-200 bg-surface-active"
+                      : "border-l-transparent hover:border-l-zinc-600 hover:bg-surface"
                   }`}
                 >
-                  <div className="flex items-start gap-2.5">
-                    {/* Icon */}
+                  <button
+                    type="button"
+                    onClick={() => handleSessionClick(nodeId)}
+                    className="flex min-w-0 flex-1 items-start gap-2.5 py-2 pl-3 text-left"
+                  >
                     <div
-                      className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 mt-0.5"
+                      className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md"
                       style={{ backgroundColor: `${displayColor}20` }}
                     >
-                      <Icon className="w-3.5 h-3.5" style={{ color: displayColor }} />
+                      <AgentIcon
+                        agentId={session.agentId}
+                        iconId={iconId}
+                        className="h-4 w-4"
+                        style={{ color: displayColor }}
+                      />
                     </div>
 
-                    {/* Content */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-medium text-white truncate">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-xs font-medium text-zinc-100">
                           {displayName}
                         </span>
-                        {/* Keyboard shortcut hint for first 9 */}
-                        {index < 9 && (
-                          <span className="text-[9px] text-zinc-700 font-mono flex-shrink-0">
-                            {index + 1}
-                          </span>
-                        )}
+                        <span
+                          className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                          style={{ backgroundColor: statusColor }}
+                          title={session.status.replace("_", " ")}
+                        />
                       </div>
-
-                      {/* Status row */}
-                      <div className="flex items-center gap-1.5 mt-0.5">
-                        <div className="relative flex items-center justify-center">
-                          <div
-                            className="w-1.5 h-1.5 rounded-full"
-                            style={{ backgroundColor: status.color }}
-                          />
-                          {(session.status === "running" || session.status === "tool_calling") && (
-                            <div
-                              className="absolute w-2.5 h-2.5 rounded-full animate-ping"
-                              style={{
-                                backgroundColor: status.color,
-                                opacity: 0.3,
-                                animationDuration: "1.5s",
-                              }}
-                            />
+                      {(dirName || session.gitBranch) && (
+                        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[9px] text-zinc-600">
+                          {dirName && (
+                            <span className="flex min-w-0 items-center gap-0.5 font-mono">
+                              <Folder className="h-2 w-2 flex-shrink-0" />
+                              <span className="truncate">{dirName}</span>
+                            </span>
+                          )}
+                          {session.gitBranch && (
+                            <span className="flex min-w-0 items-center gap-0.5 font-mono">
+                              <GitBranch className="h-2 w-2 flex-shrink-0" />
+                              <span className="truncate">{session.gitBranch}</span>
+                            </span>
                           )}
                         </div>
-                        <span
-                          className="text-[10px]"
-                          style={{ color: status.color }}
-                        >
-                          {status.label}
-                        </span>
-                        {session.status === "tool_calling" && toolDisplay && (
-                          <span className="text-[9px] text-zinc-500 flex items-center gap-0.5">
-                            <Wrench className="w-2 h-2" />
-                            {toolDisplay}
-                          </span>
-                        )}
-                        {session.status === "waiting_input" && (
-                          <MessageSquare className="w-2.5 h-2.5" style={{ color: status.color }} />
-                        )}
-                        {session.status === "disconnected" && (
-                          <WifiOff className="w-2.5 h-2.5" style={{ color: status.color }} />
-                        )}
-                      </div>
-
-                      {/* Context row */}
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {dirName && (
-                          <span className="text-[9px] text-zinc-600 font-mono flex items-center gap-0.5 truncate">
-                            <Folder className="w-2 h-2 flex-shrink-0" />
-                            {dirName}
-                          </span>
-                        )}
-                        {session.gitBranch && (
-                          <span className="text-[9px] text-purple-500/70 font-mono flex items-center gap-0.5 truncate">
-                            <GitBranch className="w-2 h-2 flex-shrink-0" />
-                            {session.gitBranch}
-                          </span>
-                        )}
-                      </div>
+                      )}
                     </div>
+                  </button>
 
-                    {/* Action buttons (visible on hover) */}
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                      <button
-                        onClick={(e) => handlePinToggle(e, nodeId)}
-                        className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                          isPinned
-                            ? "text-blue-400 bg-blue-500/10"
-                            : "text-zinc-600 hover:text-zinc-300 hover:bg-surface-active"
-                        }`}
-                        title={isPinned ? "Unpin from focus view" : "Pin to focus view"}
-                      >
-                        {isPinned ? (
-                          <PinOff className="w-2.5 h-2.5" />
-                        ) : (
-                          <Pin className="w-2.5 h-2.5" />
-                        )}
-                      </button>
-                      <button
-                        onClick={(e) => handleFocusClick(e, nodeId)}
-                        className="w-5 h-5 rounded flex items-center justify-center text-zinc-600 hover:text-zinc-300 hover:bg-surface-active transition-colors"
-                        title="Open in focus mode"
-                      >
-                        <Maximize2 className="w-2.5 h-2.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Pin indicator */}
-                  {isPinned && (
-                    <div className="absolute right-1.5 top-1.5">
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                  <button
+                    type="button"
+                    onClick={() => handleSessionPinToggle(nodeId, isPinned)}
+                    className={`mt-2 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
+                      isPinned
+                        ? "text-zinc-100 bg-surface-active"
+                        : "text-zinc-600 hover:bg-surface-active hover:text-zinc-200"
+                    }`}
+                    title={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
+                    aria-label={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
+                  >
+                    <Pin
+                      className="h-3.5 w-3.5"
+                      fill={isPinned ? "currentColor" : "none"}
+                    />
+                  </button>
+                </div>
+              );
+                      })}
                     </div>
                   )}
                 </div>
               );
             })}
-          </div>
+
+            {hasMore && (
+              <div className="px-3 py-2">
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((count) => count + 12)}
+                  className="w-full rounded-md border border-border bg-canvas px-3 py-2 text-xs font-medium text-zinc-500 transition-colors hover:bg-surface hover:text-zinc-200"
+                >
+                  View more
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
-
-      {/* Footer with focus mode toggle */}
-      {focusedSessionIds.length > 0 && (
-        <div className="flex-shrink-0 px-3 py-2 border-t border-border">
-          <button
-            onClick={() => setViewMode(viewMode === "focus" ? "canvas" : "focus")}
-            className={`w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-              viewMode === "focus"
-                ? "bg-blue-500/20 text-blue-400 hover:bg-blue-500/30"
-                : "bg-surface-active text-zinc-300 hover:bg-zinc-700"
-            }`}
-          >
-            <Maximize2 className="w-3 h-3" />
-            {viewMode === "focus"
-              ? `Focus Mode (${focusedSessionIds.length})`
-              : `Enter Focus Mode (${focusedSessionIds.length} pinned)`}
-          </button>
-        </div>
-      )}
-    </motion.div>
+    </motion.aside>
   );
 }

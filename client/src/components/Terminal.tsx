@@ -1,9 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { useStore, AgentStatus } from "../stores/useStore";
+import {
+  clampTerminalFontSize,
+  getTerminalFontFamily,
+  getTerminalTheme,
+  type TerminalThemeId,
+} from "../theme/appearance";
+import { extractLocalPreviewUrls, stripAnsiForUrlScan } from "../utils/localPreview";
 
 interface TerminalProps {
   sessionId: string;
@@ -29,6 +36,18 @@ const FILE_PATH_RE =
   /(?:^|[\s"'`(<\[])((?:~|\.{1,2})?\/[^\s"'`)<>\]]+|[A-Za-z0-9_.-]+\/[^\s"'`)<>\]]+|[A-Za-z0-9_-]+\.[A-Za-z0-9]+)/g;
 
 const MARKDOWN_EXTS = new Set(["md", "markdown", "mdx"]);
+const CLIPBOARD_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/svg+xml",
+]);
+
+type ClipboardUploadState = {
+  phase: "idle" | "uploading" | "done" | "error";
+  message?: string;
+};
 
 function stripTrailingPunct(s: string): string {
   return s.replace(/[.,;:!?)\]'"`>]+$/, "");
@@ -50,12 +69,54 @@ function resolvePath(raw: string, cwd: string | undefined): string {
   return cwd.replace(/\/$/, "") + "/" + p;
 }
 
+function imageExtensionForType(type: string): string {
+  switch (type) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/svg+xml":
+      return "svg";
+    case "image/png":
+    default:
+      return "png";
+  }
+}
+
+function namedClipboardImage(file: File, index: number): File {
+  if (file.name && file.name.trim()) return file;
+  const ext = imageExtensionForType(file.type || "image/png");
+  return new File([file], `clipboard-image-${Date.now()}-${index + 1}.${ext}`, {
+    type: file.type || "image/png",
+    lastModified: Date.now(),
+  });
+}
+
+function clipboardImageFiles(data: DataTransfer): File[] {
+  const files = Array.from(data.files)
+    .filter((file) => CLIPBOARD_IMAGE_TYPES.has(file.type))
+    .map(namedClipboardImage);
+
+  if (files.length > 0) return files;
+
+  return Array.from(data.items)
+    .filter((item) => item.kind === "file" && CLIPBOARD_IMAGE_TYPES.has(item.type))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+    .map(namedClipboardImage);
+}
+
 interface CachedTerminal {
   term: XTerm;
   fitAddon: FitAddon;
   wrapperDiv: HTMLDivElement;
   ws: WebSocket | null;
   kittyModeStack: number[];
+  previewScanBuffer: string;
+  pendingPreviewUrl: string | null;
+  lastUserInputAt: number;
   alive: boolean;
   nodeId: string;
   updateSession: (nodeId: string, update: Record<string, unknown>) => void;
@@ -64,6 +125,19 @@ interface CachedTerminal {
 }
 
 const cache = new Map<string, CachedTerminal>();
+const recentAutoPreviewOpens = new Map<string, number>();
+const AUTO_PREVIEW_SCAN_LIMIT = 1200;
+const AUTO_PREVIEW_COOLDOWN_MS = 45_000;
+// Echo of the user's own typing repaints the TUI frame; skip URL scanning
+// for this long after any keystroke so half-typed prompts never get glued
+// onto a previously printed URL.
+const TYPING_SUPPRESS_MS = 2000;
+// Statuses that mean "the run is over" — the only moment auto-preview is
+// allowed to navigate the browser dock.
+const RUN_DONE_STATUSES: ReadonlySet<AgentStatus> = new Set([
+  "idle",
+  "waiting_input",
+]);
 
 export function destroyCachedTerminal(sessionId: string) {
   const entry = cache.get(sessionId);
@@ -74,40 +148,103 @@ export function destroyCachedTerminal(sessionId: string) {
   cache.delete(sessionId);
 }
 
-function buildTheme(color: string) {
+function buildTheme(color: string, themeId: TerminalThemeId) {
+  const theme = getTerminalTheme(themeId);
   return {
-    background: "#0d0d0d",
-    foreground: "#d4d4d4",
+    background: theme.background,
+    foreground: theme.foreground,
     cursor: color,
-    cursorAccent: "#0d0d0d",
-    selectionBackground: "#3b3b3b",
-    selectionForeground: "#ffffff",
-    black: "#1a1a1a",
-    red: "#f87171",
-    green: "#4ade80",
-    yellow: "#fbbf24",
-    blue: "#60a5fa",
-    magenta: "#c084fc",
-    cyan: "#22d3ee",
-    white: "#d4d4d4",
-    brightBlack: "#525252",
-    brightRed: "#fca5a5",
-    brightGreen: "#86efac",
-    brightYellow: "#fcd34d",
-    brightBlue: "#93c5fd",
-    brightMagenta: "#d8b4fe",
-    brightCyan: "#67e8f9",
-    brightWhite: "#ffffff",
+    cursorAccent: theme.cursorAccent,
+    selectionBackground: theme.selection,
+    selectionForeground: theme.foreground,
+    black: theme.ansi.black,
+    red: theme.ansi.red,
+    green: theme.ansi.green,
+    yellow: theme.ansi.yellow,
+    blue: theme.ansi.blue,
+    magenta: theme.ansi.magenta,
+    cyan: theme.ansi.cyan,
+    white: theme.ansi.white,
+    brightBlack: theme.ansi.brightBlack,
+    brightRed: theme.ansi.brightRed,
+    brightGreen: theme.ansi.brightGreen,
+    brightYellow: theme.ansi.brightYellow,
+    brightBlue: theme.ansi.brightBlue,
+    brightMagenta: theme.ansi.brightMagenta,
+    brightCyan: theme.ansi.brightCyan,
+    brightWhite: theme.ansi.brightWhite,
   };
 }
 
 function createSendInput(sessionId: string) {
   return (data: string) => {
     const e = cache.get(sessionId);
-    if (e?.ws?.readyState === WebSocket.OPEN) {
+    if (!e) return;
+    e.lastUserInputAt = Date.now();
+    if (e.ws?.readyState === WebSocket.OPEN) {
       e.ws.send(JSON.stringify({ type: "input", data }));
     }
   };
+}
+
+function isCurrentOpenUiUrl(url: string): boolean {
+  try {
+    const current = new URL(window.location.href);
+    const preview = new URL(url);
+    return current.protocol === preview.protocol && current.host === preview.host;
+  } catch {
+    return false;
+  }
+}
+
+// Scan output for local preview URLs but DON'T navigate yet — just remember
+// the latest candidate. Navigation only happens at end-of-run (see
+// flushPendingLocalPreview), so the browser dock never changes mid-stream or
+// while the user is typing a prompt.
+function capturePendingLocalPreview(entry: CachedTerminal, output: string) {
+  if (!output) return;
+
+  // TUI repaints triggered by the user's own keystrokes glue typed text onto
+  // previously printed URLs ("simple.html" + half a prompt). Drop the scan
+  // buffer and skip entirely while typing.
+  if (Date.now() - (entry.lastUserInputAt || 0) < TYPING_SUPPRESS_MS) {
+    entry.previewScanBuffer = "";
+    return;
+  }
+
+  const scanText = stripAnsiForUrlScan(`${entry.previewScanBuffer || ""}${output}`);
+  entry.previewScanBuffer = scanText.slice(-AUTO_PREVIEW_SCAN_LIMIT);
+
+  const urls = extractLocalPreviewUrls(scanText);
+  if (urls.length === 0) return;
+
+  const url = urls[urls.length - 1];
+  if (!url || isCurrentOpenUiUrl(url)) return;
+
+  entry.pendingPreviewUrl = url;
+}
+
+// Apply the captured preview URL once the agent's run is over.
+function flushPendingLocalPreview(entry: CachedTerminal) {
+  const url = entry.pendingPreviewUrl;
+  if (!url) return;
+  entry.pendingPreviewUrl = null;
+
+  const store = useStore.getState();
+  const isFocusedSession =
+    store.viewMode === "focus" && store.focusedSessionIds.includes(entry.nodeId);
+  if (isFocusedSession && store.browserPanelOpen && store.browserUrl === url) return;
+
+  const key = `${entry.nodeId}:${url}`;
+  const now = Date.now();
+  const lastOpenedAt = recentAutoPreviewOpens.get(key) || 0;
+  if (now - lastOpenedAt < AUTO_PREVIEW_COOLDOWN_MS) return;
+  recentAutoPreviewOpens.set(key, now);
+
+  store.setBrowserUrl(url);
+  if (isFocusedSession) {
+    store.setBrowserPanelOpen(true);
+  }
 }
 
 function connectWs(
@@ -192,6 +329,7 @@ function connectWs(
           isFirstMessage = false;
           entry.term.write("\x1b[2J\x1b[H\x1b[0m");
         }
+        capturePendingLocalPreview(entry, output);
         entry.term.write(output);
       } else if (msg.type === "status") {
         entry.updateSession(entry.nodeId, {
@@ -199,10 +337,17 @@ function connectWs(
           isRestored: msg.isRestored,
           currentTool: msg.currentTool,
         });
+        // Only navigate the browser dock once the run has finished.
+        if (RUN_DONE_STATUSES.has(msg.status as AgentStatus)) {
+          flushPendingLocalPreview(entry);
+        }
       } else if (msg.type === "nameGenerated") {
         entry.updateSession(entry.nodeId, { customName: msg.name });
       }
     } catch {
+      if (typeof event.data === "string") {
+        capturePendingLocalPreview(entry, event.data);
+      }
       entry.term.write(event.data);
     }
   };
@@ -224,8 +369,17 @@ export function Terminal({
   onReady,
 }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
+  const terminalThemeId = useStore((state) => state.terminalTheme);
+  const terminalFontFamilyId = useStore((state) => state.terminalFontFamily);
+  const terminalFontSize = useStore((state) => state.terminalFontSize);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [clipboardUpload, setClipboardUpload] = useState<ClipboardUploadState>({
+    phase: "idle",
+  });
+  const terminalTheme = getTerminalTheme(terminalThemeId);
+  const terminalFont = getTerminalFontFamily(terminalFontFamilyId);
+  const clampedFontSize = clampTerminalFontSize(terminalFontSize);
 
   // Keep mutable bindings current on every render
   useEffect(() => {
@@ -238,16 +392,36 @@ export function Terminal({
     }
   });
 
-  // Sync cursor color without remounting
+  // Sync presentation without remounting or dropping the PTY connection.
   useEffect(() => {
     const entry = cache.get(sessionId);
     if (entry) {
-      entry.term.options.theme = { ...entry.term.options.theme, cursor: color };
+      entry.term.options.theme = buildTheme(color, terminalThemeId);
+      entry.term.options.fontFamily = terminalFont.stack;
+      entry.term.options.fontSize = clampedFontSize;
+      entry.term.options.lineHeight = 1.42;
+      entry.wrapperDiv.style.backgroundColor = terminalTheme.background;
+      entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+      const fitTimer = setTimeout(() => entry.fitAddon.fit(), 0);
+      return () => clearTimeout(fitTimer);
     }
-  }, [sessionId, color]);
+  }, [
+    sessionId,
+    color,
+    terminalThemeId,
+    terminalTheme.background,
+    terminalFont.stack,
+    clampedFontSize,
+  ]);
 
   useEffect(() => {
     if (!containerRef.current || !sessionId) return;
+
+    // Captured so cleanups only detach the terminal from THIS container.
+    // Another mount point (canvas card / focus pane / sidebar) may have
+    // adopted the wrapperDiv by the time our cleanup runs — removing it
+    // from its new parent leaves that pane black.
+    const container = containerRef.current;
 
     const existing = cache.get(sessionId);
 
@@ -258,7 +432,7 @@ export function Terminal({
       existing.cwd = cwd;
       existing.onOpenFile = onOpenFile;
 
-      containerRef.current.appendChild(existing.wrapperDiv);
+      container.appendChild(existing.wrapperDiv);
 
       const f1 = setTimeout(() => existing.fitAddon.fit(), 50);
       const f2 = setTimeout(() => existing.fitAddon.fit(), 300);
@@ -294,8 +468,8 @@ export function Terminal({
         clearTimeout(f2);
         clearTimeout(resizeTimer);
         ro.disconnect();
-        if (existing.wrapperDiv.parentNode) {
-          existing.wrapperDiv.parentNode.removeChild(existing.wrapperDiv);
+        if (existing.wrapperDiv.parentNode === container) {
+          container.removeChild(existing.wrapperDiv);
         }
       };
     }
@@ -304,16 +478,17 @@ export function Terminal({
     const wrapperDiv = document.createElement("div");
     wrapperDiv.style.width = "100%";
     wrapperDiv.style.height = "100%";
+    wrapperDiv.style.backgroundColor = terminalTheme.background;
 
     const term = new XTerm({
       cursorBlink: true,
       cursorStyle: "bar",
-      fontSize: 12,
-      fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, monospace',
+      fontSize: clampedFontSize,
+      fontFamily: terminalFont.stack,
       fontWeight: "400",
-      lineHeight: 1.4,
+      lineHeight: 1.42,
       letterSpacing: 0,
-      theme: buildTheme(color),
+      theme: buildTheme(color, terminalThemeId),
       allowProposedApi: true,
       scrollback: 10000,
     });
@@ -324,7 +499,7 @@ export function Terminal({
     term.open(wrapperDiv);
     term.write("\x1b[0m\x1b[?25h");
 
-    containerRef.current.appendChild(wrapperDiv);
+    container.appendChild(wrapperDiv);
 
     const entry: CachedTerminal = {
       term,
@@ -332,6 +507,9 @@ export function Terminal({
       wrapperDiv,
       ws: null,
       kittyModeStack: [0],
+      previewScanBuffer: "",
+      pendingPreviewUrl: null,
+      lastUserInputAt: 0,
       alive: true,
       nodeId,
       updateSession,
@@ -447,9 +625,10 @@ export function Terminal({
       clearTimeout(fit2);
       clearTimeout(resizeTimer);
       ro.disconnect();
-      // Detach from DOM but keep the terminal alive in cache
-      if (wrapperDiv.parentNode) {
-        wrapperDiv.parentNode.removeChild(wrapperDiv);
+      // Detach from DOM but keep the terminal alive in cache. Only detach
+      // if we still own it — another pane may have adopted it.
+      if (wrapperDiv.parentNode === container) {
+        container.removeChild(wrapperDiv);
       }
     };
   }, [sessionId]); // Only remount when sessionId changes
@@ -493,20 +672,97 @@ export function Terminal({
     entry?.term.focus();
   };
 
+  const uploadClipboardImages = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+
+      setClipboardUpload({
+        phase: "uploading",
+        message: `Attaching ${files.length} image${files.length === 1 ? "" : "s"}...`,
+      });
+
+      try {
+        const formData = new FormData();
+        files.forEach((file) => formData.append("files", file));
+
+        const res = await fetch(`/api/sessions/${sessionId}/upload`, {
+          method: "POST",
+          body: formData,
+        });
+        const body = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(body.error || `Upload failed (${res.status})`);
+        }
+
+        const saved = Array.isArray(body.saved) ? body.saved.length : 0;
+        const skipped = Array.isArray(body.skipped) ? body.skipped.length : 0;
+
+        if (saved === 0) {
+          throw new Error(skipped > 0 ? "Image type was skipped" : "No image was saved");
+        }
+
+        setClipboardUpload({
+          phase: "done",
+          message:
+            skipped > 0
+              ? `Attached ${saved}, skipped ${skipped}`
+              : `Attached ${saved} image${saved === 1 ? "" : "s"}`,
+        });
+        setTimeout(() => {
+          setClipboardUpload((state) =>
+            state.phase === "done" ? { phase: "idle" } : state,
+          );
+        }, 1800);
+      } catch (error) {
+        setClipboardUpload({
+          phase: "error",
+          message: error instanceof Error ? error.message : "Image upload failed",
+        });
+        setTimeout(() => {
+          setClipboardUpload((state) =>
+            state.phase === "error" ? { phase: "idle" } : state,
+          );
+        }, 2800);
+      } finally {
+        cache.get(sessionId)?.term.focus();
+      }
+    },
+    [sessionId],
+  );
+
+  const handlePasteCapture = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const images = clipboardImageFiles(e.clipboardData);
+      if (images.length === 0) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      void uploadClipboardImages(images);
+    },
+    [uploadClipboardImages],
+  );
+
   return (
     <div
+      onPasteCapture={handlePasteCapture}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className="relative w-full h-full"
-      style={{ minHeight: "200px" }}
+      style={{
+        minHeight: "200px",
+        backgroundColor: terminalTheme.surface,
+      }}
     >
       <div
         ref={containerRef}
         className="w-full h-full"
         style={{
-          padding: "12px",
-          backgroundColor: "#0d0d0d",
+          padding: "14px",
+          backgroundColor: terminalTheme.background,
+          border: `1px solid ${terminalTheme.border}`,
+          boxShadow: `inset 0 1px 0 ${terminalTheme.foreground}0f`,
           minHeight: "200px",
           overflow: "hidden",
         }}
@@ -530,6 +786,35 @@ export function Terminal({
           >
             Drop to insert path
           </div>
+        </div>
+      )}
+      {clipboardUpload.phase !== "idle" && clipboardUpload.message && (
+        <div
+          className="pointer-events-none absolute bottom-3 right-3 rounded-md border px-2.5 py-1.5 text-[11px] shadow-lg"
+          style={{
+            backgroundColor: terminalTheme.surface,
+            borderColor:
+              clipboardUpload.phase === "error"
+                ? "#EF444466"
+                : terminalTheme.border,
+            color:
+              clipboardUpload.phase === "error"
+                ? "#FCA5A5"
+                : terminalTheme.foreground,
+          }}
+        >
+          <span
+            className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle"
+            style={{
+              backgroundColor:
+                clipboardUpload.phase === "uploading"
+                  ? color
+                  : clipboardUpload.phase === "error"
+                    ? "#EF4444"
+                    : "#22C55E",
+            }}
+          />
+          {clipboardUpload.message}
         </div>
       )}
     </div>

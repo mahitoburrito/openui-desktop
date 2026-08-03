@@ -1,0 +1,167 @@
+import { BrowserWindow, WebContentsView, ipcMain, shell } from "electron";
+
+interface BrowserBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+let view: WebContentsView | null = null;
+let host: BrowserWindow | null = null;
+let lastBounds: BrowserBounds | null = null;
+let currentUrl = "";
+
+const CHANNELS = [
+  "browser:open",
+  "browser:setBounds",
+  "browser:navigate",
+  "browser:reload",
+  "browser:back",
+  "browser:forward",
+  "browser:hide",
+  "browser:close",
+];
+
+function normalizeUrl(input: string): string {
+  const url = input.trim();
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  if (/^localhost(:\d+)?/i.test(url) || /^\d+\.\d+\.\d+\.\d+/.test(url)) {
+    return `http://${url}`;
+  }
+  return `https://${url}`;
+}
+
+function emitState() {
+  if (!host || host.isDestroyed() || !view) return;
+  const wc = view.webContents;
+  host.webContents.send("browser:state", {
+    url: wc.getURL(),
+    title: wc.getTitle(),
+    canGoBack: wc.navigationHistory.canGoBack(),
+    canGoForward: wc.navigationHistory.canGoForward(),
+    loading: wc.isLoading(),
+  });
+}
+
+function ensureView(): WebContentsView {
+  if (view) return view;
+
+  view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  if (host) host.contentView.addChildView(view);
+  const wc = view.webContents;
+  wc.on("did-navigate", emitState);
+  wc.on("did-navigate-in-page", emitState);
+  wc.on("did-start-loading", emitState);
+  wc.on("did-stop-loading", emitState);
+  wc.on("page-title-updated", emitState);
+  wc.setWindowOpenHandler(({ url }) => {
+    wc.loadURL(url).catch(() => shell.openExternal(url));
+    return { action: "deny" };
+  });
+
+  return view;
+}
+
+function applyBounds() {
+  if (!view || !lastBounds) return;
+  view.setBounds({
+    x: Math.max(0, Math.round(lastBounds.x)),
+    y: Math.max(0, Math.round(lastBounds.y)),
+    width: Math.max(1, Math.round(lastBounds.width)),
+    height: Math.max(1, Math.round(lastBounds.height)),
+  });
+}
+
+function removeExistingHandlers() {
+  for (const channel of CHANNELS) {
+    ipcMain.removeHandler(channel);
+  }
+}
+
+export function registerBrowserViewIpc(window: BrowserWindow) {
+  host = window;
+  removeExistingHandlers();
+
+  ipcMain.handle("browser:open", async (_event, url: string) => {
+    const target = normalizeUrl(url || currentUrl);
+    if (!target) return { ok: false };
+    const browserView = ensureView();
+    browserView.setVisible(true);
+    applyBounds();
+    if (target !== currentUrl || browserView.webContents.getURL() !== target) {
+      currentUrl = target;
+      await browserView.webContents.loadURL(target).catch(() => undefined);
+    }
+    emitState();
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:setBounds", (_event, bounds: BrowserBounds) => {
+    lastBounds = bounds;
+    applyBounds();
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:navigate", async (_event, url: string) => {
+    const target = normalizeUrl(url);
+    if (!target) return { ok: false };
+    const browserView = ensureView();
+    browserView.setVisible(true);
+    currentUrl = target;
+    await browserView.webContents.loadURL(target).catch(() => undefined);
+    emitState();
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:reload", () => {
+    view?.webContents.reload();
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:back", () => {
+    if (view?.webContents.navigationHistory.canGoBack()) {
+      view.webContents.navigationHistory.goBack();
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:forward", () => {
+    if (view?.webContents.navigationHistory.canGoForward()) {
+      view.webContents.navigationHistory.goForward();
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:hide", () => {
+    view?.setVisible(false);
+    return { ok: true };
+  });
+
+  ipcMain.handle("browser:close", () => {
+    destroyBrowserView();
+    return { ok: true };
+  });
+}
+
+export function destroyBrowserView() {
+  if (view && host && !host.isDestroyed()) {
+    try {
+      host.contentView.removeChildView(view);
+      view.webContents.close();
+    } catch {
+      // Window is already tearing down.
+    }
+  }
+  view = null;
+  lastBounds = null;
+  currentUrl = "";
+}

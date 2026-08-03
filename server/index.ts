@@ -8,7 +8,12 @@ import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { apiRoutes } from "./routes/api";
 import { prbeRoutes } from "./routes/prbe";
-import { sessions, restoreSessions, setServerPort } from "./services/sessionManager";
+import {
+  sessions,
+  restoreSessions,
+  scheduleSessionTitleGeneration,
+  setServerPort,
+} from "./services/sessionManager";
 import { saveState } from "./services/persistence";
 
 const PREFERRED_PORT = Number(process.env.PORT) || 6968;
@@ -155,38 +160,27 @@ export async function startServer(): Promise<number> {
                 session.pty.write(msg.data);
                 session.lastInputTime = Date.now();
 
-                // Auto-generate session name from first query
-                if (!session.nameGenerated && !session.customName) {
-                  if (session.firstInputBuffer === undefined) {
-                    session.firstInputBuffer = "";
+                // Keep auto-generated titles fresh from submitted terminal prompts.
+                // Claude's UserPromptSubmit hook is better structured; this is the
+                // fallback for agents or shells without that hook.
+                if (session.firstInputBuffer === undefined) {
+                  session.firstInputBuffer = "";
+                }
+                if (msg.data.includes("\r") || msg.data.includes("\n")) {
+                  const remaining = msg.data.split(/[\r\n]/)[0];
+                  session.firstInputBuffer += remaining;
+                  const query = session.firstInputBuffer.trim();
+                  if (query.length > 0) {
+                    scheduleSessionTitleGeneration(sessionId, query);
                   }
-                  if (msg.data.includes("\r") || msg.data.includes("\n")) {
-                    const remaining = msg.data.split(/[\r\n]/)[0];
-                    session.firstInputBuffer += remaining;
-                    const query = session.firstInputBuffer.trim();
-                    if (query.length > 0) {
-                      let name = query.length <= 40
-                        ? query
-                        : query.slice(0, 40).replace(/\s+\S*$/, "").trim() + "\u2026";
-                      name = name.charAt(0).toUpperCase() + name.slice(1);
-                      session.customName = name;
-                      session.nameGenerated = true;
-                      saveState(sessions);
-                      for (const client of session.clients) {
-                        if (client.readyState === WebSocket.OPEN) {
-                          client.send(JSON.stringify({ type: "nameGenerated", name }));
-                        }
-                      }
-                    }
-                    session.firstInputBuffer = undefined;
-                  } else {
-                    if (msg.data === "\x7f" || msg.data === "\b") {
-                      session.firstInputBuffer = session.firstInputBuffer.slice(0, -1);
-                    } else if (msg.data.length === 1 && msg.data.charCodeAt(0) >= 32) {
-                      session.firstInputBuffer += msg.data;
-                    } else if (msg.data.length > 1 && !msg.data.startsWith("\x1b")) {
-                      session.firstInputBuffer += msg.data;
-                    }
+                  session.firstInputBuffer = "";
+                } else {
+                  if (msg.data === "\x7f" || msg.data === "\b") {
+                    session.firstInputBuffer = session.firstInputBuffer.slice(0, -1);
+                  } else if (msg.data.length === 1 && msg.data.charCodeAt(0) >= 32) {
+                    session.firstInputBuffer += msg.data;
+                  } else if (msg.data.length > 1 && !msg.data.startsWith("\x1b")) {
+                    session.firstInputBuffer += msg.data;
                   }
                 }
               }

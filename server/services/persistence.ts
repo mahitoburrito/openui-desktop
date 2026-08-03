@@ -63,11 +63,14 @@ export function saveState(sessions: Map<string, Session>) {
       originalCwd: session.originalCwd,
       createdAt: session.createdAt,
       customName: session.customName,
+      generatedTitle: session.generatedTitle,
+      titlePromptHistory: session.titlePromptHistory,
       customColor: session.customColor,
       notes: session.notes,
       icon: session.icon,
       position: session.position || existingNode?.position || { x: 0, y: 0 },
       worktreePaths: session.worktreePaths,
+      launchCheckpoint: session.launchCheckpoint,
     });
 
     saveBuffer(sessionId, session.outputBuffer);
@@ -124,4 +127,3 @@ export function loadBuffer(sessionId: string): string[] {
   }
   return [];
 }
-

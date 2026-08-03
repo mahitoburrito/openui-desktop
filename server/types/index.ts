@@ -3,6 +3,34 @@ import type WebSocket from "ws";
 
 export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error";
 
+export interface CheckpointSummary {
+  id: string;
+  repoRoot: string;
+  name: string;
+  createdAt: number;
+  files: { path: string; exists: boolean }[];
+  source?: "manual" | "session-launch";
+  sessionId?: string;
+  nodeId?: string;
+}
+
+export interface AgentChangeSummary {
+  sessionId: string;
+  nodeId: string;
+  repoRoot: string;
+  changedFileCount: number;
+  added: number;
+  removed: number;
+  summary: string;
+  files: {
+    path: string;
+    status: string;
+    added: number;
+    removed: number;
+    untracked: boolean;
+  }[];
+}
+
 export interface Session {
   pty: IPty | null;
   agentId: string;
@@ -33,6 +61,7 @@ export interface Session {
   ticketId?: string;
   ticketTitle?: string;
   ticketUrl?: string;
+  launchCheckpoint?: CheckpointSummary;
   // Plugin-reported status
   pluginReportedStatus?: boolean;
   lastPluginStatusTime?: number;
@@ -47,6 +76,8 @@ export interface Session {
   // Auto-naming from first query
   firstInputBuffer?: string;
   nameGenerated?: boolean;
+  generatedTitle?: string;
+  titlePromptHistory?: string[];
   // Soft delete
   pendingDelete?: boolean;
   deleteTimeout?: ReturnType<typeof setTimeout>;
@@ -69,6 +100,7 @@ export interface LinearConfig {
   defaultBaseBranch?: string;
   createWorktree?: boolean;
   ticketPromptTemplate?: string;
+  initialPrompt?: string;
   autoCareful?: boolean;
 }
 
@@ -82,11 +114,14 @@ export interface PersistedNode {
   originalCwd?: string;
   createdAt: string;
   customName?: string;
+  generatedTitle?: string;
+  titlePromptHistory?: string[];
   customColor?: string;
   notes?: string;
   icon?: string;
   position: { x: number; y: number };
   worktreePaths?: Record<string, string>;
+  launchCheckpoint?: CheckpointSummary;
 }
 
 export interface PersistedCategory {

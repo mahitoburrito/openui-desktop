@@ -15,22 +15,81 @@ export function useKeyboardShortcuts() {
         focusedSessionIds,
         sessions,
         nodes,
+        selectedNodeId,
         setSelectedNodeId,
         setSidebarOpen,
         addFocusedSession,
+        setCommandPaletteOpen,
+        activityCenterOpen,
+        setActivityCenterOpen,
+        browserPanelOpen,
+        setBrowserPanelOpen,
       } = useStore.getState();
 
-      // Escape — exit focus / markdown mode
-      if (e.key === "Escape" && (viewMode === "focus" || viewMode === "markdown")) {
+      // Escape — close transient panels first
+      if (e.key === "Escape" && activityCenterOpen) {
+        e.preventDefault();
+        setActivityCenterOpen(false);
+        return;
+      }
+
+      // Cmd+K / Cmd+Shift+P — command palette
+      if (
+        ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") ||
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "p")
+      ) {
+        e.preventDefault();
+        setCommandPaletteOpen(true);
+        return;
+      }
+
+      // Cmd+Shift+A — agent activity center
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        setActivityCenterOpen(true);
+        return;
+      }
+
+      // Escape - close focus-mode browser dock before exiting focus mode
+      if (e.key === "Escape" && viewMode === "focus" && browserPanelOpen) {
+        e.preventDefault();
+        setBrowserPanelOpen(false);
+        return;
+      }
+
+      // Escape — exit focus / diff mode
+      if (
+        e.key === "Escape" &&
+        (viewMode === "focus" ||
+          viewMode === "diff")
+      ) {
         e.preventDefault();
         setViewMode("canvas");
         return;
       }
 
-      // Cmd+Shift+M — toggle markdown viewer
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "m" || e.key === "M")) {
+      // Cmd+Shift+D — toggle diff viewer
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
-        setViewMode(viewMode === "markdown" ? "canvas" : "markdown");
+        setViewMode(viewMode === "diff" ? "canvas" : "diff");
+        return;
+      }
+
+      // Cmd+Shift+B — toggle embedded browser
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        if (viewMode !== "focus") {
+          if (selectedNodeId && sessions.has(selectedNodeId)) {
+            addFocusedSession(selectedNodeId);
+          } else if (focusedSessionIds.length === 0) {
+            return;
+          }
+          setSidebarOpen(false);
+          setViewMode("focus");
+          setBrowserPanelOpen(true);
+          return;
+        }
+        setBrowserPanelOpen(!browserPanelOpen);
         return;
       }
 

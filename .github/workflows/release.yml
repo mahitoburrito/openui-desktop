@@ -64,7 +64,9 @@ jobs:
             platform: mac
             arch: x64
             targets: dmg zip
-          - os: windows-latest
+          # Pinned: windows-latest (2025 image) breaks node-gyp's Visual Studio
+          # detection, so node-pty fails to compile (runs red since 2026-06-09).
+          - os: windows-2022
             platform: win
             arch: x64
             targets: nsis zip
@@ -100,6 +102,10 @@ jobs:
         run: echo '{"prbeApiKey":"'"$PRBE_API_KEY"'"}' > resources/default-config.json
         env:
           PRBE_API_KEY: ${{ secrets.PRBE_API_KEY }}
+
+      - name: Mark release-channel build (enables auto-update by default)
+        run: echo '{"channel":"release"}' > resources/build-info.json
+        shell: bash
 
       - name: Set version from tag
         run: npm version ${{ needs.version.outputs.version }} --no-git-tag-version

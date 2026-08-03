@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, type CSSProperties } from "react";
 import {
   ReactFlow,
   Background,
@@ -12,17 +12,23 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Plus } from "lucide-react";
 
-import { useStore } from "./stores/useStore";
+import { useStore, type AgentSession } from "./stores/useStore";
+import { getWorkspaceBackground } from "./theme/appearance";
 import { AgentNode } from "./components/AgentNode/index";
 import { CategoryNode } from "./components/CategoryNode";
 import { Sidebar } from "./components/Sidebar";
 import { SessionListPanel } from "./components/SessionListPanel";
 import { FocusMode } from "./components/FocusMode";
 import { MarkdownView } from "./components/MarkdownView";
+import { DiffView } from "./components/DiffView";
+import { BrowserView } from "./components/BrowserView";
 import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
 import { UndoDeleteToast } from "./components/UndoDeleteToast";
+import { AgentActivityCenter } from "./components/AgentActivityCenter";
+import { CommandPalette } from "./components/CommandPalette";
+import { getAgentAccentColor } from "./components/AgentIcon";
 import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
 import { usePRBEIPC } from "./hooks/usePRBEIPC";
@@ -34,6 +40,105 @@ const nodeTypes = {
   agent: AgentNode,
   category: CategoryNode,
 };
+
+// Remember the last repo we auto-opened so a single finish event doesn't keep
+// re-triggering while the user is already looking at that repo's diff.
+let lastAutoOpenedRepo: string | null = null;
+
+// When an agent finishes, surface the diff viewer if its repo has uncommitted
+// changes — but never yank the user out of a view they deliberately opened.
+async function maybeAutoOpenDiff(repo: string | undefined) {
+  if (!repo) return;
+  const {
+    diffAutoOpen,
+    viewMode,
+    setDiffRepoPath,
+    setViewMode,
+  } = useStore.getState();
+
+  if (!diffAutoOpen) return;
+  // Only auto-open from the canvas; respect focus/markdown/diff views.
+  if (viewMode !== "canvas") return;
+  // Already showing this repo — don't re-trigger.
+  if (lastAutoOpenedRepo === repo) return;
+
+  try {
+    const res = await fetch(`/api/diff/files?path=${encodeURIComponent(repo)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.error || !Array.isArray(data.files) || data.files.length === 0) return;
+
+    // Re-check the view in case the user navigated during the fetch.
+    if (useStore.getState().viewMode !== "canvas") return;
+    lastAutoOpenedRepo = repo;
+    setDiffRepoPath(repo);
+    setViewMode("diff");
+  } catch {
+    // Network/path error — silently skip auto-open.
+  }
+}
+
+function restoreServerSessionToCanvas(sessionData: any) {
+  if (!sessionData?.nodeId || !sessionData?.sessionId) return;
+
+  const {
+    sessions,
+    nodes,
+    agents,
+    addSession,
+    addNode,
+  } = useStore.getState();
+
+  if (sessions.has(sessionData.nodeId)) return;
+
+  const agent = agents.find((item) => item.id === sessionData.agentId);
+  const color = getAgentAccentColor(
+    sessionData.agentId,
+    sessionData.customColor || agent?.color,
+  );
+  const restoredSession: AgentSession = {
+    id: sessionData.nodeId,
+    sessionId: sessionData.sessionId,
+    agentId: sessionData.agentId,
+    agentName: sessionData.agentName,
+    command: sessionData.command,
+    color,
+    createdAt: sessionData.createdAt,
+    cwd: sessionData.cwd,
+    originalCwd: sessionData.originalCwd,
+    gitBranch: sessionData.gitBranch,
+    status: sessionData.status || "idle",
+    customName: sessionData.customName,
+    customColor: sessionData.customColor,
+    notes: sessionData.notes,
+    isRestored: sessionData.isRestored,
+    ticketId: sessionData.ticketId,
+    ticketTitle: sessionData.ticketTitle,
+    worktreePaths: sessionData.worktreePaths,
+    launchCheckpoint: sessionData.launchCheckpoint,
+    changeSummary: sessionData.changeSummary,
+  };
+
+  addSession(sessionData.nodeId, restoredSession);
+
+  if (nodes.some((node) => node.id === sessionData.nodeId)) return;
+  const index = nodes.length;
+  addNode({
+    id: sessionData.nodeId,
+    type: "agent",
+    position: {
+      x: 120 + (index % 5) * 240,
+      y: 120 + Math.floor(index / 5) * 160,
+    },
+    data: {
+      label: sessionData.customName || sessionData.agentName,
+      agentId: sessionData.agentId,
+      color,
+      icon: agent?.icon || "cpu",
+      sessionId: sessionData.sessionId,
+    },
+  });
+}
 
 function AppContent() {
   const {
@@ -53,11 +158,17 @@ function AppContent() {
     setNewSessionForNodeId,
     sessions,
     sessionListOpen,
+    viewMode,
+    browserPanelOpen,
+    browserPanelWidth,
+    workspaceBackground,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
+  const workspace = getWorkspaceBackground(workspaceBackground);
   const positionUpdateTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasRestoredRef = useRef(false);
+  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
 
   // Initialize PRBE IPC listeners
   usePRBEIPC();
@@ -65,7 +176,7 @@ function AppContent() {
   // Initialize keyboard shortcuts
   useKeyboardShortcuts();
 
-  // Desktop notifications when sessions need attention and window is unfocused
+  // Record session status changes for the quiet header activity bell.
   useDesktopNotifications();
 
   // Sync nodes with store
@@ -100,12 +211,64 @@ function AppContent() {
         if (res.ok) {
           const sessionsData = await res.json();
           const currentSessions = useStore.getState().sessions;
+          const serverNodeIds = new Set(
+            sessionsData
+              .map((sessionData: any) => sessionData.nodeId)
+              .filter((nodeId: unknown): nodeId is string => typeof nodeId === "string"),
+          );
+
+          if (hasRestoredRef.current) {
+            for (const [nodeId, session] of currentSessions) {
+              if (serverNodeIds.has(nodeId)) continue;
+
+              const state = useStore.getState();
+              destroyCachedTerminal(session.sessionId);
+              state.removeSession(nodeId);
+              state.removeNode(nodeId);
+              if (state.selectedNodeId === nodeId) {
+                state.setSelectedNodeId(null);
+                state.setSidebarOpen(false);
+              }
+            }
+          }
+
           for (const sessionData of sessionsData) {
             if (sessionData.nodeId && sessionData.status) {
               const existing = currentSessions.get(sessionData.nodeId);
-              if (existing && existing.status !== sessionData.status) {
-                console.log(`[poll] Updating ${sessionData.nodeId} status: ${existing.status} -> ${sessionData.status}`);
-                updateSession(sessionData.nodeId, { status: sessionData.status });
+              if (!existing && hasRestoredRef.current) {
+                restoreServerSessionToCanvas(sessionData);
+                continue;
+              }
+              if (existing) {
+                const sessionUpdates: Partial<AgentSession> = {};
+                if (existing.status !== sessionData.status) {
+                  sessionUpdates.status = sessionData.status;
+                  console.log(`[poll] Updating ${sessionData.nodeId} status: ${existing.status} -> ${sessionData.status}`);
+                }
+                if (existing.customName !== sessionData.customName) {
+                  sessionUpdates.customName = sessionData.customName;
+                  const title = sessionData.customName || existing.agentName;
+                  const node = useStore.getState().nodes.find((item) => item.id === sessionData.nodeId);
+                  if (node) {
+                    useStore.getState().updateNode(sessionData.nodeId, {
+                      data: { ...node.data, label: title },
+                    });
+                  }
+                }
+
+                if (Object.keys(sessionUpdates).length > 0) {
+                  updateSession(sessionData.nodeId, sessionUpdates);
+                }
+
+                if (existing.status !== sessionData.status) {
+                // An agent just finished working (active -> idle). If its repo
+                // has uncommitted changes, surface the diff viewer automatically.
+                const wasActive =
+                  existing.status === "running" || existing.status === "tool_calling";
+                if (wasActive && sessionData.status === "idle") {
+                  maybeAutoOpenDiff(existing.originalCwd || existing.cwd);
+                }
+                }
               }
             }
           }
@@ -120,6 +283,50 @@ function AppContent() {
     const interval = setInterval(pollStatus, 1000);
     return () => clearInterval(interval);
   }, [updateSession]);
+
+  // Poll repo change summaries so each agent card can show a source-control badge.
+  useEffect(() => {
+    const pollChangeSummaries = async () => {
+      const currentSessions = useStore.getState().sessions;
+      if (currentSessions.size === 0) return;
+
+      try {
+        const res = await fetch("/api/sessions/changes");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!Array.isArray(data.summaries)) return;
+
+        const summariesByNode = new Map<string, any>(
+          data.summaries.map((summary: any) => [summary.nodeId, summary]),
+        );
+        for (const [nodeId, session] of currentSessions) {
+          const nextSummary = summariesByNode.get(nodeId);
+          const currentCount = session.changeSummary?.changedFileCount ?? 0;
+          const nextCount = nextSummary?.changedFileCount ?? 0;
+          const currentShape = `${currentCount}:${session.changeSummary?.added ?? 0}:${session.changeSummary?.removed ?? 0}`;
+          const nextShape = `${nextCount}:${nextSummary?.added ?? 0}:${nextSummary?.removed ?? 0}`;
+
+          if (currentShape !== nextShape || session.changeSummary?.repoRoot !== nextSummary?.repoRoot) {
+            updateSession(nodeId, { changeSummary: nextSummary });
+          }
+        }
+      } catch {
+        // Ignore transient git/server errors.
+      }
+    };
+
+    pollChangeSummaries();
+    const interval = setInterval(pollChangeSummaries, 5000);
+    return () => clearInterval(interval);
+  }, [sessions.size, updateSession]);
+
+  // Once the user leaves the diff view, clear the auto-open guard so a later
+  // agent finish on the same repo can surface the diff again.
+  useEffect(() => {
+    if (viewMode !== "diff") {
+      lastAutoOpenedRepo = null;
+    }
+  }, [viewMode]);
 
   // Restore sessions and categories after agents are loaded
   useEffect(() => {
@@ -167,7 +374,7 @@ function AppContent() {
             agentId: session.agentId,
             agentName: session.agentName,
             command: session.command,
-            color: session.customColor || agent?.color || "#888",
+            color: getAgentAccentColor(session.agentId, session.customColor || agent?.color),
             createdAt: session.createdAt,
             cwd: session.cwd,
             originalCwd: session.originalCwd,
@@ -179,6 +386,9 @@ function AppContent() {
             isRestored: session.isRestored,
             ticketId: session.ticketId,
             ticketTitle: session.ticketTitle,
+            worktreePaths: session.worktreePaths,
+            launchCheckpoint: session.launchCheckpoint,
+            changeSummary: session.changeSummary,
           });
 
           restoredNodes.push({
@@ -188,7 +398,7 @@ function AppContent() {
             data: {
               label: session.customName || session.agentName,
               agentId: session.agentId,
-              color: session.customColor || agent?.color || "#888",
+              color: getAgentAccentColor(session.agentId, session.customColor || agent?.color),
               icon: agent?.icon || "cpu",
               sessionId: session.sessionId,
             },
@@ -346,77 +556,99 @@ function AppContent() {
   const isEmpty = nodes.length === 0;
 
   return (
-    <div className="w-screen h-screen bg-canvas overflow-hidden flex flex-col">
+    <div
+      className="w-screen h-screen bg-canvas overflow-hidden flex flex-col"
+      style={{
+        background: workspace.canvas,
+        "--workspace-bg": workspace.canvas,
+        "--workspace-bg-dark": workspace.canvasDark,
+        "--workspace-dots": workspace.dots,
+        "--workspace-controls": workspace.controls,
+        "--workspace-border": workspace.border,
+      } as CSSProperties}
+    >
       <Header />
 
-      <div className="flex-1 relative">
-        {/* Session List Panel (left sidebar) */}
-        <SessionListPanel />
-
-        {/* Canvas area — shifts right when session list is open */}
+      <div className="flex-1 relative min-h-0">
         <div
-          className="absolute inset-0 transition-all duration-300"
-          style={{ left: sessionListOpen ? 280 : 0 }}
+          className="absolute inset-y-0 left-0 min-w-0 transition-[right] duration-300"
+          style={{ right: browserDockOpen ? browserPanelWidth : 0 }}
         >
-          <ReactFlow
-            nodes={nodes}
-            edges={[]}
-            onNodesChange={handleNodesChange}
-            onNodeClick={onNodeClick}
-            onPaneClick={onPaneClick}
-            nodeTypes={nodeTypes}
-            fitView
-            proOptions={{ hideAttribution: true }}
-            minZoom={0.3}
-            maxZoom={2}
-            nodesDraggable
-            nodesConnectable={false}
-            snapToGrid
-            snapGrid={[24, 24]}
-          >
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={24}
-              size={1}
-              color="#252525"
-            />
-            <Controls
-              showInteractive={false}
-              position="bottom-left"
-            />
-            <CanvasControls />
-          </ReactFlow>
+          {/* Session List Panel (left sidebar) */}
+          <SessionListPanel />
 
-          {/* Empty state */}
-          {isEmpty && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="text-center pointer-events-auto">
-                <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
-                  <Plus className="w-8 h-8 text-zinc-600" />
+          {/* Canvas area — shifts right when session list is open */}
+          <div
+            className="absolute inset-0 transition-all duration-300"
+            style={{ left: sessionListOpen ? 280 : 0, background: workspace.canvas }}
+          >
+            <ReactFlow
+              nodes={nodes}
+              edges={[]}
+              onNodesChange={handleNodesChange}
+              onNodeClick={onNodeClick}
+              onPaneClick={onPaneClick}
+              nodeTypes={nodeTypes}
+              fitView
+              proOptions={{ hideAttribution: true }}
+              minZoom={0.3}
+              maxZoom={2}
+              nodesDraggable
+              nodesConnectable={false}
+              snapToGrid
+              snapGrid={[24, 24]}
+              style={{ background: workspace.canvas }}
+            >
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={24}
+                size={1}
+                color={workspace.dots}
+              />
+              <Controls
+                showInteractive={false}
+                position="bottom-left"
+              />
+              <CanvasControls />
+            </ReactFlow>
+
+            {/* Empty state */}
+            {isEmpty && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="text-center pointer-events-auto">
+                  <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
+                    <Plus className="w-8 h-8 text-zinc-600" />
+                  </div>
+                  <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
+                  <p className="text-sm text-zinc-500 mb-4 max-w-xs">
+                    Spawn your first AI agent to get started
+                  </p>
+                  <button
+                    onClick={() => setAddAgentModalOpen(true)}
+                    className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
+                  >
+                    Create Agent
+                  </button>
                 </div>
-                <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
-                <p className="text-sm text-zinc-500 mb-4 max-w-xs">
-                  Spawn your first AI agent to get started
-                </p>
-                <button
-                  onClick={() => setAddAgentModalOpen(true)}
-                  className="px-4 py-2 rounded-lg bg-white text-canvas font-medium text-sm hover:bg-zinc-100 transition-colors"
-                >
-                  Create Agent
-                </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
+
+          {/* Focus Mode overlay */}
+          <FocusMode />
+
+          {/* Markdown viewer overlay */}
+          <MarkdownView />
+
+          {/* Diff viewer overlay */}
+          <DiffView />
+
+          <Sidebar />
+          <PRBEPanel />
         </div>
 
-        {/* Focus Mode overlay */}
-        <FocusMode />
-
-        {/* Markdown viewer overlay */}
-        <MarkdownView />
-
-        <Sidebar />
-        <PRBEPanel />
+        {/* Embedded browser dock, scoped to focus mode so the canvas never gets squeezed. */}
+        {viewMode === "focus" && <BrowserView />}
       </div>
 
       <NewSessionModal
@@ -431,6 +663,8 @@ function AppContent() {
       />
 
       <UndoDeleteToast />
+      <AgentActivityCenter />
+      <CommandPalette />
       <PRBEInteractionDialog />
     </div>
   );

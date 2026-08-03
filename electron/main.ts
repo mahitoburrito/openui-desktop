@@ -5,6 +5,8 @@ import { startServer } from "../server/index";
 import { getActiveSessionCount } from "../server/services/sessionManager";
 import { autoUpdater } from "electron-updater";
 import { initPRBE, cleanupPRBE } from "./prbe";
+import { destroyBrowserView, registerBrowserViewIpc } from "./browserView";
+import { startMacAutoUpdater, installPendingUpdateOnQuit } from "./macUpdater";
 
 // Load built-in default config (bundled API keys for production)
 function loadDefaultConfig() {
@@ -25,6 +27,30 @@ loadDefaultConfig();
 let mainWindow: BrowserWindow | null = null;
 let serverPort = Number(process.env.PORT) || 6968;
 const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+
+// CI release builds carry resources/build-info.json with channel "release"
+// (written by the release workflow); local `npm run pack` builds don't.
+function isReleaseChannelBuild(): boolean {
+  try {
+    const infoPath = join(app.getAppPath(), "resources", "build-info.json");
+    if (existsSync(infoPath)) {
+      return JSON.parse(readFileSync(infoPath, "utf-8")).channel === "release";
+    }
+  } catch (e) {
+    // Treat unreadable build info as a local build
+  }
+  return false;
+}
+
+// Auto-update is ON by default for CI release builds, OFF for local
+// source builds (so a patched daily-driver build doesn't overwrite itself
+// with the public upstream release). Overrides:
+//   OPENUI_ENABLE_AUTO_UPDATE=true   force on (e.g. a local build that wants upstream)
+//   OPENUI_DISABLE_AUTO_UPDATE=true  force off
+const autoUpdateEnabled =
+  !isDev &&
+  process.env.OPENUI_DISABLE_AUTO_UPDATE !== "true" &&
+  (isReleaseChannelBuild() || process.env.OPENUI_ENABLE_AUTO_UPDATE === "true");
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -48,6 +74,7 @@ function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  registerBrowserViewIpc(mainWindow);
 
   if (isDev) {
     // In dev mode, load from Vite dev server
@@ -76,6 +103,7 @@ function createWindow() {
         return;
       }
     }
+    destroyBrowserView();
     mainWindow = null;
   });
 }
@@ -102,8 +130,11 @@ app.whenReady().then(async () => {
   // Initialize PRBE debug agent
   initPRBE(mainWindow!, serverPort);
 
-  // Auto-update (only in packaged builds)
-  if (!isDev) {
+  if (autoUpdateEnabled && process.platform === "darwin") {
+    // electron-updater can't install into an unsigned mac app — use our
+    // custom zip-swap updater instead (electron/macUpdater.ts).
+    startMacAutoUpdater(() => mainWindow);
+  } else if (autoUpdateEnabled) {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
@@ -149,6 +180,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("will-quit", () => {
+  destroyBrowserView();
   cleanupPRBE();
+  installPendingUpdateOnQuit();
   process.emit("SIGINT" as any);
 });

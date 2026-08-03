@@ -1,22 +1,12 @@
 import { useCallback, useState } from "react";
 import { NodeProps } from "@xyflow/react";
 import { motion } from "framer-motion";
-import { Sparkles, Code, Cpu, Zap, Rocket, Bot, Brain, Wand2, FilePlus, Loader2 } from "lucide-react";
+import { FilePlus, Loader2 } from "lucide-react";
 import { useStore, AgentStatus } from "../../stores/useStore";
 import { AgentNodeCard } from "./AgentNodeCard";
 import { AgentNodeContextMenu } from "./AgentNodeContextMenu";
 import { useAgentNodeState } from "./useAgentNodeState";
-
-const iconMap: Record<string, any> = {
-  sparkles: Sparkles,
-  code: Code,
-  cpu: Cpu,
-  zap: Zap,
-  rocket: Rocket,
-  bot: Bot,
-  brain: Brain,
-  wand2: Wand2,
-};
+import { getAgentAccentColor } from "../AgentIcon";
 
 interface AgentNodeData {
   label: string;
@@ -45,7 +35,14 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
 
   const addFocusedSession = useStore((state) => state.addFocusedSession);
   const setViewMode = useStore((state) => state.setViewMode);
+  const setDiffRepoPath = useStore((state) => state.setDiffRepoPath);
   const focusedSessionIds = useStore((state) => state.focusedSessionIds);
+  const [isRestoringCheckpoint, setIsRestoringCheckpoint] = useState(false);
+  const displayColor = getAgentAccentColor(
+    session?.agentId || nodeData.agentId,
+    session?.customColor || session?.color || nodeData.color,
+  );
+  const displayName = session?.customName || session?.agentName || nodeData.label || "Agent";
 
   const handleDoubleClick = useCallback(() => {
     if (!focusedSessionIds.includes(id)) {
@@ -53,6 +50,42 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
     }
     setViewMode("focus");
   }, [id, focusedSessionIds, addFocusedSession, setViewMode]);
+
+  const handleRestoreLaunchCheckpoint = useCallback(async () => {
+    const checkpoint = session?.launchCheckpoint;
+    if (!checkpoint || isRestoringCheckpoint) return;
+
+    const confirmed = window.confirm(
+      `Restore ${displayName} to its start checkpoint? Current uncommitted changes in that repo will be discarded.`,
+    );
+    if (!confirmed) return;
+
+    setIsRestoringCheckpoint(true);
+    try {
+      const res = await fetch(`/api/checkpoints/${encodeURIComponent(checkpoint.id)}/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: checkpoint.repoRoot || session?.cwd }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to restore checkpoint");
+      }
+      setDiffRepoPath(checkpoint.repoRoot || session?.cwd || null);
+      setViewMode("diff");
+    } catch (error: any) {
+      window.alert(error?.message || "Failed to restore checkpoint");
+    } finally {
+      setIsRestoringCheckpoint(false);
+    }
+  }, [displayName, isRestoringCheckpoint, session?.cwd, session?.launchCheckpoint, setDiffRepoPath, setViewMode]);
+
+  const handleReviewChanges = useCallback(() => {
+    const repo = session?.changeSummary?.repoRoot || session?.cwd;
+    if (!repo) return;
+    setDiffRepoPath(repo);
+    setViewMode("diff");
+  }, [session?.changeSummary?.repoRoot, session?.cwd, setDiffRepoPath, setViewMode]);
 
   // Drag-and-drop file upload
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -116,11 +149,6 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
     }
   }, [session?.sessionId]);
 
-  const displayColor = session?.customColor || session?.color || nodeData.color || "#22C55E";
-  const displayName = session?.customName || session?.agentName || nodeData.label || "Agent";
-  const displayIcon = nodeData.icon || "cpu";
-  const Icon = iconMap[displayIcon] || Cpu;
-
   return (
     <>
       <motion.div
@@ -137,7 +165,6 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
           selected={selected}
           displayColor={displayColor}
           displayName={displayName}
-          Icon={Icon}
           agentId={nodeData.agentId}
           status={status}
           currentTool={currentTool}
@@ -147,6 +174,11 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
           ticketId={session?.ticketId}
           ticketTitle={session?.ticketTitle}
           worktreePaths={session?.worktreePaths}
+          launchCheckpoint={session?.launchCheckpoint}
+          changeSummary={session?.changeSummary}
+          isRestoringCheckpoint={isRestoringCheckpoint}
+          onRestoreLaunchCheckpoint={handleRestoreLaunchCheckpoint}
+          onReviewChanges={handleReviewChanges}
         />
 
         {isDraggingFile && (
