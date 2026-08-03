@@ -106,6 +106,7 @@ npm run dev
 ## Features
 
 - **Infinite canvas** with drag-and-drop agent nodes
+- **Selection mode** — marquee or click to multi-select sessions, move them as a group, bulk-delete with undo
 - **Real-time status** — Running, Idle, Needs Input, Tool Calling
 - **Built-in terminal** with resizable sidebar
 - **Auto-naming** — sessions named from your first prompt
