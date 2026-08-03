@@ -555,6 +555,26 @@ function AppContent() {
     setSidebarOpen(false);
   }, [setSelectedNodeId, setSidebarOpen]);
 
+  // In selection mode, dragging an unselected card makes React Flow clear the
+  // whole selection at drag start (selectNodesOnDrag=false path). Stash the set
+  // and restore it after the drag so nudging a stray card doesn't wipe it.
+  const stashedSelectionRef = useRef<string[] | null>(null);
+
+  const onNodeDragStart = useCallback((_: React.MouseEvent, node: any) => {
+    const { selectionModeActive: mode, multiSelectedNodeIds: ids } = useStore.getState();
+    if (mode && ids.length > 0 && !ids.includes(node.id)) {
+      stashedSelectionRef.current = ids;
+    }
+  }, []);
+
+  const onNodeDragStop = useCallback(() => {
+    if (stashedSelectionRef.current) {
+      const ids = stashedSelectionRef.current;
+      stashedSelectionRef.current = null;
+      rfStore.getState().addSelectedNodes(ids);
+    }
+  }, [rfStore]);
+
   const isEmpty = nodes.length === 0;
 
   return (
@@ -589,6 +609,8 @@ function AppContent() {
               edges={[]}
               onNodesChange={handleNodesChange}
               onNodeClick={onNodeClick}
+              onNodeDragStart={onNodeDragStart}
+              onNodeDragStop={onNodeDragStop}
               onPaneClick={onPaneClick}
               nodeTypes={nodeTypes}
               fitView
