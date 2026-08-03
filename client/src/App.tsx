@@ -248,10 +248,21 @@ function AppContent() {
             }
           }
 
+          // Node ids in the active undo toast were just locally deleted — a
+          // poll response dispatched before their soft-deletes landed can
+          // still list them and would resurrect the cards for a second.
+          const activeToast = useStore.getState().deleteToast;
+          const recentlyDeletedNodeIds = new Set(
+            activeToast
+              ? [activeToast.nodeId, ...(activeToast.items?.map((item) => item.nodeId) ?? [])]
+              : [],
+          );
+
           for (const sessionData of sessionsData) {
             if (sessionData.nodeId && sessionData.status) {
               const existing = currentSessions.get(sessionData.nodeId);
               if (!existing && hasRestoredRef.current) {
+                if (recentlyDeletedNodeIds.has(sessionData.nodeId)) continue;
                 restoreServerSessionToCanvas(sessionData);
                 continue;
               }
@@ -492,9 +503,21 @@ function AppContent() {
     );
     if (removeChanges.length > 0) {
       changes = changes.filter((c) => c.type !== "remove");
-      const sessionNodeIds = removeChanges
-        .map((change) => change.id)
-        .filter((id) => useStore.getState().sessions.has(id));
+      const { sessions: currentSessions, nodes: currentStoreNodes } = useStore.getState();
+      const sessionNodeIds: string[] = [];
+      for (const change of removeChanges) {
+        if (currentSessions.has(change.id)) {
+          sessionNodeIds.push(change.id);
+          continue;
+        }
+        // Agent nodes with no backing session (stale restore rows) have
+        // nothing to soft-delete server-side — remove them client-side so
+        // they aren't permanently stuck on the canvas.
+        const node = currentStoreNodes.find((n) => n.id === change.id);
+        if (node?.type === "agent") {
+          changes = [...changes, change];
+        }
+      }
       if (sessionNodeIds.length > 0) {
         void bulkDeleteSessions(sessionNodeIds);
       }
@@ -532,6 +555,11 @@ function AppContent() {
       // Flow uses for group dragging.
       if (useStore.getState().selectionModeActive) {
         if (node.type !== "agent") return;
+        // multiSelectedNodeIds still holds the pre-click set here: the mirror
+        // effect that syncs React Flow's selection into the store hasn't
+        // flushed within this DOM event. If React ever flushes effects
+        // mid-click (or xyflow moves click-selection to pointerdown), this
+        // toggle would compute from a collapsed set — re-verify on upgrades.
         const current = useStore.getState().multiSelectedNodeIds;
         const desired = current.includes(node.id)
           ? current.filter((id) => id !== node.id)

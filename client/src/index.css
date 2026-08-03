@@ -68,20 +68,22 @@ html, body {
   cursor: crosshair;
 }
 
-.react-flow__selection {
+.react-flow.selection-mode .react-flow__selection {
   background: rgba(96, 165, 250, 0.08) !important;
   border: 1px dashed rgba(96, 165, 250, 0.6) !important;
   border-radius: 4px;
 }
 
 /* Keep the post-marquee group rect as a visual hint only — clicks and drags
-   must reach the nodes underneath so individual toggling keeps working. */
-.react-flow__nodesselection,
-.react-flow__nodesselection-rect {
+   must reach the nodes underneath so individual toggling keeps working.
+   Scoped to selection mode so the default Shift+drag marquee outside the
+   mode keeps React Flow's native draggable group rect. */
+.react-flow.selection-mode .react-flow__nodesselection,
+.react-flow.selection-mode .react-flow__nodesselection-rect {
   pointer-events: none !important;
 }
 
-.react-flow__nodesselection-rect {
+.react-flow.selection-mode .react-flow__nodesselection-rect {
   background: transparent !important;
   border: 1px dashed rgba(96, 165, 250, 0.35) !important;
   border-radius: 10px;

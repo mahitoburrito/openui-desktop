@@ -39,12 +39,27 @@ export function UndoDeleteToast() {
     // Cancel the auto-dismiss timeout
     clearTimeout(deleteToast.timeout);
 
-    // Tell server to undo the soft-delete
-    await Promise.all(
+    // Tell server to undo the soft-delete. A rejected or non-OK request (e.g.
+    // session already hard-deleted) must not strand the toast — count failures
+    // and always dismiss + reload so the UI reflects server truth.
+    const results = await Promise.allSettled(
       toastItems.map((item) =>
-        fetch(`/api/sessions/${item.sessionId}/undo-delete`, { method: "POST" }),
+        fetch(`/api/sessions/${encodeURIComponent(item.sessionId)}/undo-delete`, {
+          method: "POST",
+          signal: AbortSignal.timeout(10000),
+        }),
       ),
     );
+    const failed = results.filter(
+      (r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok),
+    ).length;
+    if (failed > 0) {
+      window.alert(
+        failed === toastItems.length
+          ? "Could not undo — the session(s) were already permanently deleted."
+          : `Could not undo ${failed} of ${toastItems.length} sessions — they were already permanently deleted.`,
+      );
+    }
 
     // Dismiss toast
     setDeleteToast(null);

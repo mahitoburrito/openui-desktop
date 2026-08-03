@@ -407,7 +407,9 @@ export const useStore = create<AppState>((set) => ({
       // keep category boxes out of the marquee while the mode is on.
       nodes: state.nodes.map((n) => {
         if (n.type === "category") {
-          return { ...n, selected: false, selectable: on ? false : undefined };
+          const nextSelectable = on ? false : undefined;
+          if (n.selectable === nextSelectable && !n.selected) return n;
+          return { ...n, selected: false, selectable: nextSelectable };
         }
         return n.selected ? { ...n, selected: false } : n;
       }),
@@ -453,7 +455,23 @@ export const useStore = create<AppState>((set) => ({
 
   // Focus Mode
   viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
-  setViewMode: (mode) => set({ viewMode: mode }),
+  setViewMode: (mode) =>
+    set((state) => {
+      // Selection mode only exists on the canvas — leaving it with the mode
+      // still armed makes card clicks silently toggle instead of opening.
+      if (mode !== "canvas" && state.selectionModeActive) {
+        return {
+          viewMode: mode,
+          selectionModeActive: false,
+          multiSelectedNodeIds: [],
+          nodes: state.nodes.map((n) => {
+            if (n.type === "category") return { ...n, selected: false, selectable: undefined };
+            return n.selected ? { ...n, selected: false } : n;
+          }),
+        };
+      }
+      return { viewMode: mode };
+    }),
   focusedSessionIds: persisted.focusedSessionIds ?? [],
   addFocusedSession: (nodeId) =>
     set((state) => ({
@@ -548,7 +566,15 @@ export const useStore = create<AppState>((set) => ({
 
   // Delete toast
   deleteToast: null,
-  setDeleteToast: (toast) => set({ deleteToast: toast }),
+  setDeleteToast: (toast) =>
+    set((state) => {
+      // A replaced toast's auto-dismiss timer would otherwise fire later and
+      // dismiss the new toast early, cutting its undo window short.
+      if (state.deleteToast && state.deleteToast !== toast) {
+        clearTimeout(state.deleteToast.timeout);
+      }
+      return { deleteToast: toast };
+    }),
 
   agentActivityEvents:
     (persisted.agentActivityEvents as AgentActivityEvent[] | undefined) ?? [],

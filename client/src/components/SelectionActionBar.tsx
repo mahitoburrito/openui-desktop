@@ -24,7 +24,7 @@ export function SelectionActionBar() {
   const rfStore = useStoreApi();
   const count = multiSelectedNodeIds.length;
   const totalAgents = nodes.filter((n) => n.type === "agent").length;
-  const show = selectionModeActive && viewMode === "canvas" && !deleteToast;
+  const show = selectionModeActive && viewMode === "canvas";
 
   // Selection goes through React Flow's API so its internal selection state
   // stays in sync — prop-level selected flags alone diverge from it.
@@ -38,6 +38,14 @@ export function SelectionActionBar() {
   const openInFocusMode = () => {
     const ids = multiSelectedNodeIds.filter((id) => sessions.has(id));
     if (ids.length === 0) return;
+    // Focus mode holds at most 16 terminals (MAX_FOCUSED_SESSIONS) — the
+    // store silently truncates, so warn before dropping part of the set.
+    if (ids.length > 16) {
+      const proceed = window.confirm(
+        `Focus mode fits 16 terminals — open the first 16 of ${ids.length} selected sessions?`,
+      );
+      if (!proceed) return;
+    }
     setFocusedSessions(ids);
     setSelectionModeActive(false);
     setSidebarOpen(false);
@@ -55,7 +63,9 @@ export function SelectionActionBar() {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 80, opacity: 0 }}
           transition={{ type: "spring", stiffness: 400, damping: 30 }}
-          className="fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 shadow-2xl"
+          className={`fixed left-1/2 z-[90] flex -translate-x-1/2 items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 shadow-2xl transition-[bottom] duration-200 ${
+            deleteToast ? "bottom-24" : "bottom-6"
+          }`}
         >
           {count === 0 ? (
             <span className="px-1 text-xs text-zinc-400">

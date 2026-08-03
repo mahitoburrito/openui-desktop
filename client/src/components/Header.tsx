@@ -84,13 +84,16 @@ export function Header() {
       <div className="flex items-center gap-1.5 titlebar-no-drag">
         <button
           onClick={() => setSelectionModeActive(!selectionModeActive)}
+          disabled={viewMode !== "canvas"}
           className={`${commandButton} ${
             selectionModeActive ? "bg-surface-active text-zinc-100" : ""
           }`}
           title={
-            selectionModeActive
-              ? "Exit selection mode (Esc)"
-              : "Selection mode — click or drag a box to select multiple sessions"
+            viewMode !== "canvas"
+              ? "Selection mode is available on the canvas"
+              : selectionModeActive
+                ? "Exit selection mode (Esc)"
+                : "Selection mode — click or drag a box to select multiple sessions"
           }
           aria-label="Selection mode"
         >

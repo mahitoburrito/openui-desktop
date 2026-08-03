@@ -24,11 +24,14 @@ export async function bulkDeleteSessions(nodeIds: string[]): Promise<boolean> {
   await Promise.all(
     targets.map(async ({ nodeId, session }) => {
       try {
-        const res = await fetch(`/api/sessions/${session.sessionId}/soft-delete`, {
-          method: "POST",
-        });
-        if (!res.ok) throw new Error();
-      } catch {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(session.sessionId)}/soft-delete`,
+          { method: "POST", signal: AbortSignal.timeout(10000) },
+        );
+        // 404 = already gone (deleted elsewhere) — treat as deleted, not failed
+        if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+      } catch (error) {
+        console.error(`[bulk-delete] soft-delete failed for ${session.sessionId}:`, error);
         failedCount += 1;
         return;
       }
@@ -40,14 +43,10 @@ export async function bulkDeleteSessions(nodeIds: string[]): Promise<boolean> {
     }),
   );
 
-  if (failedCount > 0) {
-    window.alert(
-      failedCount === targets.length
-        ? `Could not delete ${label}.`
-        : `Could not delete ${failedCount} of ${targets.length} sessions.`,
-    );
+  if (deleted.length === 0) {
+    window.alert(`Could not delete ${label}.`);
+    return true;
   }
-  if (deleted.length === 0) return true;
 
   const current = useStore.getState();
   for (const item of deleted) {
@@ -65,9 +64,6 @@ export async function bulkDeleteSessions(nodeIds: string[]): Promise<boolean> {
     current.multiSelectedNodeIds.filter((id) => !deletedIds.has(id)),
   );
 
-  if (current.deleteToast) {
-    clearTimeout(current.deleteToast.timeout);
-  }
   const timeout = setTimeout(() => useStore.getState().setDeleteToast(null), 5000);
   current.setDeleteToast({
     sessionId: deleted[0].sessionId,
@@ -76,5 +72,14 @@ export async function bulkDeleteSessions(nodeIds: string[]): Promise<boolean> {
     items: deleted.length > 1 ? deleted : undefined,
     timeout,
   });
+
+  // Report partial failures only after the toast is up — a blocking alert
+  // shown first would eat the undo window while the server's delete timers
+  // keep running.
+  if (failedCount > 0) {
+    setTimeout(() => {
+      window.alert(`Could not delete ${failedCount} of ${targets.length} sessions.`);
+    }, 0);
+  }
   return true;
 }

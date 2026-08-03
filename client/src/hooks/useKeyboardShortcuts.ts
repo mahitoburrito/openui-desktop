@@ -36,8 +36,13 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Escape — exit selection mode
+      // Escape — exit selection mode (unless an overlay owns the key: the
+      // palette/modals handle their own Escape and one press must not also
+      // silently destroy the selection behind them)
       if (e.key === "Escape" && selectionModeActive && viewMode === "canvas") {
+        const { commandPaletteOpen, addAgentModalOpen, newSessionModalOpen } =
+          useStore.getState();
+        if (commandPaletteOpen || addAgentModalOpen || newSessionModalOpen) return;
         e.preventDefault();
         setSelectionModeActive(false);
         return;
@@ -146,8 +151,11 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Cmd+1 through Cmd+9 — jump to nth session
+      // Cmd+1 through Cmd+9 — jump to nth session (not in selection mode:
+      // it would reopen the sidebar and re-arm single-delete state the mode
+      // deliberately cleared)
       if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
+        if (selectionModeActive && viewMode === "canvas") return;
         const index = parseInt(e.key) - 1;
         const sessionEntries = Array.from(sessions.entries());
         if (index < sessionEntries.length) {
@@ -171,6 +179,7 @@ export function useKeyboardShortcuts() {
 
       // Cmd+Enter — pin selected session and enter focus mode
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        if (selectionModeActive && viewMode === "canvas") return;
         const selectedNodeId = useStore.getState().selectedNodeId;
         if (selectedNodeId && sessions.has(selectedNodeId)) {
           e.preventDefault();
