@@ -167,6 +167,11 @@ interface AppState {
   setSelectedNodeId: (id: string | null) => void;
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
+  // Selection mode — canvas multi-select for bulk actions
+  selectionModeActive: boolean;
+  setSelectionModeActive: (on: boolean) => void;
+  multiSelectedNodeIds: string[];
+  setMultiSelectedNodeIds: (ids: string[]) => void;
   addAgentModalOpen: boolean;
   setAddAgentModalOpen: (open: boolean) => void;
   newSessionModalOpen: boolean;
@@ -393,6 +398,23 @@ export const useStore = create<AppState>((set) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   sidebarOpen: false,
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  selectionModeActive: false,
+  setSelectionModeActive: (on) =>
+    set((state) => ({
+      selectionModeActive: on,
+      multiSelectedNodeIds: [],
+      // Both directions start from a clean slate: clear selection flags, and
+      // keep category boxes out of the marquee while the mode is on.
+      nodes: state.nodes.map((n) => {
+        if (n.type === "category") {
+          return { ...n, selected: false, selectable: on ? false : undefined };
+        }
+        return n.selected ? { ...n, selected: false } : n;
+      }),
+      ...(on ? { selectedNodeId: null, sidebarOpen: false } : {}),
+    })),
+  multiSelectedNodeIds: [],
+  setMultiSelectedNodeIds: (ids) => set({ multiSelectedNodeIds: ids }),
   addAgentModalOpen: false,
   setAddAgentModalOpen: (open) => set({ addAgentModalOpen: open }),
   newSessionModalOpen: false,

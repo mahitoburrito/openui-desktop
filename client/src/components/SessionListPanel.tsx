@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  CheckSquare,
   ChevronDown,
   ChevronRight,
   Folder,
   GitBranch,
   Pin,
   Search,
+  Square,
   Trash2,
   X,
 } from "lucide-react";
-import { useReactFlow, type Node } from "@xyflow/react";
+import { useReactFlow, useStoreApi, type Node } from "@xyflow/react";
 import { useStore, type AgentSession, type AgentStatus } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { destroyCachedTerminal } from "./Terminal";
@@ -93,9 +95,12 @@ export function SessionListPanel() {
     removeSession,
     removeNode,
     setDeleteToast,
+    selectionModeActive,
+    multiSelectedNodeIds,
   } = useStore();
 
   const reactFlow = useReactFlow();
+  const rfStore = useStoreApi();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const focusRailCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visibleCount, setVisibleCount] = useState(12);
@@ -288,6 +293,18 @@ export function SessionListPanel() {
 
   const handleSessionClick = useCallback(
     (nodeId: string) => {
+      // Selection mode: list clicks toggle canvas selection instead of opening.
+      // Toggling goes through React Flow's API so its internal selection state
+      // stays in sync with what group-drag and delete use.
+      if (useStore.getState().selectionModeActive && viewMode === "canvas") {
+        const current = useStore.getState().multiSelectedNodeIds;
+        const desired = current.includes(nodeId)
+          ? current.filter((id) => id !== nodeId)
+          : [...current, nodeId];
+        rfStore.getState().addSelectedNodes(desired);
+        return;
+      }
+
       setSelectedNodeId(nodeId);
       if (viewMode === "focus") {
         addFocusedSession(nodeId);
@@ -307,7 +324,7 @@ export function SessionListPanel() {
         });
       }
     },
-    [addFocusedSession, nodes, reactFlow, setSelectedNodeId, setSidebarOpen, viewMode],
+    [addFocusedSession, nodes, reactFlow, rfStore, setSelectedNodeId, setSidebarOpen, viewMode],
   );
 
   const handleSessionPinToggle = useCallback(
@@ -467,6 +484,7 @@ export function SessionListPanel() {
                     >
                       {group.entries.map(({ nodeId, session, node }) => {
               const isSelected = selectedNodeId === nodeId;
+              const isMultiSelected = selectionModeActive && multiSelectedNodeIds.includes(nodeId);
               const displayName = getSessionTitle({ nodeId, session, node });
               const displayColor = getAgentAccentColor(
                 session.agentId,
@@ -481,9 +499,11 @@ export function SessionListPanel() {
                 <div
                   key={nodeId}
                   className={`group/session flex w-full items-start gap-2 border-l-2 pr-2 text-left transition-colors ${
-                    isSelected
-                      ? "border-l-zinc-200 bg-surface-active"
-                      : "border-l-transparent hover:border-l-zinc-600 hover:bg-surface"
+                    isMultiSelected
+                      ? "border-l-blue-400 bg-blue-500/10"
+                      : isSelected
+                        ? "border-l-zinc-200 bg-surface-active"
+                        : "border-l-transparent hover:border-l-zinc-600 hover:bg-surface"
                   }`}
                 >
                   <button
@@ -533,22 +553,42 @@ export function SessionListPanel() {
                     </div>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleSessionPinToggle(nodeId, isPinned)}
-                    className={`mt-2 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
-                      isPinned
-                        ? "text-zinc-100 bg-surface-active"
-                        : "text-zinc-600 hover:bg-surface-active hover:text-zinc-200"
-                    }`}
-                    title={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
-                    aria-label={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
-                  >
-                    <Pin
-                      className="h-3.5 w-3.5"
-                      fill={isPinned ? "currentColor" : "none"}
-                    />
-                  </button>
+                  {selectionModeActive && viewMode === "canvas" ? (
+                    <button
+                      type="button"
+                      onClick={() => handleSessionClick(nodeId)}
+                      className={`mt-2 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
+                        isMultiSelected
+                          ? "text-blue-400"
+                          : "text-zinc-600 hover:text-zinc-300"
+                      }`}
+                      title={isMultiSelected ? "Remove from selection" : "Add to selection"}
+                      aria-label={isMultiSelected ? "Remove from selection" : "Add to selection"}
+                    >
+                      {isMultiSelected ? (
+                        <CheckSquare className="h-3.5 w-3.5" />
+                      ) : (
+                        <Square className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleSessionPinToggle(nodeId, isPinned)}
+                      className={`mt-2 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
+                        isPinned
+                          ? "text-zinc-100 bg-surface-active"
+                          : "text-zinc-600 hover:bg-surface-active hover:text-zinc-200"
+                      }`}
+                      title={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
+                      aria-label={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
+                    >
+                      <Pin
+                        className="h-3.5 w-3.5"
+                        fill={isPinned ? "currentColor" : "none"}
+                      />
+                    </button>
+                  )}
                 </div>
               );
                       })}

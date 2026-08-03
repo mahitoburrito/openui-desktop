@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { NodeProps } from "@xyflow/react";
 import { motion } from "framer-motion";
-import { FilePlus, Loader2 } from "lucide-react";
+import { Check, FilePlus, Loader2 } from "lucide-react";
 import { useStore, AgentStatus } from "../../stores/useStore";
 import { AgentNodeCard } from "./AgentNodeCard";
 import { AgentNodeContextMenu } from "./AgentNodeContextMenu";
@@ -37,6 +37,7 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
   const setViewMode = useStore((state) => state.setViewMode);
   const setDiffRepoPath = useStore((state) => state.setDiffRepoPath);
   const focusedSessionIds = useStore((state) => state.focusedSessionIds);
+  const selectionModeActive = useStore((state) => state.selectionModeActive);
   const [isRestoringCheckpoint, setIsRestoringCheckpoint] = useState(false);
   const displayColor = getAgentAccentColor(
     session?.agentId || nodeData.agentId,
@@ -45,6 +46,7 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
   const displayName = session?.customName || session?.agentName || nodeData.label || "Agent";
 
   const handleDoubleClick = useCallback(() => {
+    if (useStore.getState().selectionModeActive) return;
     if (!focusedSessionIds.includes(id)) {
       addFocusedSession(id);
     }
@@ -161,8 +163,21 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
         onDrop={handleDrop}
         className="relative"
       >
+        {selectionModeActive && (
+          <div
+            className={`pointer-events-none absolute -left-1.5 -top-1.5 z-20 flex h-5 w-5 items-center justify-center rounded-full border ${
+              selected
+                ? "border-blue-300 bg-blue-500 text-white"
+                : "border-zinc-600 bg-zinc-800/90 text-transparent"
+            }`}
+          >
+            <Check className="h-3 w-3" strokeWidth={3} />
+          </div>
+        )}
+
         <AgentNodeCard
           selected={selected}
+          selectionModeActive={selectionModeActive}
           displayColor={displayColor}
           displayName={displayName}
           agentId={nodeData.agentId}

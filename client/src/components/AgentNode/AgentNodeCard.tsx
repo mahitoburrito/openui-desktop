@@ -30,6 +30,7 @@ const toolDisplayNames: Record<string, string> = {
 
 interface AgentNodeCardProps {
   selected: boolean;
+  selectionModeActive?: boolean;
   displayColor: string;
   displayName: string;
   agentId: string;
@@ -50,6 +51,7 @@ interface AgentNodeCardProps {
 
 export function AgentNodeCard({
   selected,
+  selectionModeActive = false,
   displayColor,
   displayName,
   agentId,
@@ -80,20 +82,24 @@ export function AgentNodeCard({
   const toolDisplay = currentTool ? (toolDisplayNames[currentTool] || currentTool) : null;
   const changedFileCount = changeSummary?.changedFileCount ?? 0;
 
+  const inSelectionSet = selectionModeActive && selected;
+
   return (
     <div
       className={`relative w-[220px] rounded-lg border transition-colors duration-150 cursor-pointer ${
-        selected ? "ring-1 ring-zinc-200/25" : ""
+        inSelectionSet ? "ring-2 ring-blue-400/50" : selected ? "ring-1 ring-zinc-200/25" : ""
       }`}
       style={{
         backgroundColor: "#171818",
-        borderColor: needsAttention
-          ? `${statusInfo.color}99`
-          : selected
-            ? "#52525b"
-            : isActive
-              ? `${statusInfo.color}4d`
-              : "#2a2d2c",
+        borderColor: inSelectionSet
+          ? "#60A5FA"
+          : needsAttention
+            ? `${statusInfo.color}99`
+            : selected
+              ? "#52525b"
+              : isActive
+                ? `${statusInfo.color}4d`
+                : "#2a2d2c",
         boxShadow: selected ? "0 8px 22px rgba(0, 0, 0, 0.35)" : "0 2px 8px rgba(0, 0, 0, 0.26)",
       }}
     >

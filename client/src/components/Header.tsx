@@ -1,7 +1,7 @@
-import { Bell, Folder, Globe, Maximize2, Plus, Search, Trash2 } from "lucide-react";
+import { Bell, Folder, Globe, Maximize2, MousePointer2, Plus, Search, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
-import { destroyCachedTerminal } from "./Terminal";
+import { bulkDeleteSessions } from "../utils/bulkDeleteSessions";
 
 export function Header() {
   const {
@@ -11,13 +11,8 @@ export function Header() {
     setCommandPaletteOpen,
     addFocusedSession,
     focusedSessionIds,
-    removeFocusedSession,
-    removeNode,
-    removeSession,
     selectedNodeId,
-    setSelectedNodeId,
     setSidebarOpen,
-    setDeleteToast,
     setViewMode,
     activityCenterOpen,
     setActivityCenterOpen,
@@ -27,6 +22,9 @@ export function Header() {
     browserPanelOpen,
     setBrowserPanelOpen,
     browserUrl,
+    selectionModeActive,
+    setSelectionModeActive,
+    multiSelectedNodeIds,
   } = useStore();
 
   const selectedSession = selectedNodeId ? sessions.get(selectedNodeId) : null;
@@ -59,41 +57,15 @@ export function Header() {
     setBrowserPanelOpen(true);
   };
 
-  const deleteSelectedSession = async () => {
-    if (!selectedNodeId || !selectedSession) return;
+  const multiDeleteActive = selectionModeActive && multiSelectedNodeIds.length > 0;
 
-    const sessionName = selectedSession.customName || selectedSession.agentName || "Session";
-    const confirmed = window.confirm(`Delete "${sessionName}"? You'll have 5 seconds to undo.`);
-    if (!confirmed) return;
-
-    try {
-      const res = await fetch(`/api/sessions/${selectedSession.sessionId}/soft-delete`, { method: "POST" });
-      if (!res.ok) {
-        window.alert(`Could not delete "${sessionName}".`);
-        return;
-      }
-    } catch {
-      window.alert(`Could not delete "${sessionName}".`);
+  const deleteSelectedSession = () => {
+    if (multiDeleteActive) {
+      void bulkDeleteSessions(multiSelectedNodeIds);
       return;
     }
-
-    destroyCachedTerminal(selectedSession.sessionId);
-    removeFocusedSession(selectedNodeId);
-    removeSession(selectedNodeId);
-    removeNode(selectedNodeId);
-    setSelectedNodeId(null);
-    setSidebarOpen(false);
-
-    const timeout = setTimeout(() => {
-      setDeleteToast(null);
-    }, 5000);
-
-    setDeleteToast({
-      sessionId: selectedSession.sessionId,
-      nodeId: selectedNodeId,
-      sessionName,
-      timeout,
-    });
+    if (!selectedNodeId || !selectedSession) return;
+    void bulkDeleteSessions([selectedNodeId]);
   };
 
   const commandButton =
@@ -110,6 +82,20 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-1.5 titlebar-no-drag">
+        <button
+          onClick={() => setSelectionModeActive(!selectionModeActive)}
+          className={`${commandButton} ${
+            selectionModeActive ? "bg-surface-active text-zinc-100" : ""
+          }`}
+          title={
+            selectionModeActive
+              ? "Exit selection mode (Esc)"
+              : "Selection mode — click or drag a box to select multiple sessions"
+          }
+          aria-label="Selection mode"
+        >
+          <MousePointer2 className="h-4 w-4" />
+        </button>
         <button
           onClick={() => setCommandPaletteOpen(true)}
           className={commandButton}
@@ -169,9 +155,17 @@ export function Header() {
         </button>
         <button
           onClick={deleteSelectedSession}
-          disabled={!selectedSession}
+          disabled={!selectedSession && !multiDeleteActive}
           className={commandButton}
-          title={selectedSession ? "Delete selected session" : "Select a session to delete"}
+          title={
+            multiDeleteActive
+              ? `Delete ${multiSelectedNodeIds.length} selected session${
+                  multiSelectedNodeIds.length === 1 ? "" : "s"
+                }`
+              : selectedSession
+                ? "Delete selected session"
+                : "Select a session to delete"
+          }
         >
           <Trash2 className="h-4 w-4" />
         </button>
