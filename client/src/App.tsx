@@ -4,9 +4,11 @@ import {
   Background,
   Controls,
   useNodesState,
+  useStoreApi,
   BackgroundVariant,
   ReactFlowProvider,
   NodeChange,
+  SelectionMode,
   applyNodeChanges,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -25,6 +27,7 @@ import { BrowserView } from "./components/BrowserView";
 import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
+import { SelectionActionBar } from "./components/SelectionActionBar";
 import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { AgentActivityCenter } from "./components/AgentActivityCenter";
 import { CommandPalette } from "./components/CommandPalette";
@@ -35,6 +38,7 @@ import { usePRBEIPC } from "./hooks/usePRBEIPC";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
 import { destroyCachedTerminal } from "./components/Terminal";
+import { bulkDeleteSessions } from "./utils/bulkDeleteSessions";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -162,9 +166,11 @@ function AppContent() {
     browserPanelOpen,
     browserPanelWidth,
     workspaceBackground,
+    selectionModeActive,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
+  const rfStore = useStoreApi();
   const workspace = getWorkspaceBackground(workspaceBackground);
   const positionUpdateTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasRestoredRef = useRef(false);
@@ -183,6 +189,16 @@ function AppContent() {
   useEffect(() => {
     setStoreNodes(nodes);
   }, [nodes, setStoreNodes]);
+
+  // Mirror React Flow's selected flags into the store so the header and
+  // selection action bar can react to the multi-selection.
+  useEffect(() => {
+    const ids = nodes.filter((n) => n.type === "agent" && n.selected).map((n) => n.id);
+    const prev = useStore.getState().multiSelectedNodeIds;
+    if (ids.length !== prev.length || ids.some((id, index) => id !== prev[index])) {
+      useStore.getState().setMultiSelectedNodeIds(ids);
+    }
+  }, [nodes]);
 
   useEffect(() => {
     if (storeNodes.length > 0 || hasRestoredRef.current) {
@@ -232,10 +248,21 @@ function AppContent() {
             }
           }
 
+          // Node ids in the active undo toast were just locally deleted — a
+          // poll response dispatched before their soft-deletes landed can
+          // still list them and would resurrect the cards for a second.
+          const activeToast = useStore.getState().deleteToast;
+          const recentlyDeletedNodeIds = new Set(
+            activeToast
+              ? [activeToast.nodeId, ...(activeToast.items?.map((item) => item.nodeId) ?? [])]
+              : [],
+          );
+
           for (const sessionData of sessionsData) {
             if (sessionData.nodeId && sessionData.status) {
               const existing = currentSessions.get(sessionData.nodeId);
               if (!existing && hasRestoredRef.current) {
+                if (recentlyDeletedNodeIds.has(sessionData.nodeId)) continue;
                 restoreServerSessionToCanvas(sessionData);
                 continue;
               }
@@ -467,52 +494,33 @@ function AppContent() {
 
   // Save positions when nodes are moved or resized
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    // Intercept keyboard delete — confirm before removing, then do proper server cleanup
-    const removeChanges = changes.filter((c) => c.type === "remove");
+    // Intercept keyboard delete — one confirm for the whole batch, soft-delete
+    // on the server, then let the store sync remove the nodes from the canvas.
+    // Non-session nodes (categories) are never removed via the delete key:
+    // React Flow would only drop them client-side and they'd reappear on reload.
+    const removeChanges = changes.filter(
+      (change): change is Extract<NodeChange, { type: "remove" }> => change.type === "remove",
+    );
     if (removeChanges.length > 0) {
-      const confirmedRemoves: NodeChange[] = [];
       changes = changes.filter((c) => c.type !== "remove");
-
+      const { sessions: currentSessions, nodes: currentStoreNodes } = useStore.getState();
+      const sessionNodeIds: string[] = [];
       for (const change of removeChanges) {
-        if ("id" in change) {
-          const nodeId = change.id;
-          const session = useStore.getState().sessions.get(nodeId);
-          const sessionName = session?.customName || session?.agentName || "Session";
-          const sessionId = session?.sessionId;
-
-          const confirmed = window.confirm(`Delete "${sessionName}"? You'll have 5 seconds to undo.`);
-          if (!confirmed) continue;
-
-          // Let React Flow process this removal
-          confirmedRemoves.push(change);
-
-          // Soft-delete on server and clean up cached terminal
-          if (sessionId) {
-            fetch(`/api/sessions/${sessionId}/soft-delete`, { method: "POST" }).catch(console.error);
-            destroyCachedTerminal(sessionId);
-          }
-
-          // Clean up store
-          const { removeSession, setDeleteToast } = useStore.getState();
-          removeSession(nodeId);
-          setSelectedNodeId(null);
-          setSidebarOpen(false);
-
-          // Show undo toast
-          const timeout = setTimeout(() => {
-            setDeleteToast(null);
-          }, 5000);
-          setDeleteToast({
-            sessionId: sessionId || "",
-            nodeId,
-            sessionName,
-            timeout,
-          });
+        if (currentSessions.has(change.id)) {
+          sessionNodeIds.push(change.id);
+          continue;
+        }
+        // Agent nodes with no backing session (stale restore rows) have
+        // nothing to soft-delete server-side — remove them client-side so
+        // they aren't permanently stuck on the canvas.
+        const node = currentStoreNodes.find((n) => n.id === change.id);
+        if (node?.type === "agent") {
+          changes = [...changes, change];
         }
       }
-
-      // Re-add confirmed removes so React Flow actually removes the nodes
-      changes = [...changes, ...confirmedRemoves];
+      if (sessionNodeIds.length > 0) {
+        void bulkDeleteSessions(sessionNodeIds);
+      }
     }
 
     onNodesChange(changes);
@@ -539,19 +547,61 @@ function AppContent() {
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: any) => {
+      // Selection mode: a plain click toggles the session in/out of the set.
+      // Selection must go through React Flow's own API — its internal store
+      // applies click-selection itself, and prop-level `selected` flags on
+      // unchanged node objects are ignored (checkEquality), so writing flags
+      // into our nodes state directly would silently diverge from what React
+      // Flow uses for group dragging.
+      if (useStore.getState().selectionModeActive) {
+        if (node.type !== "agent") return;
+        // multiSelectedNodeIds still holds the pre-click set here: the mirror
+        // effect that syncs React Flow's selection into the store hasn't
+        // flushed within this DOM event. If React ever flushes effects
+        // mid-click (or xyflow moves click-selection to pointerdown), this
+        // toggle would compute from a collapsed set — re-verify on upgrades.
+        const current = useStore.getState().multiSelectedNodeIds;
+        const desired = current.includes(node.id)
+          ? current.filter((id) => id !== node.id)
+          : [...current, node.id];
+        rfStore.getState().addSelectedNodes(desired);
+        return;
+      }
       // Only open sidebar for agent nodes
       if (node.type === "agent") {
         setSelectedNodeId(node.id);
         setSidebarOpen(true);
       }
     },
-    [setSelectedNodeId, setSidebarOpen]
+    [rfStore, setSelectedNodeId, setSidebarOpen]
   );
 
   const onPaneClick = useCallback(() => {
+    // Selection mode: React Flow natively clears the selection on pane click
+    if (useStore.getState().selectionModeActive) return;
     setSelectedNodeId(null);
     setSidebarOpen(false);
   }, [setSelectedNodeId, setSidebarOpen]);
+
+  // In selection mode, dragging an unselected card makes React Flow clear the
+  // whole selection at drag start (selectNodesOnDrag=false path). Stash the set
+  // and restore it after the drag so nudging a stray card doesn't wipe it.
+  const stashedSelectionRef = useRef<string[] | null>(null);
+
+  const onNodeDragStart = useCallback((_: React.MouseEvent, node: any) => {
+    const { selectionModeActive: mode, multiSelectedNodeIds: ids } = useStore.getState();
+    if (mode && ids.length > 0 && !ids.includes(node.id)) {
+      stashedSelectionRef.current = ids;
+    }
+  }, []);
+
+  const onNodeDragStop = useCallback(() => {
+    if (stashedSelectionRef.current) {
+      const ids = stashedSelectionRef.current;
+      stashedSelectionRef.current = null;
+      rfStore.getState().addSelectedNodes(ids);
+    }
+  }, [rfStore]);
 
   const isEmpty = nodes.length === 0;
 
@@ -587,6 +637,8 @@ function AppContent() {
               edges={[]}
               onNodesChange={handleNodesChange}
               onNodeClick={onNodeClick}
+              onNodeDragStart={onNodeDragStart}
+              onNodeDragStop={onNodeDragStop}
               onPaneClick={onPaneClick}
               nodeTypes={nodeTypes}
               fitView
@@ -597,6 +649,15 @@ function AppContent() {
               nodesConnectable={false}
               snapToGrid
               snapGrid={[24, 24]}
+              className={selectionModeActive ? "selection-mode" : undefined}
+              selectionOnDrag={selectionModeActive}
+              // In selection mode React Flow must not reselect-on-drag: it would
+              // internally deselect the rest of the set at drag start and break
+              // moving the selection as a group.
+              selectNodesOnDrag={!selectionModeActive}
+              panOnDrag={selectionModeActive ? [1, 2] : true}
+              selectionMode={SelectionMode.Partial}
+              deleteKeyCode={["Backspace", "Delete"]}
               style={{ background: workspace.canvas }}
             >
               <Background
@@ -662,6 +723,7 @@ function AppContent() {
         existingNodeId={newSessionForNodeId || undefined}
       />
 
+      <SelectionActionBar />
       <UndoDeleteToast />
       <AgentActivityCenter />
       <CommandPalette />

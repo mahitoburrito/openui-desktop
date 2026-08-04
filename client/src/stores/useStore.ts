@@ -167,6 +167,11 @@ interface AppState {
   setSelectedNodeId: (id: string | null) => void;
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
+  // Selection mode — canvas multi-select for bulk actions
+  selectionModeActive: boolean;
+  setSelectionModeActive: (on: boolean) => void;
+  multiSelectedNodeIds: string[];
+  setMultiSelectedNodeIds: (ids: string[]) => void;
   addAgentModalOpen: boolean;
   setAddAgentModalOpen: (open: boolean) => void;
   newSessionModalOpen: boolean;
@@ -393,6 +398,25 @@ export const useStore = create<AppState>((set) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   sidebarOpen: false,
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  selectionModeActive: false,
+  setSelectionModeActive: (on) =>
+    set((state) => ({
+      selectionModeActive: on,
+      multiSelectedNodeIds: [],
+      // Both directions start from a clean slate: clear selection flags, and
+      // keep category boxes out of the marquee while the mode is on.
+      nodes: state.nodes.map((n) => {
+        if (n.type === "category") {
+          const nextSelectable = on ? false : undefined;
+          if (n.selectable === nextSelectable && !n.selected) return n;
+          return { ...n, selected: false, selectable: nextSelectable };
+        }
+        return n.selected ? { ...n, selected: false } : n;
+      }),
+      ...(on ? { selectedNodeId: null, sidebarOpen: false } : {}),
+    })),
+  multiSelectedNodeIds: [],
+  setMultiSelectedNodeIds: (ids) => set({ multiSelectedNodeIds: ids }),
   addAgentModalOpen: false,
   setAddAgentModalOpen: (open) => set({ addAgentModalOpen: open }),
   newSessionModalOpen: false,
@@ -431,7 +455,23 @@ export const useStore = create<AppState>((set) => ({
 
   // Focus Mode
   viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
-  setViewMode: (mode) => set({ viewMode: mode }),
+  setViewMode: (mode) =>
+    set((state) => {
+      // Selection mode only exists on the canvas — leaving it with the mode
+      // still armed makes card clicks silently toggle instead of opening.
+      if (mode !== "canvas" && state.selectionModeActive) {
+        return {
+          viewMode: mode,
+          selectionModeActive: false,
+          multiSelectedNodeIds: [],
+          nodes: state.nodes.map((n) => {
+            if (n.type === "category") return { ...n, selected: false, selectable: undefined };
+            return n.selected ? { ...n, selected: false } : n;
+          }),
+        };
+      }
+      return { viewMode: mode };
+    }),
   focusedSessionIds: persisted.focusedSessionIds ?? [],
   addFocusedSession: (nodeId) =>
     set((state) => ({
@@ -526,7 +566,15 @@ export const useStore = create<AppState>((set) => ({
 
   // Delete toast
   deleteToast: null,
-  setDeleteToast: (toast) => set({ deleteToast: toast }),
+  setDeleteToast: (toast) =>
+    set((state) => {
+      // A replaced toast's auto-dismiss timer would otherwise fire later and
+      // dismiss the new toast early, cutting its undo window short.
+      if (state.deleteToast && state.deleteToast !== toast) {
+        clearTimeout(state.deleteToast.timeout);
+      }
+      return { deleteToast: toast };
+    }),
 
   agentActivityEvents:
     (persisted.agentActivityEvents as AgentActivityEvent[] | undefined) ?? [],
