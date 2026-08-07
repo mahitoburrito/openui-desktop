@@ -36,7 +36,8 @@ export function loadState(): PersistedState {
       return data;
     }
   } catch (e) {
-    console.error("Failed to load state:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_eCWi6W] Failed to load state:", e);
   }
   return { nodes: [] };
 }
@@ -79,7 +80,8 @@ export function saveState(sessions: Map<string, Session>) {
   try {
     writeFileSync(getStateFile(), JSON.stringify(state, null, 2));
   } catch (e) {
-    console.error("Failed to save state:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_UVkmEv] Failed to save state:", e);
   }
 }
 
@@ -100,7 +102,8 @@ export function savePositions(positions: Record<string, { x: number; y: number }
     try {
       writeFileSync(getStateFile(), JSON.stringify(state, null, 2));
     } catch (e) {
-      console.error("Failed to save positions:", e);
+      // Probe Agent Error Log Trigger
+      console.error("[PRBE_ERROR_9JpsMB] Failed to save positions:", e);
     }
   }
 }
@@ -111,7 +114,8 @@ export function saveBuffer(sessionId: string, buffer: string[]) {
   try {
     writeFileSync(bufferFile, buffer.join(""));
   } catch (e) {
-    console.error("Failed to save buffer:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_KE5LIy] Failed to save buffer:", e);
   }
 }
 
@@ -123,7 +127,8 @@ export function loadBuffer(sessionId: string): string[] {
       return [readFileSync(bufferFile, "utf-8")];
     }
   } catch (e) {
-    console.error("Failed to load buffer:", e);
+    // Probe Agent Error Log Trigger
+    console.error("[PRBE_ERROR_ZmiwI1] Failed to load buffer:", e);
   }
   return [];
 }
