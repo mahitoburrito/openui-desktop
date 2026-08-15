@@ -1,4 +1,4 @@
-import { GitBranch, Folder, Wrench, Layers, Loader2, RotateCcw, FileDiff } from "lucide-react";
+import { GitBranch, Folder, Wrench, Layers, Loader2, RotateCcw, FileDiff, ArrowRight } from "lucide-react";
 import { AgentStatus, type AgentChangeSummary, type CheckpointSummary } from "../../stores/useStore";
 import { AgentIcon } from "../AgentIcon";
 
@@ -82,21 +82,22 @@ export function AgentNodeCard({
 
   return (
     <div
-      className={`relative w-[220px] rounded-lg border transition-colors duration-150 cursor-pointer ${
+      className={`group relative w-[220px] rounded-lg border transition-all duration-150 cursor-pointer hover:-translate-y-0.5 ${
         selected ? "ring-1 ring-zinc-200/25" : ""
       }`}
       style={{
-        backgroundColor: "#171818",
+        backgroundColor: "oklch(17.6% 0.008 255)",
         borderColor: needsAttention
           ? `${statusInfo.color}99`
           : selected
-            ? "#52525b"
+            ? "oklch(42% 0.012 255)"
             : isActive
               ? `${statusInfo.color}4d`
-              : "#2a2d2c",
-        boxShadow: selected ? "0 8px 22px rgba(0, 0, 0, 0.35)" : "0 2px 8px rgba(0, 0, 0, 0.26)",
+              : "oklch(30% 0.008 255 / 0.45)",
+        boxShadow: selected ? "0 8px 22px rgba(0, 0, 0, 0.3)" : "0 8px 24px rgba(0, 0, 0, 0.12)",
       }}
     >
+      <ArrowRight className="pointer-events-none absolute bottom-2.5 right-2.5 h-3.5 w-3.5 text-accent opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
       <div className="p-3">
         <div className="flex items-start gap-2.5">
           <div

@@ -101,23 +101,32 @@ export function Header() {
 
   return (
     <header className="h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark titlebar-drag">
-      <div className="flex min-w-0 items-center gap-2 pl-16">
-        <div className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-zinc-600" />
-        <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+      <div className="flex min-w-0 items-center gap-3 pl-16">
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full border border-zinc-600 font-serif text-[14px] italic leading-none text-zinc-100">
+            o
+          </span>
+          <span className="text-[13px] font-semibold tracking-tight text-zinc-100">OpenUI</span>
+        </div>
+        <span className="h-3.5 w-px flex-shrink-0 bg-border" />
+        <div className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-500">
           <Folder className="h-3.5 w-3.5 flex-shrink-0" />
-          <span className="max-w-[360px] truncate font-mono">{launchCwd || "~"}</span>
+          <span className="max-w-[320px] truncate font-mono text-[11px]">{launchCwd || "~"}</span>
         </div>
       </div>
 
       <div className="flex items-center gap-1.5 titlebar-no-drag">
-        <MicroButton
-          interaction="pulse"
+        <button
           onClick={() => setCommandPaletteOpen(true)}
-          className={commandButton}
+          className="mr-1 flex h-8 items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-xs text-zinc-500 transition-colors hover:bg-surface-hover hover:text-zinc-200"
           title="Search commands (Cmd+K)"
         >
-          <Search className="h-4 w-4" />
-        </MicroButton>
+          <Search className="h-3.5 w-3.5" />
+          <span className="hidden lg:inline">Find anything</span>
+          <kbd className="rounded border border-border bg-surface-active px-1 py-0.5 font-sans text-[9px] text-zinc-500">
+            ⌘K
+          </kbd>
+        </button>
         <MicroButton
           interaction="pulse"
           onClick={openBrowserPreview}

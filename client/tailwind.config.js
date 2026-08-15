@@ -8,19 +8,19 @@ export default {
     extend: {
       colors: {
         'canvas': {
-          DEFAULT: 'oklch(8.5% 0.004 260)',
-          dark: 'oklch(6.5% 0.004 260)',
-          light: 'oklch(13% 0.005 260)',
-          lighter: 'oklch(17% 0.006 260)'
+          DEFAULT: 'oklch(14.5% 0.006 255)',
+          dark: 'oklch(12% 0.006 255)',
+          light: 'oklch(17% 0.007 255)',
+          lighter: 'oklch(20% 0.008 255)'
         },
         'surface': {
-          DEFAULT: 'oklch(12% 0.005 260)',
-          hover: 'oklch(15.5% 0.006 260)',
-          active: 'oklch(19% 0.007 260)'
+          DEFAULT: 'oklch(17% 0.007 255)',
+          hover: 'oklch(19.5% 0.008 255)',
+          active: 'oklch(22.5% 0.009 255)'
         },
         'border': {
-          DEFAULT: 'oklch(24% 0.007 260)',
-          light: 'oklch(31% 0.009 260)'
+          DEFAULT: 'oklch(29% 0.009 255)',
+          light: 'oklch(34% 0.01 255)'
         },
         'accent': {
           DEFAULT: 'oklch(67% 0.13 250)',
