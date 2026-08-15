@@ -539,13 +539,21 @@ function AppContent() {
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: any) => {
-      // Only open sidebar for agent nodes
+      // Clicking a card zooms into that session (focus view), like the
+      // mockup — the canvas is the map, the card is the room. The old
+      // right-hand detail sidebar stays closed.
       if (node.type === "agent") {
-        setSelectedNodeId(node.id);
-        setSidebarOpen(true);
+        const store = useStore.getState();
+        store.setSelectedNodeId(node.id);
+        store.setSidebarOpen(false);
+        for (const id of store.focusedSessionIds) {
+          if (id !== node.id) store.removeFocusedSession(id);
+        }
+        store.addFocusedSession(node.id);
+        store.setViewMode("focus");
       }
     },
-    [setSelectedNodeId, setSidebarOpen]
+    []
   );
 
   const onPaneClick = useCallback(() => {
