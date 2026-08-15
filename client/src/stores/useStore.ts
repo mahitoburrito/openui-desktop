@@ -202,6 +202,9 @@ interface AppState {
   focusedSessionIds: string[]; // nodeIds pinned in focus mode
   addFocusedSession: (nodeId: string) => void;
   removeFocusedSession: (nodeId: string) => void;
+  // Open exactly this session in focus view (the mockup's click-a-card
+  // behavior): selects it, closes the old sidebar, replaces the focus set.
+  openSessionInFocus: (nodeId: string) => void;
   setFocusedSessions: (nodeIds: string[]) => void;
   // Per-layout pane size ratios for resizable splitter (sum to 1)
   splitRatios: Record<string, number[]>;
@@ -465,6 +468,13 @@ export const useStore = create<AppState>((set) => ({
     set((state) => ({
       focusedSessionIds: state.focusedSessionIds.filter((id) => id !== nodeId),
     })),
+  openSessionInFocus: (nodeId) =>
+    set({
+      selectedNodeId: nodeId,
+      sidebarOpen: false,
+      focusedSessionIds: [nodeId],
+      viewMode: "focus",
+    }),
   setFocusedSessions: (nodeIds) =>
     set({ focusedSessionIds: nodeIds.slice(0, MAX_FOCUSED_SESSIONS) }),
 

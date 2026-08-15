@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useReactFlow, type Node } from "@xyflow/react";
+import { type Node } from "@xyflow/react";
 import { useStore, type AgentSession, type AgentStatus } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { destroyCachedTerminal } from "./Terminal";
@@ -96,7 +96,6 @@ export function SessionListPanel() {
     setDeleteToast,
   } = useStore();
 
-  const reactFlow = useReactFlow();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const focusRailCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visibleCount, setVisibleCount] = useState(12);
@@ -291,24 +290,17 @@ export function SessionListPanel() {
     (nodeId: string) => {
       setSelectedNodeId(nodeId);
       if (viewMode === "focus") {
+        // Already in focus: clicking a list row adds it as another pane.
         addFocusedSession(nodeId);
         setSidebarOpen(false);
         setFocusRailOpen(false);
         return;
       }
 
-      setSidebarOpen(true);
-      if (viewMode !== "canvas") return;
-
-      const node = nodes.find((item) => item.id === nodeId);
-      if (node) {
-        reactFlow.setCenter(node.position.x + 110, node.position.y + 60, {
-          zoom: 1.2,
-          duration: 350,
-        });
-      }
+      // From canvas, opening a session means entering it (mockup behavior).
+      useStore.getState().openSessionInFocus(nodeId);
     },
-    [addFocusedSession, nodes, reactFlow, setSelectedNodeId, setSidebarOpen, viewMode],
+    [addFocusedSession, setSelectedNodeId, setSidebarOpen, viewMode],
   );
 
   // Double-click mirrors AgentNode: pin the session and jump into focus mode.

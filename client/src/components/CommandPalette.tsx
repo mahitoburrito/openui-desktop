@@ -211,10 +211,7 @@ export function CommandPalette() {
     };
 
     const openSession = (nodeId: string) => {
-      setSelectedNodeId(nodeId);
-      setSidebarOpen(true);
-      setViewMode("canvas");
-      setSessionListOpen(true);
+      useStore.getState().openSessionInFocus(nodeId);
 
       const node = nodes.find((n) => n.id === nodeId);
       if (node) {
@@ -262,13 +259,7 @@ export function CommandPalette() {
         customName: displayName,
       });
 
-      setSelectedNodeId(nodeId);
-      setSidebarOpen(true);
-      setViewMode("canvas");
-      reactFlow.setCenter(position.x + 110, position.y + 70, {
-        zoom: 1.15,
-        duration: 300,
-      });
+      useStore.getState().openSessionInFocus(nodeId);
 
       try {
         const response = await fetch("/api/sessions", {

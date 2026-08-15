@@ -16,8 +16,7 @@ export function useKeyboardShortcuts() {
         sessions,
         nodes,
         selectedNodeId,
-        setSelectedNodeId,
-        setSidebarOpen,
+            setSidebarOpen,
         addFocusedSession,
         setCommandPaletteOpen,
         activityCenterOpen,
@@ -116,8 +115,7 @@ export function useKeyboardShortcuts() {
         if (index < sessionEntries.length) {
           e.preventDefault();
           const [nodeId] = sessionEntries[index];
-          setSelectedNodeId(nodeId);
-          setSidebarOpen(true);
+          useStore.getState().openSessionInFocus(nodeId);
 
           if (viewMode === "canvas") {
             const node = nodes.find((n) => n.id === nodeId);

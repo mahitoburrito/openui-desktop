@@ -123,6 +123,15 @@ export function FocusMode() {
     }
   }, [availableSessions.length]);
 
+  // A focus view with nothing to show is a dead state (stale persisted ids,
+  // deleted sessions): fall back to the canvas instead of a ghost "Focus"
+  // header over an unresponsive workspace.
+  useEffect(() => {
+    if (viewMode === "focus" && focusedSessions.length === 0) {
+      setViewMode("canvas");
+    }
+  }, [viewMode, focusedSessions.length, setViewMode]);
+
   const handleClose = useCallback(
     (nodeId: string) => {
       removeFocusedSession(nodeId);

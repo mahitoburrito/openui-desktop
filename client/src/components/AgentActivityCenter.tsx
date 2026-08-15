@@ -60,8 +60,6 @@ function matchesFilter(event: AgentActivityEvent, filter: ActivityFilter): boole
 function ActivityRow({ event }: { event: AgentActivityEvent }) {
   const {
     sessions,
-    setSelectedNodeId,
-    setSidebarOpen,
     setViewMode,
     addFocusedSession,
     setDiffRepoPath,
@@ -74,9 +72,7 @@ function ActivityRow({ event }: { event: AgentActivityEvent }) {
 
   const openSession = () => {
     if (!sessionExists) return;
-    setSelectedNodeId(event.nodeId);
-    setSidebarOpen(true);
-    setViewMode("canvas");
+    useStore.getState().openSessionInFocus(event.nodeId);
     setActivityCenterOpen(false);
   };
 
