@@ -1,7 +1,7 @@
 import { Bell, Folder, Globe, Maximize2, Plus, Search, Trash2 } from "lucide-react";
-import { motion } from "framer-motion";
 import { useStore } from "../stores/useStore";
 import { destroyCachedTerminal } from "./Terminal";
+import { MicroButton } from "./micro";
 
 export function Header() {
   const {
@@ -110,14 +110,16 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-1.5 titlebar-no-drag">
-        <button
+        <MicroButton
+          interaction="pulse"
           onClick={() => setCommandPaletteOpen(true)}
           className={commandButton}
           title="Search commands (Cmd+K)"
         >
           <Search className="h-4 w-4" />
-        </button>
-        <button
+        </MicroButton>
+        <MicroButton
+          interaction="pulse"
           onClick={openBrowserPreview}
           disabled={!canOpenBrowserPreview}
           className={`${commandButton} ${
@@ -135,8 +137,9 @@ export function Header() {
           aria-label="Web preview"
         >
           <Globe className="h-4 w-4" />
-        </button>
-        <button
+        </MicroButton>
+        <MicroButton
+          interaction="pulse"
           onClick={openFocusMode}
           disabled={!canOpenFocusMode}
           className={commandButton}
@@ -149,8 +152,9 @@ export function Header() {
           }
         >
           <Maximize2 className="h-4 w-4" />
-        </button>
-        <button
+        </MicroButton>
+        <MicroButton
+          interaction="shake"
           onClick={() => setActivityCenterOpen(!activityCenterOpen)}
           className={commandButton}
           title={
@@ -166,24 +170,24 @@ export function Header() {
               {unreadActivityCount > 9 ? "9+" : unreadActivityCount}
             </span>
           )}
-        </button>
-        <button
+        </MicroButton>
+        <MicroButton
+          interaction="shake"
           onClick={deleteSelectedSession}
           disabled={!selectedSession}
           className={commandButton}
           title={selectedSession ? "Delete selected session" : "Select a session to delete"}
         >
           <Trash2 className="h-4 w-4" />
-        </button>
-        <motion.button
+        </MicroButton>
+        <MicroButton
+          interaction="rotate-quarter"
           onClick={() => setAddAgentModalOpen(true)}
           className="flex h-8 w-8 items-center justify-center rounded-md bg-zinc-100 text-canvas transition-colors hover:bg-white"
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
           title="New agent"
         >
           <Plus className="h-4 w-4" />
-        </motion.button>
+        </MicroButton>
       </div>
     </header>
   );

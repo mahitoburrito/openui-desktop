@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useStore } from "../stores/useStore";
 import { Codicon } from "./Codicon";
+import { MicroButton } from "./micro";
 
 // Normalize what the user types into a loadable URL. Bare hosts/ports get
 // http://, so "localhost:3000" and "example.com" both work.
@@ -364,23 +365,26 @@ export function BrowserView() {
 
       {/* Top bar */}
       <div className="flex-shrink-0 h-10 px-3 flex items-center gap-2 bg-canvas-dark border-b border-border">
-        <button
+        <MicroButton
+          interaction="nudge-left"
           onClick={goBack}
           className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors disabled:opacity-40"
           disabled={isNativeBrowser ? !nativeState.canGoBack : !src}
           title="Back"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
-        </button>
-        <button
+        </MicroButton>
+        <MicroButton
+          interaction="nudge-right"
           onClick={goForward}
           className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors disabled:opacity-40"
           disabled={isNativeBrowser ? !nativeState.canGoForward : !src}
           title="Forward"
         >
           <ArrowRight className="w-3.5 h-3.5" />
-        </button>
-        <button
+        </MicroButton>
+        <MicroButton
+          interaction="rotate"
           onClick={reload}
           className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors disabled:opacity-40"
           disabled={!src}
@@ -391,7 +395,7 @@ export function BrowserView() {
           ) : (
             <RotateCw className="w-3.5 h-3.5" />
           )}
-        </button>
+        </MicroButton>
 
         {browserAutoOpened && (
           <span
@@ -420,16 +424,18 @@ export function BrowserView() {
         </div>
 
         {src && (
-          <button
+          <MicroButton
+            interaction="nudge-right"
             onClick={openExternal}
             className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
             title="Open in external browser"
           >
             <ExternalLink className="w-3.5 h-3.5" />
-          </button>
+          </MicroButton>
         )}
 
-        <button
+        <MicroButton
+          interaction="shake"
           onClick={() => {
             setBrowserAutoOpened(false);
             setBrowserPanelOpen(false);
@@ -438,7 +444,7 @@ export function BrowserView() {
           title="Close browser dock (Escape)"
         >
           <Minimize2 className="w-3.5 h-3.5" />
-        </button>
+        </MicroButton>
       </div>
 
       {/* Content */}

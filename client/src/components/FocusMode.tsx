@@ -16,6 +16,7 @@ import {
   getFocusBackdrop,
 } from "../theme/appearance";
 import { Codicon } from "./Codicon";
+import { MicroButton, ExpandRing } from "./micro";
 import { Terminal } from "./Terminal";
 import { ResizableSplit } from "./ResizableSplit";
 import { InPaneMarkdown } from "./InPaneMarkdown";
@@ -427,14 +428,15 @@ export function FocusMode() {
         }`}
       >
         <div className="flex min-w-0 items-center gap-0.5">
-          <button
+          <MicroButton
+            interaction="nudge-left"
             onClick={() => setViewMode("canvas")}
             className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-surface-active hover:text-zinc-100 transition-colors"
             title="Zoom out to canvas (Escape)"
             aria-label="Zoom out to canvas"
           >
             <Codicon name="zoom-out" size={15} />
-          </button>
+          </MicroButton>
           <div className="flex min-w-0 items-center gap-2 px-1.5">
             <span className="truncate text-xs font-medium text-zinc-100">{focusTitle}</span>
             {count > 1 && (
@@ -449,14 +451,15 @@ export function FocusMode() {
         </div>
 
         <div className="flex items-center gap-1">
-          <button
+          <MicroButton
+            interaction="pulse"
             onClick={() => setCommandPaletteOpen(true)}
             className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-surface-active hover:text-zinc-100 transition-colors"
             title="Search commands (Cmd+K)"
             aria-label="Search"
           >
             <Codicon name="search" size={14} />
-          </button>
+          </MicroButton>
           <div className="relative">
             <button
               onClick={() => setSessionPickerOpen((open) => !open)}
@@ -541,7 +544,7 @@ export function FocusMode() {
               <button
                 key={option.id}
                 onClick={() => setFocusBackdrop(option.id)}
-                className={`w-5 h-5 rounded-full border transition-transform hover:scale-105 ${
+                className={`relative w-5 h-5 rounded-full border transition-transform hover:scale-105 ${
                   focusBackdrop === option.id ? "border-zinc-200" : "border-zinc-700"
                 }`}
                 style={{
@@ -551,7 +554,9 @@ export function FocusMode() {
                       : option.preview[0],
                 }}
                 title={`${option.name} backdrop — ${option.description}`}
-              />
+              >
+                <ExpandRing active={focusBackdrop === option.id} />
+              </button>
             ))}
           </div>
 
@@ -615,7 +620,8 @@ export function FocusMode() {
 
           <span className="mx-1 h-4 w-px bg-border" />
 
-          <button
+          <MicroButton
+            interaction="pulse"
             onClick={() => setBrowserPanelOpen(!browserPanelOpen)}
             className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
               browserPanelOpen
@@ -626,7 +632,7 @@ export function FocusMode() {
             aria-label="Browser dock"
           >
             <Codicon name="globe" size={14} />
-          </button>
+          </MicroButton>
         </div>
       </div>
 
