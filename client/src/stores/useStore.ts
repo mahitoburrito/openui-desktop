@@ -3,9 +3,11 @@ import { Node } from "@xyflow/react";
 import {
   DEFAULT_APPEARANCE,
   clampTerminalFontSize,
+  isFocusBackdropId,
   isTerminalFontFamilyId,
   isTerminalThemeId,
   isWorkspaceBackgroundId,
+  type FocusBackdropId,
   type TerminalFontFamilyId,
   type TerminalThemeId,
   type WorkspaceBackgroundId,
@@ -232,10 +234,15 @@ interface AppState {
   setBrowserPanelOpen: (open: boolean) => void;
   browserPanelWidth: number;
   setBrowserPanelWidth: (width: number) => void;
+  // True when the dock was opened by end-of-run URL detection, not the user.
+  browserAutoOpened: boolean;
+  setBrowserAutoOpened: (auto: boolean) => void;
 
   // Appearance
   workspaceBackground: WorkspaceBackgroundId;
   setWorkspaceBackground: (background: WorkspaceBackgroundId) => void;
+  focusBackdrop: FocusBackdropId;
+  setFocusBackdrop: (backdrop: FocusBackdropId) => void;
   terminalTheme: TerminalThemeId;
   setTerminalTheme: (theme: TerminalThemeId) => void;
   terminalFontFamily: TerminalFontFamilyId;
@@ -298,6 +305,9 @@ function loadPersistedUIState(): Partial<AppState> {
         workspaceBackground: isWorkspaceBackgroundId(parsed.workspaceBackground)
           ? parsed.workspaceBackground
           : DEFAULT_APPEARANCE.workspaceBackground,
+        focusBackdrop: isFocusBackdropId(parsed.focusBackdrop)
+          ? parsed.focusBackdrop
+          : DEFAULT_APPEARANCE.focusBackdrop,
         terminalTheme: isTerminalThemeId(parsed.terminalTheme)
           ? parsed.terminalTheme
           : DEFAULT_APPEARANCE.terminalTheme,
@@ -497,12 +507,16 @@ export const useStore = create<AppState>((set) => ({
   setBrowserPanelOpen: (open) => set({ browserPanelOpen: open }),
   browserPanelWidth: clampBrowserPanelWidth(persisted.browserPanelWidth),
   setBrowserPanelWidth: (width) => set({ browserPanelWidth: clampBrowserPanelWidth(width) }),
+  browserAutoOpened: false,
+  setBrowserAutoOpened: (auto) => set({ browserAutoOpened: auto }),
 
   // Appearance
   workspaceBackground:
     (persisted.workspaceBackground as WorkspaceBackgroundId) ??
     DEFAULT_APPEARANCE.workspaceBackground,
   setWorkspaceBackground: (background) => set({ workspaceBackground: background }),
+  focusBackdrop: (persisted.focusBackdrop as FocusBackdropId) ?? DEFAULT_APPEARANCE.focusBackdrop,
+  setFocusBackdrop: (backdrop) => set({ focusBackdrop: backdrop }),
   terminalTheme:
     (persisted.terminalTheme as TerminalThemeId) ?? DEFAULT_APPEARANCE.terminalTheme,
   setTerminalTheme: (theme) => set({ terminalTheme: theme }),
@@ -620,6 +634,7 @@ useStore.subscribe((state) => {
         browserPanelOpen: state.browserPanelOpen,
         browserPanelWidth: state.browserPanelWidth,
         workspaceBackground: state.workspaceBackground,
+        focusBackdrop: state.focusBackdrop,
         terminalTheme: state.terminalTheme,
         terminalFontFamily: state.terminalFontFamily,
         terminalFontSize: state.terminalFontSize,

@@ -10,6 +10,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useStore } from "../stores/useStore";
+import { Codicon } from "./Codicon";
 
 // Normalize what the user types into a loadable URL. Bare hosts/ports get
 // http://, so "localhost:3000" and "example.com" both work.
@@ -44,6 +45,8 @@ export function BrowserView() {
     setBrowserPanelOpen,
     browserPanelWidth,
     setBrowserPanelWidth,
+    browserAutoOpened,
+    setBrowserAutoOpened,
   } = useStore();
 
   const isNativeBrowser = Boolean(window.electronAPI?.isElectron);
@@ -61,6 +64,7 @@ export function BrowserView() {
   });
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const loadedRef = useRef(false);
   const syncFrameRef = useRef<number | null>(null);
   const autoFitAppliedRef = useRef(false);
@@ -119,33 +123,34 @@ export function BrowserView() {
     return () => window.electronAPI?.removeAllListeners("browser:state");
   }, [isNativeBrowser, setBrowserUrl]);
 
-  // Width is passed explicitly so drag handlers can sync against the live
-  // drag width — reading browserPanelWidth here would close over the value
-  // at drag start and leave the native view painted at the old size.
-  const syncNativeBoundsFor = useCallback(
-    (panelWidth: number) => {
-      if (!isNativeBrowser || !window.electronAPI || !browserPanelOpen) return;
-      const rect = contentRef.current?.getBoundingClientRect();
-      if (!rect || rect.height <= 0) return;
-
-      const x = Math.max(0, window.innerWidth - panelWidth + RESIZE_GUTTER);
-      const y = Math.max(0, rect.top);
-      const width = Math.max(1, window.innerWidth - x);
-      const height = Math.max(1, Math.min(rect.height, window.innerHeight - y));
-
-      void window.electronAPI.invoke("browser:setBounds", {
-        x,
-        y,
-        width,
-        height,
-      });
-    },
-    [browserPanelOpen, isNativeBrowser],
-  );
-
+  // Bounds come from the live content rect, which reflects both the drag
+  // width (set imperatively during resize) and the entrance animation's
+  // transform — so the native view tracks the panel instead of popping to
+  // its final position after the slide finishes.
   const syncNativeBounds = useCallback(() => {
-    syncNativeBoundsFor(browserPanelWidth);
-  }, [browserPanelWidth, syncNativeBoundsFor]);
+    if (!isNativeBrowser || !window.electronAPI || !browserPanelOpen) return;
+    const rect = contentRef.current?.getBoundingClientRect();
+    if (!rect || rect.height <= 0) return;
+
+    const x = Math.max(0, Math.round(rect.left) + RESIZE_GUTTER);
+    const y = Math.max(0, rect.top);
+    const width = Math.max(1, window.innerWidth - x);
+    const height = Math.max(1, Math.min(rect.height, window.innerHeight - y));
+
+    void window.electronAPI.invoke("browser:setBounds", {
+      x,
+      y,
+      width,
+      height,
+    });
+  }, [browserPanelOpen, isNativeBrowser]);
+
+  const syncNativeBoundsFor = useCallback(
+    (_panelWidth: number) => {
+      syncNativeBounds();
+    },
+    [syncNativeBounds],
+  );
 
   const scheduleNativeBoundsSync = useCallback(() => {
     if (!isNativeBrowser || !browserPanelOpen) return;
@@ -208,13 +213,23 @@ export function BrowserView() {
 
   useEffect(() => {
     if (!browserPanelOpen) return;
+    let frame: number | null = null;
     const handleResize = () => {
-      setBrowserPanelWidth(clampPanelWidth(browserPanelWidth));
-      scheduleNativeBoundsSync();
+      // rAF-throttled: window resize fires per frame and the store write
+      // re-renders the whole app; once per frame is plenty.
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        setBrowserPanelWidth(clampPanelWidth(browserPanelWidth));
+        scheduleNativeBoundsSync();
+      });
     };
     window.addEventListener("resize", handleResize);
     handleResize();
-    return () => window.removeEventListener("resize", handleResize);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      window.removeEventListener("resize", handleResize);
+    };
   }, [
     browserPanelOpen,
     browserPanelWidth,
@@ -232,11 +247,13 @@ export function BrowserView() {
 
       const handleMove = (moveEvent: MouseEvent) => {
         const next = clampPanelWidth(startWidth + startX - moveEvent.clientX);
-        setBrowserPanelWidth(next);
-        // Sync the native view against the explicit drag width (rAF-throttled).
-        // The state-driven sync path lags a render behind the mouse and the
-        // listeners attached here never see the re-rendered callbacks.
         dragWidthRef.current = next;
+        // Imperative width during the drag: writing the store on every
+        // mousemove re-renders the whole app (all mounted terminals) per
+        // frame and stutters. The store gets one commit on mouseup.
+        if (panelRef.current) {
+          panelRef.current.style.width = `${next}px`;
+        }
         if (dragFrameRef.current === null) {
           dragFrameRef.current = requestAnimationFrame(() => {
             dragFrameRef.current = null;
@@ -250,7 +267,8 @@ export function BrowserView() {
         document.removeEventListener("mouseup", handleUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
-        // Final settle so the view matches exactly where the drag ended.
+        // Single state commit + final settle at the exact drop position.
+        setBrowserPanelWidth(dragWidthRef.current);
         syncNativeBoundsFor(dragWidthRef.current);
       };
 
@@ -265,6 +283,7 @@ export function BrowserView() {
   const navigate = (raw: string) => {
     const url = normalizeUrl(raw);
     if (!url) return;
+    setBrowserAutoOpened(false);
     setSrc(url);
     setBrowserUrl(url);
     setInput(url);
@@ -321,12 +340,16 @@ export function BrowserView() {
 
   return (
     <motion.div
+      ref={panelRef}
       initial={{ x: "100%", opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: "100%", opacity: 0 }}
-      transition={{ type: "spring", stiffness: 400, damping: 42 }}
+      // Short tween instead of a spring: the native WebContentsView follows
+      // via onUpdate, and a spring's overshoot makes it visibly rubber-band.
+      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
       className="absolute right-0 top-0 bottom-0 z-30 bg-canvas-dark border-l border-border flex flex-col shadow-2xl"
       style={{ width: browserPanelWidth }}
+      onUpdate={syncNativeBounds}
       onAnimationComplete={scheduleNativeBoundsSync}
     >
       {/* Full-height resize rail. The native view is inset by RESIZE_GUTTER,
@@ -370,6 +393,16 @@ export function BrowserView() {
           )}
         </button>
 
+        {browserAutoOpened && (
+          <span
+            className="flex flex-shrink-0 items-center gap-1 rounded bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold text-accent"
+            title="Opened automatically from the agent's output"
+          >
+            <Codicon name="sparkle" size={10} />
+            Auto
+          </span>
+        )}
+
         <div className="flex-1 flex items-center gap-2 px-2.5 py-1 rounded-md bg-canvas border border-border">
           <Globe className="w-3.5 h-3.5 text-zinc-600 flex-shrink-0" />
           <input
@@ -397,7 +430,10 @@ export function BrowserView() {
         )}
 
         <button
-          onClick={() => setBrowserPanelOpen(false)}
+          onClick={() => {
+            setBrowserAutoOpened(false);
+            setBrowserPanelOpen(false);
+          }}
           className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-white hover:bg-surface-active transition-colors"
           title="Close browser dock (Escape)"
         >

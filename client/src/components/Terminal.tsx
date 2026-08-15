@@ -243,6 +243,8 @@ function flushPendingLocalPreview(entry: CachedTerminal) {
 
   store.setBrowserUrl(url);
   if (isFocusedSession) {
+    // Mark the open as automatic so the dock can show its "Auto" chip.
+    store.setBrowserAutoOpened(true);
     store.setBrowserPanelOpen(true);
   }
 }

@@ -21,10 +21,14 @@ export default {
         'border': {
           DEFAULT: 'oklch(24% 0.007 260)',
           light: 'oklch(31% 0.009 260)'
+        },
+        'accent': {
+          DEFAULT: 'oklch(67% 0.13 250)',
+          soft: 'oklch(67% 0.13 250 / 0.14)'
         }
       },
       fontFamily: {
-        sans: ['"SF Pro Text"', '"SF Pro Display"', 'ui-sans-serif', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'system-ui', 'sans-serif'],
+        sans: ['"Founders Grotesk"', '"Archivo Variable"', 'ui-sans-serif', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'system-ui', 'sans-serif'],
         mono: ['"SF Mono"', 'ui-monospace', '"Cascadia Code"', 'Menlo', 'monospace'],
       },
       boxShadow: {

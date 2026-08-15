@@ -2,20 +2,20 @@ import { useState, useCallback, useMemo, useEffect, ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
-  Minimize2,
   Maximize2,
   Wrench,
   MessageSquare,
   WifiOff,
   RotateCcw,
-  Columns,
-  Rows,
-  Grid2X2,
-  Square,
-  Plus,
 } from "lucide-react";
 import { useStore, AgentStatus } from "../stores/useStore";
-import { TERMINAL_THEMES, getTerminalTheme } from "../theme/appearance";
+import {
+  TERMINAL_THEMES,
+  FOCUS_BACKDROPS,
+  getTerminalTheme,
+  getFocusBackdrop,
+} from "../theme/appearance";
+import { Codicon } from "./Codicon";
 import { Terminal } from "./Terminal";
 import { ResizableSplit } from "./ResizableSplit";
 import { InPaneMarkdown } from "./InPaneMarkdown";
@@ -58,6 +58,11 @@ export function FocusMode() {
     setNewSessionForNodeId,
     terminalTheme,
     setTerminalTheme,
+    focusBackdrop,
+    setFocusBackdrop,
+    setCommandPaletteOpen,
+    browserPanelOpen,
+    setBrowserPanelOpen,
   } = useStore();
 
   const [activePane, setActivePane] = useState<string | null>(null);
@@ -66,6 +71,8 @@ export function FocusMode() {
   const [openedFiles, setOpenedFiles] = useState<Record<string, string | null>>({});
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
   const terminalPalette = getTerminalTheme(terminalTheme);
+  const backdrop = getFocusBackdrop(focusBackdrop);
+  const backdropActive = focusBackdrop !== "none";
 
   const setOpenedFile = (nodeId: string, path: string | null) => {
     setOpenedFiles((prev) => ({ ...prev, [nodeId]: path }));
@@ -160,6 +167,14 @@ export function FocusMode() {
   if (viewMode !== "focus" || focusedSessions.length === 0) return null;
 
   const count = focusedSessions.length;
+  // The header shows ONE session identity (the active pane), not a tab parade.
+  const activeEntry =
+    focusedSessions.find((entry) => entry.nodeId === activePane) ?? focusedSessions[0];
+  const activeInfo = activeEntry?.session;
+  const focusTitle = activeInfo
+    ? activeInfo.customName || activeInfo.agentName
+    : "Focus";
+  const focusStatus = statusConfig[activeInfo?.status ?? "idle"] || statusConfig.idle;
   const visibleSessions = maximizedPane
     ? focusedSessions.filter((s) => s.nodeId === maximizedPane)
     : focusedSessions;
@@ -198,7 +213,7 @@ export function FocusMode() {
         key={nodeId}
         className={`flex flex-col h-full min-h-0 cursor-text transition-all ${
           isActive ? "bg-canvas" : "bg-canvas-dark"
-        }`}
+        }${backdropActive ? " overflow-hidden rounded-lg ring-1 ring-white/5" : ""}`}
         onClick={() => setActivePane(nodeId)}
         style={{
           backgroundColor: isActive ? terminalPalette.surface : terminalPalette.background,
@@ -402,20 +417,46 @@ export function FocusMode() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="absolute inset-0 z-30 bg-canvas flex flex-col"
+      className="absolute inset-0 z-30 flex flex-col"
+      style={{ background: backdrop.background }}
     >
-      {/* Top bar */}
-      <div className="flex-shrink-0 h-8 px-3 flex items-center justify-between bg-canvas-dark border-b border-border">
-        <div className="flex items-center gap-3">
-          <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">
-            Focus Mode
-          </span>
-          <span className="text-[10px] text-zinc-600">
-            {count} session{count !== 1 ? "s" : ""}
-          </span>
+      {/* Top bar: one session identity on the left, tools clustered on the right */}
+      <div
+        className={`flex-shrink-0 h-9 pl-2 pr-2.5 flex items-center justify-between border-b border-border ${
+          backdropActive ? "bg-canvas-dark/70 backdrop-blur" : "bg-canvas-dark"
+        }`}
+      >
+        <div className="flex min-w-0 items-center gap-0.5">
+          <button
+            onClick={() => setViewMode("canvas")}
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-surface-active hover:text-zinc-100 transition-colors"
+            title="Zoom out to canvas (Escape)"
+            aria-label="Zoom out to canvas"
+          >
+            <Codicon name="zoom-out" size={15} />
+          </button>
+          <div className="flex min-w-0 items-center gap-2 px-1.5">
+            <span className="truncate text-xs font-medium text-zinc-100">{focusTitle}</span>
+            {count > 1 && (
+              <span className="flex-shrink-0 text-[10px] text-zinc-500">· {count} panes</span>
+            )}
+            <span
+              className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+              style={{ backgroundColor: focusStatus.color }}
+              title={focusStatus.label}
+            />
+          </div>
         </div>
 
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => setCommandPaletteOpen(true)}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-surface-active hover:text-zinc-100 transition-colors"
+            title="Search commands (Cmd+K)"
+            aria-label="Search"
+          >
+            <Codicon name="search" size={14} />
+          </button>
           <div className="relative">
             <button
               onClick={() => setSessionPickerOpen((open) => !open)}
@@ -427,7 +468,7 @@ export function FocusMode() {
                   : "Add session to focus mode"
               }
             >
-              <Plus className="w-3 h-3" />
+              <Codicon name="add" size={13} />
               Session
             </button>
 
@@ -492,6 +533,28 @@ export function FocusMode() {
             </AnimatePresence>
           </div>
 
+          <span className="mx-1 h-4 w-px bg-border" />
+
+          {/* Focus wallpapers (iMessage-style backdrops) */}
+          <div className="hidden md:flex items-center gap-1 mr-1 px-1 py-0.5 rounded bg-canvas/60">
+            {FOCUS_BACKDROPS.map((option) => (
+              <button
+                key={option.id}
+                onClick={() => setFocusBackdrop(option.id)}
+                className={`w-5 h-5 rounded-full border transition-transform hover:scale-105 ${
+                  focusBackdrop === option.id ? "border-zinc-200" : "border-zinc-700"
+                }`}
+                style={{
+                  background:
+                    option.preview.length > 1
+                      ? `linear-gradient(135deg, ${option.preview.join(", ")})`
+                      : option.preview[0],
+                }}
+                title={`${option.name} backdrop — ${option.description}`}
+              />
+            ))}
+          </div>
+
           <div className="hidden md:flex items-center gap-1 mr-2 px-1 py-0.5 rounded bg-canvas">
             {TERMINAL_THEMES.map((theme) => (
               <button
@@ -516,7 +579,7 @@ export function FocusMode() {
                 }`}
                 title="Auto layout"
               >
-                <Square className="w-3 h-3" />
+                <Codicon name="layout" size={13} />
               </button>
               <button
                 onClick={() => setLayout("columns")}
@@ -525,7 +588,7 @@ export function FocusMode() {
                 }`}
                 title="Side by side"
               >
-                <Columns className="w-3 h-3" />
+                <Codicon name="split-horizontal" size={13} />
               </button>
               <button
                 onClick={() => setLayout("rows")}
@@ -534,7 +597,7 @@ export function FocusMode() {
                 }`}
                 title="Stacked"
               >
-                <Rows className="w-3 h-3" />
+                <Codicon name="split-vertical" size={13} />
               </button>
               {count >= 3 && (
                 <button
@@ -544,25 +607,31 @@ export function FocusMode() {
                   }`}
                   title="Grid"
                 >
-                  <Grid2X2 className="w-3 h-3" />
+                  <Codicon name="table" size={13} />
                 </button>
               )}
             </div>
           )}
 
+          <span className="mx-1 h-4 w-px bg-border" />
+
           <button
-            onClick={() => setViewMode("canvas")}
-            className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] text-zinc-400 hover:text-white hover:bg-surface-active transition-colors"
-            title="Exit focus mode (Escape)"
+            onClick={() => setBrowserPanelOpen(!browserPanelOpen)}
+            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+              browserPanelOpen
+                ? "bg-surface-active text-zinc-100"
+                : "text-zinc-500 hover:bg-surface-active hover:text-zinc-100"
+            }`}
+            title="Browser dock (Cmd+Shift+B)"
+            aria-label="Browser dock"
           >
-            <Minimize2 className="w-3 h-3" />
-            Canvas
+            <Codicon name="globe" size={14} />
           </button>
         </div>
       </div>
 
-      {/* Resizable terminal panes */}
-      <div className="flex-1 min-h-0 bg-border">{body}</div>
+      {/* Resizable terminal panes — wallpaper frames the panes when active */}
+      <div className={`flex-1 min-h-0 ${backdropActive ? "p-2.5" : "bg-border"}`}>{body}</div>
     </motion.div>
   );
 }

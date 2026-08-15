@@ -1,4 +1,5 @@
 export type WorkspaceBackgroundId = "graphite" | "moss" | "dusk" | "paper";
+export type FocusBackdropId = "none" | "aurora" | "ember" | "abyss" | "meadow";
 export type TerminalThemeId = "graphite" | "ember" | "paper" | "matrix";
 export type TerminalFontFamilyId = "sf-mono" | "jetbrains" | "cascadia" | "berkeley";
 
@@ -96,6 +97,59 @@ export const WORKSPACE_BACKGROUNDS: WorkspaceBackground[] = [
     controls: "oklch(96% 0.01 82)",
     border: "oklch(77% 0.018 82)",
     preview: ["oklch(91% 0.014 82)", "oklch(80% 0.018 82)", "oklch(36% 0.038 120)"],
+  },
+];
+
+export interface FocusBackdrop {
+  id: FocusBackdropId;
+  name: string;
+  description: string;
+  /** Layered CSS background painted behind the focus-mode panes. */
+  background: string;
+  preview: string[];
+}
+
+// iMessage-style wallpapers for focus mode: quiet washes over the graphite
+// base so terminals stay legible while the workspace picks up a mood.
+export const FOCUS_BACKDROPS: FocusBackdrop[] = [
+  {
+    id: "none",
+    name: "Graphite",
+    description: "Plain workspace",
+    background: "oklch(8.5% 0.004 260)",
+    preview: ["oklch(8.5% 0.004 260)"],
+  },
+  {
+    id: "aurora",
+    name: "Aurora",
+    description: "Violet and blue wash",
+    background:
+      "radial-gradient(120% 90% at 12% -10%, oklch(36% 0.1 295 / 0.34), transparent 55%), radial-gradient(110% 85% at 95% 110%, oklch(38% 0.09 230 / 0.3), transparent 60%), oklch(8.5% 0.004 260)",
+    preview: ["oklch(24% 0.07 295)", "oklch(22% 0.06 230)"],
+  },
+  {
+    id: "ember",
+    name: "Ember",
+    description: "Low warm glow",
+    background:
+      "radial-gradient(120% 95% at 85% -10%, oklch(38% 0.07 45 / 0.3), transparent 55%), radial-gradient(100% 80% at 5% 110%, oklch(32% 0.06 25 / 0.26), transparent 60%), oklch(8.5% 0.004 260)",
+    preview: ["oklch(24% 0.05 45)", "oklch(18% 0.04 25)"],
+  },
+  {
+    id: "abyss",
+    name: "Abyss",
+    description: "Deep ocean blue",
+    background:
+      "radial-gradient(130% 100% at 50% -15%, oklch(30% 0.08 250 / 0.4), transparent 60%), linear-gradient(180deg, oklch(10% 0.02 250), oklch(8% 0.015 260))",
+    preview: ["oklch(22% 0.06 250)", "oklch(12% 0.02 255)"],
+  },
+  {
+    id: "meadow",
+    name: "Meadow",
+    description: "Soft green field",
+    background:
+      "radial-gradient(120% 90% at 20% -10%, oklch(34% 0.07 150 / 0.3), transparent 55%), radial-gradient(100% 80% at 90% 110%, oklch(30% 0.06 175 / 0.24), transparent 60%), oklch(8.5% 0.004 260)",
+    preview: ["oklch(22% 0.05 150)", "oklch(16% 0.04 175)"],
   },
 ];
 
@@ -251,10 +305,19 @@ export const TERMINAL_FONT_FAMILIES: TerminalFontFamily[] = [
 
 export const DEFAULT_APPEARANCE = {
   workspaceBackground: "graphite" as WorkspaceBackgroundId,
+  focusBackdrop: "none" as FocusBackdropId,
   terminalTheme: "graphite" as TerminalThemeId,
   terminalFontFamily: "sf-mono" as TerminalFontFamilyId,
   terminalFontSize: 13,
 };
+
+export function getFocusBackdrop(id: FocusBackdropId): FocusBackdrop {
+  return FOCUS_BACKDROPS.find((backdrop) => backdrop.id === id) ?? FOCUS_BACKDROPS[0];
+}
+
+export function isFocusBackdropId(value: unknown): value is FocusBackdropId {
+  return typeof value === "string" && FOCUS_BACKDROPS.some((backdrop) => backdrop.id === value);
+}
 
 export function getWorkspaceBackground(id: WorkspaceBackgroundId): WorkspaceBackground {
   return WORKSPACE_BACKGROUNDS.find((theme) => theme.id === id) ?? WORKSPACE_BACKGROUNDS[0];
