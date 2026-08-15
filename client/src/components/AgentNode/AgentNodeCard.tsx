@@ -1,4 +1,4 @@
-import { GitBranch, Folder, Wrench, Layers, Loader2, RotateCcw, FileDiff, ArrowRight } from "lucide-react";
+import { Loader2, RotateCcw, FileDiff, ArrowRight } from "lucide-react";
 import { AgentStatus, type AgentChangeSummary, type CheckpointSummary } from "../../stores/useStore";
 import { AgentIcon } from "../AgentIcon";
 
@@ -55,12 +55,8 @@ export function AgentNodeCard({
   agentId,
   status,
   currentTool,
-  cwd,
-  originalCwd,
-  gitBranch,
   ticketId,
   ticketTitle,
-  worktreePaths,
   launchCheckpoint,
   changeSummary,
   isRestoringCheckpoint = false,
@@ -71,10 +67,6 @@ export function AgentNodeCard({
   const isActive = statusInfo.isActive;
   const isToolCalling = status === "tool_calling";
   const needsAttention = statusInfo.needsAttention;
-
-  // Extract directory name - use originalCwd (mother repo) if available, otherwise cwd
-  const displayCwd = originalCwd || cwd;
-  const dirName = displayCwd ? displayCwd.split("/").pop() || displayCwd : null;
 
   // Get display name for current tool
   const toolDisplay = currentTool ? (toolDisplayNames[currentTool] || currentTool) : null;
@@ -101,35 +93,27 @@ export function AgentNodeCard({
       <div className="p-3">
         <div className="flex items-start gap-2.5">
           <div
-            className="relative w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: `${displayColor}18` }}
+            className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: `${displayColor}16` }}
           >
-            <AgentIcon agentId={agentId} className="h-[18px] w-[18px]" style={{ color: displayColor }} />
-            <span
-              className="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full border border-canvas-dark"
-              style={{ backgroundColor: displayColor }}
-            />
+            <AgentIcon agentId={agentId} className="h-4 w-4" style={{ color: displayColor }} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center justify-between gap-2">
-              <h3 className="min-w-0 truncate text-sm font-medium leading-tight text-zinc-100">
-                {displayName}
-              </h3>
-              <span className="flex flex-shrink-0 items-center gap-1 text-[10px]" style={{ color: statusInfo.color }}>
-                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: statusInfo.color }} />
-                {statusInfo.label}
-              </span>
-            </div>
-            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-zinc-500">
-              {status === "creating" && <Loader2 className="w-3 h-3 animate-spin" style={{ color: statusInfo.color }} />}
-              {isToolCalling && toolDisplay ? (
-                <>
-                  <Wrench className="w-3 h-3 flex-shrink-0" />
-                  <span className="truncate">{toolDisplay}</span>
-                </>
-              ) : (
-                <span className="truncate">{agentId}</span>
+            <h3 className="min-w-0 pr-5 text-xs font-medium leading-snug text-zinc-100 line-clamp-2">
+              {displayName}
+            </h3>
+            <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-[10px] text-zinc-500">
+              {status === "creating" && (
+                <Loader2 className="w-3 h-3 animate-spin" style={{ color: statusInfo.color }} />
               )}
+              <span
+                className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                style={{ backgroundColor: statusInfo.color }}
+              />
+              <span className="truncate">
+                {statusInfo.label}
+                {isToolCalling && toolDisplay ? ` · ${toolDisplay}` : ""}
+              </span>
             </div>
           </div>
         </div>
@@ -142,30 +126,6 @@ export function AgentNodeCard({
             </div>
             {ticketTitle && (
               <p className="text-[10px] text-zinc-500 truncate mt-0.5">{ticketTitle}</p>
-            )}
-          </div>
-        )}
-
-        {/* Repo & Branch */}
-        {(dirName || gitBranch || (worktreePaths && Object.keys(worktreePaths).length > 1)) && (
-          <div className="mt-2 flex min-w-0 items-center gap-2 text-[10px] text-zinc-500">
-            {dirName && (
-              <div className="flex min-w-0 items-center gap-1">
-                <Folder className="w-3 h-3 flex-shrink-0" />
-                <span className="font-mono truncate">{dirName}</span>
-              </div>
-            )}
-            {gitBranch && (
-              <div className="flex min-w-0 items-center gap-1">
-                <GitBranch className="w-3 h-3 flex-shrink-0" />
-                <span className="font-mono truncate">{gitBranch}</span>
-              </div>
-            )}
-            {worktreePaths && Object.keys(worktreePaths).length > 1 && (
-              <div className="flex flex-shrink-0 items-center gap-1" title={Object.entries(worktreePaths).map(([n, p]) => `${n}: ${p}`).join('\n')}>
-                <Layers className="w-3 h-3 flex-shrink-0" />
-                <span>{Object.keys(worktreePaths).length} repos</span>
-              </div>
             )}
           </div>
         )}

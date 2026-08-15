@@ -99,20 +99,28 @@ export function Header() {
   const commandButton =
     "relative flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-active hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-zinc-500";
 
+  const workspaceName = launchCwd?.split("/").filter(Boolean).pop() || "~";
+
   return (
-    <header className="h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark titlebar-drag">
-      <div className="flex min-w-0 items-center gap-3 pl-16">
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full border border-zinc-600 font-serif text-[14px] italic leading-none text-zinc-100">
-            o
-          </span>
-          <span className="text-[13px] font-semibold tracking-tight text-zinc-100">OpenUI</span>
-        </div>
-        <span className="h-3.5 w-px flex-shrink-0 bg-border" />
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-zinc-500">
-          <Folder className="h-3.5 w-3.5 flex-shrink-0" />
-          <span className="max-w-[320px] truncate font-mono text-[11px]">{launchCwd || "~"}</span>
-        </div>
+    <header className="relative h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark titlebar-drag">
+      <div className="flex min-w-0 items-center gap-2 pl-16">
+        <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-zinc-600 font-serif text-[14px] italic leading-none text-zinc-100">
+          o
+        </span>
+        <span className="text-[13px] font-semibold tracking-tight text-zinc-100">OpenUI</span>
+      </div>
+
+      {/* Centered location, like the mockup: "<workspace> | Canvas" */}
+      <div
+        className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-2.5 text-xs md:flex"
+        title={launchCwd || "~"}
+      >
+        <span className="flex items-center gap-1.5 font-medium text-zinc-200">
+          <Folder className="h-3.5 w-3.5 text-zinc-500" />
+          {workspaceName}
+        </span>
+        <span className="h-3 w-px bg-border" />
+        <span className="text-zinc-500">{viewMode === "focus" ? "Focus" : "Canvas"}</span>
       </div>
 
       <div className="flex items-center gap-1.5 titlebar-no-drag">

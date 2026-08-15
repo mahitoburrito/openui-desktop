@@ -590,9 +590,10 @@ function AppContent() {
               onPaneClick={onPaneClick}
               nodeTypes={nodeTypes}
               fitView
+              fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
               proOptions={{ hideAttribution: true }}
               minZoom={0.3}
-              maxZoom={2}
+              maxZoom={1.5}
               nodesDraggable
               nodesConnectable={false}
               snapToGrid
@@ -601,8 +602,8 @@ function AppContent() {
             >
               <Background
                 variant={BackgroundVariant.Dots}
-                gap={24}
-                size={1}
+                gap={22}
+                size={0.9}
                 color={workspace.dots}
               />
               <Controls
