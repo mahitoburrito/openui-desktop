@@ -66,6 +66,7 @@ export interface Session {
   pluginReportedStatus?: boolean;
   lastPluginStatusTime?: number;
   claudeSessionId?: string;
+  codexSessionId?: string;
   currentTool?: string;
   lastHookEvent?: string;
   // Permission detection
@@ -122,6 +123,8 @@ export interface PersistedNode {
   position: { x: number; y: number };
   worktreePaths?: Record<string, string>;
   launchCheckpoint?: CheckpointSummary;
+  claudeSessionId?: string;
+  codexSessionId?: string;
 }
 
 export interface PersistedCategory {

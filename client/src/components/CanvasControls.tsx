@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Plus, FolderPlus, Sparkles } from "lucide-react";
+import { Plus, FolderPlus, Sparkles } from "./icons";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../stores/useStore";
 import {

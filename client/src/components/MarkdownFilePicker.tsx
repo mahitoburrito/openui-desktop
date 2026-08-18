@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { X, FileText, Search, FolderOpen, Loader2 } from "lucide-react";
+import { X, FileText, Search, FolderOpen, Loader2 } from "./icons";
 
 interface MarkdownFile {
   name: string;

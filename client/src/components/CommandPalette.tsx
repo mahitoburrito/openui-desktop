@@ -1,31 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  Bell,
-  FileDiff,
-  Folder,
-  GitBranch,
-  Globe,
-  Maximize2,
-  Monitor,
-  Palette,
-  Play,
-  Plus,
-  RotateCcw,
-  Save,
-  Search,
-  Sparkles,
-  Terminal,
-} from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../stores/useStore";
-import {
-  TERMINAL_THEMES,
-  WORKSPACE_BACKGROUNDS,
-  type TerminalThemeId,
-  type WorkspaceBackgroundId,
-} from "../theme/appearance";
+import { Codicon } from "./Codicon";
 import {
   buildTitleClusterCanvasLayout,
   fetchTitleClusterPlan,
@@ -36,7 +14,7 @@ interface Command {
   id: string;
   title: string;
   hint: string;
-  icon: typeof Search;
+  icon: string;
   surface?: boolean;
   keepOpen?: boolean;
   keywords?: string;
@@ -64,6 +42,7 @@ function normalize(value: string): string {
 const TASK_NODE_WIDTH = 220;
 const TASK_NODE_HEIGHT = 140;
 const TASK_NODE_SPACING = 32;
+const PROBE_TRACKING_URL = "https://research.prbe.ai/experiments";
 
 function findTaskPosition(
   nodes: { position?: { x: number; y: number } }[],
@@ -130,11 +109,10 @@ export function CommandPalette() {
     launchCwd,
     diffRepoPath,
     browserUrl,
+    setBrowserUrl,
     browserPanelOpen,
     setBrowserPanelOpen,
     openMarkdownFiles,
-    setWorkspaceBackground,
-    setTerminalTheme,
     setActivityCenterOpen,
     canvasLayoutSnapshots,
     saveCanvasLayoutSnapshot,
@@ -295,7 +273,7 @@ export function CommandPalette() {
         id: "new-agent",
         title: "New agent",
         hint: "Start a Codex or Claude session",
-        icon: Plus,
+        icon: "add",
         surface: true,
         run: () => setAddAgentModalOpen(true),
       },
@@ -303,27 +281,17 @@ export function CommandPalette() {
         id: "go-to-session",
         title: "Go to session",
         hint: "Jump to an active session",
-        icon: Folder,
+        icon: "go-to-file",
         surface: true,
         keepOpen: true,
         keywords: "session agent jump open",
         run: () => setQuery("session "),
       },
       {
-        id: "themes",
-        title: "Themes",
-        hint: "Choose canvas or terminal theme",
-        icon: Palette,
-        surface: true,
-        keepOpen: true,
-        keywords: "theme appearance canvas terminal color",
-        run: () => setQuery("theme "),
-      },
-      {
         id: "filter-sessions",
         title: "Filter sessions",
         hint: "Show all, running, waiting, idle, or error sessions",
-        icon: Search,
+        icon: "filter",
         surface: true,
         keepOpen: true,
         keywords: "filter status sessions",
@@ -333,7 +301,7 @@ export function CommandPalette() {
         id: "sort-canvas",
         title: "Sort canvas",
         hint: "Auto-arrange or restore canvas layouts",
-        icon: Sparkles,
+        icon: "layout",
         surface: true,
         keepOpen: true,
         keywords: "sort arrange layout canvas",
@@ -343,7 +311,7 @@ export function CommandPalette() {
         id: "clean-canvas",
         title: "Sort: Title blast radius",
         hint: "Cluster sessions by title using Gemini when available, with local fallback",
-        icon: Sparkles,
+        icon: "type-hierarchy-super",
         keywords: "sort arrange layout canvas title blast radius llm judge",
         run: cleanCanvas,
       },
@@ -351,23 +319,35 @@ export function CommandPalette() {
         id: "save-canvas-layout",
         title: "Sort: Save current canvas layout",
         hint: "Store the current agent card positions for later",
-        icon: Save,
+        icon: "save",
         keywords: "sort layout save canvas",
         run: () => saveCanvasLayoutSnapshot(),
       },
       {
         id: "sessions",
         title: "Show sessions",
-        hint: "Search, pin, and jump between subagents",
-        icon: Search,
+        hint: "Pin and jump between subagents",
+        icon: "list-tree",
         keywords: "session sidebar rail",
         run: () => setSessionListOpen(true),
+      },
+      {
+        id: "model-training-tracking",
+        title: "Open model training tracking",
+        hint: "Probe Research experiments and runs",
+        icon: "graph-line",
+        surface: true,
+        keywords: "probe research model training experiments runs metrics tracking",
+        run: () => {
+          setBrowserUrl(PROBE_TRACKING_URL);
+          setBrowserPanelOpen(true);
+        },
       },
       {
         id: "activity-center",
         title: "Show agent activity",
         hint: "Open the inbox for finished agents, errors, and input requests",
-        icon: Bell,
+        icon: "bell",
         keywords: "activity notifications inbox agents",
         run: () => setActivityCenterOpen(true),
       },
@@ -375,7 +355,7 @@ export function CommandPalette() {
         id: "diff",
         title: "Review code changes",
         hint: "Open the diff review view",
-        icon: FileDiff,
+        icon: "git-compare",
         surface: Boolean(diffRepoPath || selectedNodeId),
         keywords: "diff review changes git",
         run: () => setViewMode("diff"),
@@ -387,7 +367,7 @@ export function CommandPalette() {
           openMarkdownFiles.length > 0
             ? `${openMarkdownFiles.length} markdown file${openMarkdownFiles.length === 1 ? "" : "s"} open`
             : "Show the markdown viewer",
-        icon: Monitor,
+        icon: "preview",
         surface: openMarkdownFiles.length > 0,
         keywords: "markdown md file viewer",
         run: () => setViewMode("markdown"),
@@ -401,7 +381,7 @@ export function CommandPalette() {
             : focusedSessionIds.length > 0
               ? "Switch to focus mode and open the embedded browser"
               : "Pin a session to focus mode first",
-        icon: Globe,
+        icon: "globe",
         surface: Boolean(browserUrl || browserPanelOpen),
         keywords: "browser preview headless web localhost",
         run: () => {
@@ -424,11 +404,77 @@ export function CommandPalette() {
           focusedSessionIds.length > 0
             ? `${focusedSessionIds.length} pinned session${focusedSessionIds.length === 1 ? "" : "s"}`
             : "Pin a session first",
-        icon: Maximize2,
+        icon: "screen-full",
         surface: focusedSessionIds.length > 0,
         keywords: "focus terminal view",
         run: () => {
           if (focusedSessionIds.length > 0) setViewMode("focus");
+        },
+      },
+      {
+        id: "focus-chat",
+        title: "Focus: Chat",
+        hint: "Open the readable agent conversation",
+        icon: "comment-discussion",
+        surface: viewMode === "focus",
+        keywords: "chat conversation claude cursor focus view",
+        run: () => {
+          if (viewMode !== "focus") {
+            if (selectedNodeId && sessions.has(selectedNodeId)) {
+              addFocusedSession(selectedNodeId);
+            } else if (focusedSessionIds.length === 0) {
+              return;
+            }
+            setSidebarOpen(false);
+            setViewMode("focus");
+          }
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("openui:workspace-view", { detail: "chat" }));
+          }, 40);
+        },
+      },
+      {
+        id: "focus-terminal",
+        title: "Focus: Terminal",
+        hint: "Open the raw live terminal",
+        icon: "terminal",
+        surface: viewMode === "focus",
+        keywords: "terminal cli raw focus view",
+        run: () => {
+          if (viewMode !== "focus") {
+            if (selectedNodeId && sessions.has(selectedNodeId)) {
+              addFocusedSession(selectedNodeId);
+            } else if (focusedSessionIds.length === 0) {
+              return;
+            }
+            setSidebarOpen(false);
+            setViewMode("focus");
+          }
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("openui:workspace-view", { detail: "terminal" }));
+          }, 40);
+        },
+      },
+      {
+        id: "focus-split",
+        title: "Focus: Chat and Terminal",
+        hint: "Show the friendly chat beside the terminal truth",
+        icon: "split-horizontal",
+        surface: viewMode === "focus",
+        keywords: "split chat terminal cursor focus view",
+        run: () => {
+          if (viewMode !== "focus") {
+            if (selectedNodeId && sessions.has(selectedNodeId)) {
+              addFocusedSession(selectedNodeId);
+            } else if (focusedSessionIds.length === 0) {
+              return;
+            }
+            setSidebarOpen(false);
+            setViewMode("focus");
+          }
+          window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("openui:workspace-view", { detail: "split" }));
+          }, 40);
         },
       },
     ];
@@ -443,7 +489,7 @@ export function CommandPalette() {
       id: `filter-${filter}`,
       title: `Filter: ${label}`,
       hint: "Apply to the session rail",
-      icon: Search,
+      icon: "filter",
       keywords: "filter status sessions",
       run: () => {
         setStatusFilter(filter as Parameters<typeof setStatusFilter>[0]);
@@ -459,7 +505,7 @@ export function CommandPalette() {
         id: `session-${nodeId}`,
         title: `Go to session: ${name}`,
         hint: [session.status, dir, session.gitBranch].filter(Boolean).join(" · "),
-        icon: Folder,
+        icon: "arrow-right",
         keywords: "session agent jump open",
         run: () => openSession(nodeId),
       };
@@ -471,7 +517,7 @@ export function CommandPalette() {
         id: `focus-session-${nodeId}`,
         title: `Focus session: ${name}`,
         hint: "Pin this agent and open focus mode",
-        icon: Maximize2,
+        icon: "screen-full",
         keywords: "focus session terminal",
         run: () => {
           addFocusedSession(nodeId);
@@ -484,7 +530,7 @@ export function CommandPalette() {
       id: `restore-layout-${snapshot.id}`,
       title: `Sort: Restore canvas layout: ${snapshot.name}`,
       hint: new Date(snapshot.createdAt).toLocaleString(),
-      icon: RotateCcw,
+      icon: "history",
       keywords: "sort layout restore canvas",
       run: () => {
         restoreCanvasLayoutSnapshot(snapshot.id);
@@ -492,24 +538,6 @@ export function CommandPalette() {
           void persistAgentPositions(useStore.getState().nodes).catch(console.error);
         }, 0);
       },
-    }));
-
-    const workspaceCommands = WORKSPACE_BACKGROUNDS.map((background) => ({
-      id: `workspace-${background.id}`,
-      title: `Theme: Canvas ${background.name}`,
-      hint: background.description,
-      icon: Monitor,
-      keywords: "theme appearance canvas color",
-      run: () => setWorkspaceBackground(background.id as WorkspaceBackgroundId),
-    }));
-
-    const terminalCommands = TERMINAL_THEMES.map((theme) => ({
-      id: `terminal-${theme.id}`,
-      title: `Theme: Terminal ${theme.name}`,
-      hint: theme.description,
-      icon: Terminal,
-      keywords: "theme appearance terminal color",
-      run: () => setTerminalTheme(theme.id as TerminalThemeId),
     }));
 
     const repoCommands = Array.from(sessions.values())
@@ -520,7 +548,7 @@ export function CommandPalette() {
           id: `review-${session.sessionId}`,
           title: `Review changes: ${repo.split("/").pop() || repo}`,
           hint: repo,
-          icon: GitBranch,
+          icon: "git-branch-compact",
           keywords: "diff review changes git",
           run: () => {
             useStore.getState().setDiffRepoPath(repo);
@@ -533,7 +561,7 @@ export function CommandPalette() {
       id: `project-task-${projectTasks?.root || taskRoot}-${task.name}`,
       title: `Run task: ${task.name}`,
       hint: `${task.runCommand} - ${task.command}`,
-      icon: Play,
+      icon: "play",
       keywords: "task script package run",
       run: () => launchProjectTask(task),
     }));
@@ -546,8 +574,6 @@ export function CommandPalette() {
       ...focusCommands,
       ...repoCommands,
       ...layoutCommands,
-      ...workspaceCommands,
-      ...terminalCommands,
     ];
   }, [
     addFocusedSession,
@@ -568,6 +594,7 @@ export function CommandPalette() {
     sessions,
     setAddAgentModalOpen,
     setBrowserPanelOpen,
+    setBrowserUrl,
     setNodes,
     setActivityCenterOpen,
     setSearchQuery,
@@ -575,9 +602,7 @@ export function CommandPalette() {
     setSidebarOpen,
     setSessionListOpen,
     setStatusFilter,
-    setTerminalTheme,
     setViewMode,
-    setWorkspaceBackground,
     taskRoot,
     updateSession,
     viewMode,
@@ -635,22 +660,24 @@ export function CommandPalette() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[90] bg-zinc-950/60"
+            transition={{ duration: 0.14 }}
+            className="fixed inset-0 z-[90] bg-zinc-950/42 backdrop-blur-[2px]"
             onClick={() => setCommandPaletteOpen(false)}
           />
           <motion.div
-            initial={{ opacity: 0, y: -12, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.98 }}
-            className="fixed left-1/2 top-24 z-[91] w-[min(640px,calc(100vw-32px))] -translate-x-1/2 rounded-xl border border-border bg-canvas-dark shadow-2xl overflow-hidden"
+            initial={{ opacity: 0, x: "-50%", y: -12, scale: 0.98 }}
+            animate={{ opacity: 1, x: "-50%", y: 0, scale: 1 }}
+            exit={{ opacity: 0, x: "-50%", y: -8, scale: 0.98 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            className="workspace-glass-strong command-palette-surface fixed left-1/2 top-24 z-[91] w-[min(640px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-xl"
           >
-            <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
-              <Palette className="w-4 h-4 text-zinc-500" />
+            <div className="flex items-center gap-3 border-b border-white/[0.065] px-4 py-3">
+              <Codicon name="search" size={15} className="text-zinc-500" />
               <input
                 ref={inputRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="New agent, sessions, themes, filter, sort..."
+                placeholder="New agent, sessions, filter, sort..."
                 className="flex-1 bg-transparent text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none"
               />
               <span className="text-[10px] text-zinc-600">Esc</span>
@@ -662,7 +689,6 @@ export function CommandPalette() {
                 </div>
               ) : (
                 filtered.map((command, index) => {
-                  const Icon = command.icon;
                   const selected = index === selectedIndex;
                   return (
                     <button
@@ -674,8 +700,8 @@ export function CommandPalette() {
                         selected ? "bg-surface-active" : "hover:bg-surface-active/70"
                       }`}
                     >
-                      <div className="w-7 h-7 rounded-md bg-surface flex items-center justify-center text-zinc-400">
-                        <Icon className="w-3.5 h-3.5" />
+                      <div className="flex h-7 w-7 items-center justify-center text-zinc-400">
+                        <Codicon name={command.icon} size={14} />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-zinc-100 truncate">{command.title}</div>

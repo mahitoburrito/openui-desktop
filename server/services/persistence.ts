@@ -71,6 +71,8 @@ export function saveState(sessions: Map<string, Session>) {
       position: session.position || existingNode?.position || { x: 0, y: 0 },
       worktreePaths: session.worktreePaths,
       launchCheckpoint: session.launchCheckpoint,
+      claudeSessionId: session.claudeSessionId,
+      codexSessionId: session.codexSessionId,
     });
 
     saveBuffer(sessionId, session.outputBuffer);

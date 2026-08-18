@@ -1,6 +1,17 @@
 import { Hono } from "hono";
 import * as pty from "node-pty";
-import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from "fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "fs";
 import { dirname, join, relative, resolve } from "path";
 import { homedir, tmpdir } from "os";
 import { exec as execCb, execFile as execFileCb, spawn } from "child_process";
@@ -8,11 +19,12 @@ import { promisify } from "util";
 
 const execFileAsync = promisify(execCb);
 const execGitAsync = promisify(execFileCb);
-import type { Agent, AgentChangeSummary, CheckpointSummary } from "../types";
+import type { Agent, AgentChangeSummary, CheckpointSummary, Session } from "../types";
 import {
   sessions,
   createSession,
   deleteSession,
+  isAgentInputPromptReady,
   injectPluginDir,
   scanReposInDirectory,
   getServerPort,
@@ -55,6 +67,651 @@ const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 export const apiRoutes = new Hono();
 
 const AGENT_RULES_MAX_CHARS = 12000;
+const CLAUDE_TRANSCRIPT_ROOT = join(homedir(), ".claude", "projects");
+const CODEX_TRANSCRIPT_ROOT = join(homedir(), ".codex", "sessions");
+const CLAUDE_TRANSCRIPT_TAIL_BYTES = 2_000_000;
+const claudeTranscriptCache = new Map<string, string>();
+const codexTranscriptCache = new Map<string, string>();
+
+type ClaudeChatEntry = {
+  id: string;
+  role: "user" | "assistant" | "tool" | "system";
+  text?: string;
+  toolName?: string;
+  toolSummary?: string;
+  toolInput?: string;
+  toolOutput?: string;
+  toolStatus?: "running" | "complete" | "error";
+  startup?: {
+    agentName?: string;
+    version?: string;
+    model?: string;
+    effort?: string;
+    cwd?: string;
+    permissionMode?: string;
+    notices: string[];
+  };
+  timestamp?: string;
+};
+
+type StartupPrompt = {
+  id: string;
+  title: string;
+  detail: string;
+  confirmLabel: string;
+  cancelLabel: string;
+};
+
+function detectStartupPrompt(session: Session): StartupPrompt | null {
+  if (session.claudeSessionId) return null;
+  const tail = session.outputBuffer
+    .join("")
+    .slice(-12_000)
+    .replace(/\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g, "")
+    .replace(/\r/g, "\n");
+
+  if (
+    /Loading\s*development\s*channels/i.test(tail) &&
+    /I\s*am\s*using\s*this\s*for\s*local\s*development/i.test(tail) &&
+    /Enter\s*to\s*confirm/i.test(tail)
+  ) {
+    return {
+      id: "claude-development-channels",
+      title: "Use local development channels?",
+      detail: "Claude Code needs one confirmation before this local channel can start.",
+      confirmLabel: "Use locally",
+      cancelLabel: "Exit",
+    };
+  }
+
+  return null;
+}
+
+function findClaudeTranscriptFile(claudeSessionId: string): string | null {
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(claudeSessionId)) return null;
+
+  const cached = claudeTranscriptCache.get(claudeSessionId);
+  if (cached && existsSync(cached)) return cached;
+  if (!existsSync(CLAUDE_TRANSCRIPT_ROOT)) return null;
+
+  for (const project of readdirSync(CLAUDE_TRANSCRIPT_ROOT, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    const candidate = join(CLAUDE_TRANSCRIPT_ROOT, project.name, `${claudeSessionId}.jsonl`);
+    if (!existsSync(candidate)) continue;
+    claudeTranscriptCache.set(claudeSessionId, candidate);
+    return candidate;
+  }
+
+  return null;
+}
+
+function recoverClaudeTranscriptId(session: Session): string | null {
+  if (!session.cwd || !session.createdAt || !existsSync(CLAUDE_TRANSCRIPT_ROOT)) return null;
+
+  const projectSlug = session.cwd.replace(/[^a-zA-Z0-9._-]+/g, "-");
+  const projectDir = join(CLAUDE_TRANSCRIPT_ROOT, projectSlug);
+  if (!existsSync(projectDir)) return null;
+
+  const createdAt = Date.parse(session.createdAt);
+  if (!Number.isFinite(createdAt)) return null;
+
+  const claimedIds = new Set(
+    Array.from(sessions.values())
+      .map((candidate) => candidate.claudeSessionId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  let best: { id: string; distance: number } | null = null;
+
+  for (const file of readdirSync(projectDir, { withFileTypes: true })) {
+    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+    const transcriptId = file.name.slice(0, -".jsonl".length);
+    if (claimedIds.has(transcriptId)) continue;
+
+    const path = join(projectDir, file.name);
+    let prefix = "";
+    try {
+      const size = Math.min(statSync(path).size, 128_000);
+      const buffer = Buffer.alloc(size);
+      const descriptor = openSync(path, "r");
+      try {
+        readSync(descriptor, buffer, 0, size, 0);
+      } finally {
+        closeSync(descriptor);
+      }
+      prefix = buffer.toString("utf8");
+    } catch {
+      continue;
+    }
+
+    let firstTimestamp: number | null = null;
+    let transcriptCwd: string | null = null;
+    for (const line of prefix.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        if (!transcriptCwd && typeof record?.cwd === "string") transcriptCwd = record.cwd;
+        if (!firstTimestamp && typeof record?.timestamp === "string") {
+          const parsed = Date.parse(record.timestamp);
+          if (Number.isFinite(parsed)) firstTimestamp = parsed;
+        }
+        if (transcriptCwd && firstTimestamp) break;
+      } catch {
+        continue;
+      }
+    }
+
+    if (!firstTimestamp || !transcriptCwd || resolve(transcriptCwd) !== resolve(session.cwd)) continue;
+    const delta = firstTimestamp - createdAt;
+    if (delta < -5_000 || delta > 3 * 60 * 1000) continue;
+    const distance = Math.abs(delta);
+    if (!best || distance < best.distance) best = { id: transcriptId, distance };
+  }
+
+  return best?.id || null;
+}
+
+function listCodexTranscriptFiles(directory = CODEX_TRANSCRIPT_ROOT, depth = 0): string[] {
+  if (depth > 4 || !existsSync(directory)) return [];
+
+  const files: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listCodexTranscriptFiles(path, depth + 1));
+    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+function findCodexTranscriptFile(codexSessionId: string): string | null {
+  if (!/^[a-zA-Z0-9_-]{8,128}$/.test(codexSessionId)) return null;
+
+  const cached = codexTranscriptCache.get(codexSessionId);
+  if (cached && existsSync(cached)) return cached;
+
+  const suffix = `${codexSessionId}.jsonl`;
+  const match = listCodexTranscriptFiles().find((file) => file.endsWith(suffix));
+  if (!match) return null;
+  codexTranscriptCache.set(codexSessionId, match);
+  return match;
+}
+
+function readFilePrefix(file: string, maxBytes = 128_000): string {
+  const size = Math.min(statSync(file).size, maxBytes);
+  if (size <= 0) return "";
+
+  const buffer = Buffer.alloc(size);
+  const descriptor = openSync(file, "r");
+  try {
+    readSync(descriptor, buffer, 0, size, 0);
+  } finally {
+    closeSync(descriptor);
+  }
+  return buffer.toString("utf8");
+}
+
+function recoverCodexTranscriptId(session: Session): string | null {
+  if (!session.cwd || !session.createdAt || !existsSync(CODEX_TRANSCRIPT_ROOT)) return null;
+
+  const createdAt = Date.parse(session.createdAt);
+  if (!Number.isFinite(createdAt)) return null;
+
+  const claimedIds = new Set(
+    Array.from(sessions.values())
+      .map((candidate) => candidate.codexSessionId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  let best: { id: string; path: string; distance: number } | null = null;
+
+  for (const path of listCodexTranscriptFiles()) {
+    const prefix = readFilePrefix(path);
+    let transcriptId: string | null = null;
+    let transcriptCwd: string | null = null;
+    let firstTimestamp: number | null = null;
+
+    for (const line of prefix.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        if (record?.type !== "session_meta") continue;
+        const payload = record.payload || {};
+        transcriptId = typeof payload.id === "string"
+          ? payload.id
+          : typeof payload.session_id === "string"
+            ? payload.session_id
+            : null;
+        transcriptCwd = typeof payload.cwd === "string" ? payload.cwd : null;
+        const parsedTimestamp = Date.parse(record.timestamp || payload.timestamp || "");
+        firstTimestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : null;
+        break;
+      } catch {
+        continue;
+      }
+    }
+
+    if (
+      !transcriptId ||
+      claimedIds.has(transcriptId) ||
+      !transcriptCwd ||
+      !firstTimestamp ||
+      resolve(transcriptCwd) !== resolve(session.cwd)
+    ) {
+      continue;
+    }
+
+    const delta = firstTimestamp - createdAt;
+    if (delta < -5_000 || delta > 3 * 60 * 1000) continue;
+    const distance = Math.abs(delta);
+    if (!best || distance < best.distance) best = { id: transcriptId, path, distance };
+  }
+
+  if (!best) return null;
+  codexTranscriptCache.set(best.id, best.path);
+  return best.id;
+}
+
+function readFileTail(file: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): string {
+  const size = statSync(file).size;
+  const length = Math.min(size, maxBytes);
+  if (length <= 0) return "";
+
+  const buffer = Buffer.alloc(length);
+  const descriptor = openSync(file, "r");
+  try {
+    readSync(descriptor, buffer, 0, length, size - length);
+  } finally {
+    closeSync(descriptor);
+  }
+
+  const text = buffer.toString("utf8");
+  if (size <= maxBytes) return text;
+  const firstLineBreak = text.indexOf("\n");
+  return firstLineBreak >= 0 ? text.slice(firstLineBreak + 1) : "";
+}
+
+function readTranscriptWindow(file: string): string {
+  const size = statSync(file).size;
+  if (size <= CLAUDE_TRANSCRIPT_TAIL_BYTES) return readFileSync(file, "utf8");
+  return `${readFilePrefix(file)}\n${readFileTail(file)}`;
+}
+
+function trimChatText(value: unknown, maxLength = 24_000): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\r\n/g, "\n").trim().slice(0, maxLength);
+}
+
+function cleanClaudeUserText(value: unknown): string {
+  let text = trimChatText(value);
+  if (!text) return "";
+
+  const commandName = text.match(/<command-name>(.*?)<\/command-name>/s)?.[1]?.trim();
+  if (commandName) return commandName.startsWith("/") ? commandName : `/${commandName}`;
+
+  if (
+    text.startsWith("Base directory for this skill:") ||
+    text.startsWith("<local-command-stdout>") ||
+    text.startsWith("<local-command-caveat>")
+  ) {
+    return "";
+  }
+
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  return text;
+}
+
+function summarizeClaudeTool(toolName: string, input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const values = input as Record<string, unknown>;
+  const preferredKeys =
+    toolName === "Bash"
+      ? ["description", "command"]
+      : ["file_path", "path", "pattern", "query", "url", "description", "command"];
+
+  for (const key of preferredKeys) {
+    const value = values[key];
+    if (typeof value !== "string" || !value.trim()) continue;
+    const firstLine = value.trim().split("\n")[0];
+    return firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
+  }
+
+  return "";
+}
+
+function formatClaudeToolDetail(value: unknown, maxLength = 48_000): string {
+  if (typeof value === "string") return trimChatText(value, maxLength);
+  if (value == null) return "";
+
+  try {
+    const rendered = JSON.stringify(value, null, 2);
+    return rendered.length > maxLength ? `${rendered.slice(0, maxLength)}\n…` : rendered;
+  } catch {
+    return trimChatText(String(value), maxLength);
+  }
+}
+
+function parseClaudeConversation(raw: string): ClaudeChatEntry[] {
+  const entries: ClaudeChatEntry[] = [];
+  const toolIndexes = new Map<string, number>();
+  const seenMessageIds = new Set<string>();
+  const startup = {
+    version: undefined as string | undefined,
+    model: undefined as string | undefined,
+    effort: undefined as string | undefined,
+    cwd: undefined as string | undefined,
+    permissionMode: undefined as string | undefined,
+    notices: [] as string[],
+    timestamp: undefined as string | undefined,
+  };
+  const startupNotices = new Set<string>();
+
+  const addTextEntry = (
+    role: "user" | "assistant",
+    text: string,
+    id: string,
+    timestamp?: string,
+  ) => {
+    if (!text || seenMessageIds.has(id)) return;
+    seenMessageIds.add(id);
+    const previous = entries[entries.length - 1];
+    if (role === "assistant" && previous?.role === "assistant") {
+      previous.text = [previous.text, text].filter(Boolean).join("\n\n");
+      previous.timestamp = timestamp || previous.timestamp;
+      return;
+    }
+    entries.push({ id, role, text, timestamp });
+  };
+
+  raw.split("\n").forEach((line, lineIndex) => {
+    if (!line.trim()) return;
+    let record: any;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return;
+    }
+
+    if (!startup.version && typeof record?.version === "string") startup.version = record.version;
+    if (!startup.cwd && typeof record?.cwd === "string") startup.cwd = record.cwd;
+    if (!startup.effort && typeof record?.effort === "string") startup.effort = record.effort;
+    if (!startup.timestamp && typeof record?.timestamp === "string") startup.timestamp = record.timestamp;
+    if (!startup.permissionMode && record?.type === "permission-mode" && typeof record.permissionMode === "string") {
+      startup.permissionMode = record.permissionMode;
+    }
+    if (!startup.model && record?.type === "assistant" && typeof record?.message?.model === "string") {
+      startup.model = record.message.model;
+    }
+    if (
+      record?.type === "attachment" &&
+      record?.attachment?.type === "hook_system_message" &&
+      record?.attachment?.hookEvent === "SessionStart"
+    ) {
+      const notice = trimChatText(record.attachment.content, 2_000);
+      if (notice && !startupNotices.has(notice)) {
+        startupNotices.add(notice);
+        startup.notices.push(notice);
+      }
+    }
+
+    if (record?.type !== "user" && record?.type !== "assistant") return;
+    const message = record.message;
+    const messageId = typeof record.uuid === "string" ? record.uuid : `line-${lineIndex}`;
+    const timestamp = typeof record.timestamp === "string" ? record.timestamp : undefined;
+    const content = message?.content;
+
+    if (record.type === "user" && typeof content === "string") {
+      addTextEntry("user", cleanClaudeUserText(content), messageId, timestamp);
+      return;
+    }
+
+    if (!Array.isArray(content)) return;
+    const userText: string[] = [];
+    const assistantText: string[] = [];
+
+    content.forEach((block: any, blockIndex: number) => {
+      if (record.type === "user" && block?.type === "text") {
+        const text = cleanClaudeUserText(block.text);
+        if (text) userText.push(text);
+        return;
+      }
+
+      if (record.type === "assistant" && block?.type === "text") {
+        const text = trimChatText(block.text);
+        if (text) assistantText.push(text);
+        return;
+      }
+
+      if (record.type === "assistant" && block?.type === "tool_use") {
+        const toolId = typeof block.id === "string" ? block.id : `${messageId}-tool-${blockIndex}`;
+        if (toolIndexes.has(toolId)) return;
+        const toolName = typeof block.name === "string" ? block.name : "Tool";
+        toolIndexes.set(toolId, entries.length);
+        entries.push({
+          id: toolId,
+          role: "tool",
+          toolName,
+          toolSummary: summarizeClaudeTool(toolName, block.input),
+          toolInput: formatClaudeToolDetail(block.input),
+          toolStatus: "running",
+          timestamp,
+        });
+        return;
+      }
+
+      if (record.type === "user" && block?.type === "tool_result") {
+        const toolId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
+        const toolIndex = toolIndexes.get(toolId);
+        if (toolIndex === undefined) return;
+        entries[toolIndex].toolStatus = block.is_error ? "error" : "complete";
+        entries[toolIndex].toolOutput = formatClaudeToolDetail(block.content);
+      }
+    });
+
+    if (userText.length > 0) {
+      addTextEntry("user", userText.join("\n\n"), messageId, timestamp);
+    }
+    if (assistantText.length > 0) {
+      addTextEntry("assistant", assistantText.join("\n\n"), messageId, timestamp);
+    }
+  });
+
+  const hasStartup = Boolean(
+    startup.version ||
+    startup.model ||
+    startup.cwd ||
+    startup.permissionMode ||
+    startup.notices.length > 0,
+  );
+  const conversation = entries.slice(hasStartup ? -119 : -120);
+  if (!hasStartup) return conversation;
+
+  return [
+    {
+      id: "claude-session-startup",
+      role: "system",
+      startup: {
+        agentName: "Claude Code",
+        version: startup.version,
+        model: startup.model,
+        effort: startup.effort,
+        cwd: startup.cwd,
+        permissionMode: startup.permissionMode,
+        notices: startup.notices,
+      },
+      timestamp: startup.timestamp,
+    },
+    ...conversation,
+  ];
+}
+
+function extractCodexMessageText(content: unknown): string {
+  if (typeof content === "string") return trimChatText(content);
+  if (!Array.isArray(content)) return "";
+
+  return trimChatText(
+    content
+      .map((block: any) => {
+        if (!block || typeof block !== "object") return "";
+        if (!["input_text", "output_text", "text"].includes(block.type)) return "";
+        return typeof block.text === "string" ? block.text : "";
+      })
+      .filter(Boolean)
+      .join("\n\n"),
+  );
+}
+
+function cleanCodexUserText(content: unknown): string {
+  const text = extractCodexMessageText(content);
+  if (!text) return "";
+  if (
+    text.startsWith("# AGENTS.md instructions") ||
+    text.startsWith("<skills_instructions>") ||
+    text.startsWith("<environment_context>") ||
+    text.startsWith("<permissions instructions>")
+  ) {
+    return "";
+  }
+  return text;
+}
+
+function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseCodexConversation(raw: string): { messages: ClaudeChatEntry[]; working: boolean } {
+  const entries: ClaudeChatEntry[] = [];
+  const toolIndexes = new Map<string, number>();
+  const seenMessageIds = new Set<string>();
+  const startup = {
+    version: undefined as string | undefined,
+    model: undefined as string | undefined,
+    effort: undefined as string | undefined,
+    cwd: undefined as string | undefined,
+    permissionMode: undefined as string | undefined,
+    timestamp: undefined as string | undefined,
+  };
+  let working = false;
+
+  const addTextEntry = (
+    role: "user" | "assistant",
+    text: string,
+    id: string,
+    timestamp?: string,
+  ) => {
+    if (!text || seenMessageIds.has(id)) return;
+    seenMessageIds.add(id);
+    const previous = entries[entries.length - 1];
+    if (role === "assistant" && previous?.role === "assistant") {
+      previous.text = [previous.text, text].filter(Boolean).join("\n\n");
+      previous.timestamp = timestamp || previous.timestamp;
+      return;
+    }
+    entries.push({ id, role, text, timestamp });
+  };
+
+  raw.split("\n").forEach((line, lineIndex) => {
+    if (!line.trim()) return;
+    let record: any;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return;
+    }
+
+    const payload = record?.payload || {};
+    const timestamp = typeof record?.timestamp === "string" ? record.timestamp : undefined;
+
+    if (record?.type === "session_meta") {
+      if (!startup.version && typeof payload.cli_version === "string") startup.version = payload.cli_version;
+      if (!startup.cwd && typeof payload.cwd === "string") startup.cwd = payload.cwd;
+      if (!startup.timestamp && timestamp) startup.timestamp = timestamp;
+    }
+    if (record?.type === "turn_context") {
+      if (typeof payload.model === "string") startup.model = payload.model;
+      if (typeof payload.effort === "string") startup.effort = payload.effort;
+      if (typeof payload.approval_policy === "string") startup.permissionMode = payload.approval_policy;
+    }
+    if (record?.type === "event_msg") {
+      if (payload.type === "task_started") working = true;
+      if (payload.type === "task_complete" || payload.type === "turn_aborted") working = false;
+      return;
+    }
+    if (record?.type !== "response_item") return;
+
+    const itemId = typeof payload.id === "string" ? payload.id : `codex-line-${lineIndex}`;
+    if (payload.type === "message") {
+      if (payload.role === "user") {
+        addTextEntry("user", cleanCodexUserText(payload.content), itemId, timestamp);
+      } else if (payload.role === "assistant") {
+        addTextEntry("assistant", extractCodexMessageText(payload.content), itemId, timestamp);
+      }
+      return;
+    }
+
+    if (payload.type === "function_call" || payload.type === "custom_tool_call") {
+      const toolId = typeof payload.call_id === "string" ? payload.call_id : itemId;
+      if (toolIndexes.has(toolId)) return;
+      const toolName = typeof payload.name === "string" ? payload.name : "Tool";
+      const input = parseJsonValue(payload.arguments ?? payload.input);
+      toolIndexes.set(toolId, entries.length);
+      entries.push({
+        id: toolId,
+        role: "tool",
+        toolName,
+        toolSummary: summarizeClaudeTool(toolName, input),
+        toolInput: formatClaudeToolDetail(input),
+        toolStatus: payload.status === "failed" ? "error" : "running",
+        timestamp,
+      });
+      return;
+    }
+
+    if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
+      const toolId = typeof payload.call_id === "string" ? payload.call_id : "";
+      const toolIndex = toolIndexes.get(toolId);
+      if (toolIndex === undefined) return;
+      const output = parseJsonValue(payload.output);
+      entries[toolIndex].toolOutput = formatClaudeToolDetail(output);
+      entries[toolIndex].toolStatus =
+        typeof payload.output === "string" && /(^|\n)(error|failed):/i.test(payload.output)
+          ? "error"
+          : "complete";
+    }
+  });
+
+  const hasStartup = Boolean(
+    startup.version || startup.model || startup.cwd || startup.permissionMode,
+  );
+  const conversation = entries.slice(hasStartup ? -119 : -120);
+  if (!hasStartup) return { messages: conversation, working };
+
+  return {
+    working,
+    messages: [
+      {
+        id: "codex-session-startup",
+        role: "system",
+        startup: {
+          agentName: "OpenAI Codex",
+          version: startup.version,
+          model: startup.model,
+          effort: startup.effort,
+          cwd: startup.cwd,
+          permissionMode: startup.permissionMode,
+          notices: [],
+        },
+        timestamp: startup.timestamp,
+      },
+      ...conversation,
+    ],
+  };
+}
 
 function getAgentRulesFile(): string {
   return join(getDataDir(), "agent-rules.json");
@@ -1454,6 +2111,11 @@ apiRoutes.get("/sessions", (c) => {
     agentName: session.agentName,
     command: session.command,
     createdAt: session.createdAt,
+    lastActivityAt: Math.max(
+      session.lastInputTime || 0,
+      session.lastOutputTime || 0,
+      Date.parse(session.createdAt) || 0,
+    ),
     cwd: session.cwd,
     originalCwd: session.originalCwd,
     gitBranch: session.gitBranch,
@@ -1468,6 +2130,115 @@ apiRoutes.get("/sessions", (c) => {
     launchCheckpoint: session.launchCheckpoint,
   }));
   return c.json(sessionList);
+});
+
+apiRoutes.get("/sessions/:sessionId/messages", (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  c.header("Cache-Control", "no-store");
+
+  if (!session || session.pendingDelete) {
+    return c.json({ error: "Session not found" }, 404);
+  }
+
+  const agentId = session.agentId.toLowerCase();
+  const waitingForFirstTranscript = () => {
+    const startupPrompt = detectStartupPrompt(session);
+    const promptReady = isAgentInputPromptReady(session) || Boolean(startupPrompt);
+    if (!session.pty || session.isRestored || !promptReady) {
+      return c.json({ available: false, state: "connecting", messages: [] });
+    }
+
+    const permissionMode = /--yolo|dangerously-skip-permissions/i.test(session.command)
+      ? "Full access"
+      : undefined;
+    return c.json({
+      available: true,
+      state: "ready",
+      messages: [{
+        id: `startup-${sessionId}`,
+        role: "system",
+        startup: {
+          agentName: session.agentName,
+          cwd: session.cwd,
+          permissionMode,
+          notices: [],
+        },
+        timestamp: session.createdAt,
+      }],
+      startupPrompt,
+      working: false,
+    });
+  };
+
+  if (agentId.includes("codex")) {
+    if (!session.codexSessionId) {
+      const recoveredId = recoverCodexTranscriptId(session);
+      if (recoveredId) {
+        session.codexSessionId = recoveredId;
+        saveState(sessions);
+        log(`[session-chat] Recovered Codex transcript ${recoveredId} for ${sessionId}`);
+      } else {
+        return waitingForFirstTranscript();
+      }
+    }
+
+    const transcriptFile = findCodexTranscriptFile(session.codexSessionId);
+    if (!transcriptFile) {
+      return waitingForFirstTranscript();
+    }
+
+    try {
+      const transcriptStat = statSync(transcriptFile);
+      const parsed = parseCodexConversation(readTranscriptWindow(transcriptFile));
+      return c.json({
+        available: true,
+        state: "ready",
+        codexSessionId: session.codexSessionId,
+        messages: parsed.messages,
+        working: parsed.working,
+        updatedAt: transcriptStat.mtimeMs,
+      });
+    } catch (error: any) {
+      logError(`[PRBE_ERROR_sessionMessages] [api] failed to read Codex messages (session=${sessionId}): ${error.message}`);
+      return c.json({ available: false, state: "unavailable", messages: [] });
+    }
+  }
+
+  if (!agentId.includes("claude")) {
+    return c.json({ available: false, state: "unsupported", messages: [] });
+  }
+
+  if (!session.claudeSessionId) {
+    const recoveredId = recoverClaudeTranscriptId(session);
+    if (recoveredId) {
+      session.claudeSessionId = recoveredId;
+      saveState(sessions);
+      log(`[session-chat] Recovered Claude transcript ${recoveredId} for ${sessionId}`);
+    } else {
+      return waitingForFirstTranscript();
+    }
+  }
+
+  const transcriptFile = findClaudeTranscriptFile(session.claudeSessionId);
+  if (!transcriptFile) {
+    return waitingForFirstTranscript();
+  }
+
+  try {
+    const transcriptStat = statSync(transcriptFile);
+    const messages = parseClaudeConversation(readTranscriptWindow(transcriptFile));
+    return c.json({
+      available: true,
+      state: "ready",
+      claudeSessionId: session.claudeSessionId,
+      messages,
+      updatedAt: transcriptStat.mtimeMs,
+    });
+  } catch (error: any) {
+    logError(`[PRBE_ERROR_sessionMessages] [api] failed to read Claude messages (session=${sessionId}): ${error.message}`);
+    return c.json({ available: false, state: "unavailable", messages: [] });
+  }
 });
 
 apiRoutes.get("/sessions/changes", async (c) => {

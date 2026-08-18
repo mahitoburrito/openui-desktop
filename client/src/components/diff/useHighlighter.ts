@@ -44,6 +44,24 @@ const themeLoaders: Record<DiffTheme, ThemeInput> = {
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 const loadedLangs = new Set<string>();
 const loadedThemes = new Set<DiffTheme>();
+const loadingLangs = new Map<string, Promise<void>>();
+const loadingThemes = new Map<DiffTheme, Promise<void>>();
+
+const languageAliases: Record<string, string> = {
+  bash: "shell",
+  shellscript: "shell",
+  sh: "shell",
+  zsh: "shell",
+  js: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  ts: "typescript",
+  py: "python",
+  md: "markdown",
+  mdx: "markdown",
+  yml: "yaml",
+  html5: "html",
+};
 
 function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
@@ -59,6 +77,66 @@ function getHighlighter(): Promise<HighlighterCore> {
     });
   }
   return highlighterPromise;
+}
+
+function normalizeLanguage(language: string): string | null {
+  const normalized = language.trim().toLowerCase().replace(/^language-/, "");
+  const resolved = languageAliases[normalized] ?? normalized;
+  return langLoaders[resolved] ? resolved : null;
+}
+
+async function ensureTheme(hl: HighlighterCore, theme: DiffTheme): Promise<void> {
+  if (loadedThemes.has(theme)) return;
+
+  let pending = loadingThemes.get(theme);
+  if (!pending) {
+    pending = hl.loadTheme(themeLoaders[theme])
+      .then(() => {
+        loadedThemes.add(theme);
+      })
+      .finally(() => {
+        loadingThemes.delete(theme);
+      });
+    loadingThemes.set(theme, pending);
+  }
+  await pending;
+}
+
+async function ensureLanguage(hl: HighlighterCore, language: string): Promise<void> {
+  if (loadedLangs.has(language)) return;
+
+  let pending = loadingLangs.get(language);
+  if (!pending) {
+    pending = hl.loadLanguage(langLoaders[language])
+      .then(() => {
+        loadedLangs.add(language);
+      })
+      .finally(() => {
+        loadingLangs.delete(language);
+      });
+    loadingLangs.set(language, pending);
+  }
+  await pending;
+}
+
+export async function highlightCodeBlock(
+  content: string,
+  language: string,
+  theme: DiffTheme
+): Promise<string | null> {
+  const resolvedLanguage = normalizeLanguage(language);
+  if (!resolvedLanguage || !content.trim()) return null;
+
+  try {
+    const hl = await getHighlighter();
+    await Promise.all([
+      ensureTheme(hl, theme),
+      ensureLanguage(hl, resolvedLanguage),
+    ]);
+    return hl.codeToHtml(content, { lang: resolvedLanguage, theme });
+  } catch {
+    return null;
+  }
 }
 
 export interface HighlightToken {
@@ -89,12 +167,9 @@ export function useHighlighter(theme: DiffTheme): Highlight {
   // Ensure the active theme is loaded.
   useEffect(() => {
     if (!hl || loadedThemes.has(theme)) return;
-    loadedThemes.add(theme);
-    hl.loadTheme(themeLoaders[theme])
+    ensureTheme(hl, theme)
       .then(() => setReadyTick((t) => t + 1))
-      .catch(() => {
-        loadedThemes.delete(theme);
-      });
+      .catch(() => {});
   }, [hl, theme]);
 
   return (content: string, filePath: string): HighlightToken[] => {
@@ -106,12 +181,9 @@ export function useHighlighter(theme: DiffTheme): Highlight {
     if (!loader) return plain; // unsupported language → plain text
 
     if (!loadedLangs.has(lang)) {
-      loadedLangs.add(lang);
-      hl.loadLanguage(loader)
+      ensureLanguage(hl, lang)
         .then(() => setReadyTick((t) => t + 1))
-        .catch(() => {
-          loadedLangs.delete(lang);
-        });
+        .catch(() => {});
       return plain;
     }
 

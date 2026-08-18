@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight } from "../icons";
 import type { ChangedFile, TreeNode } from "./diffModel";
 
 function StatusBadge({ status, untracked }: { status: string; untracked: boolean }) {

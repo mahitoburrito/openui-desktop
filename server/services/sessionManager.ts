@@ -14,6 +14,38 @@ const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
 const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 
+function stripTerminalControls(value: string): string {
+  return value
+    .replace(/\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g, "")
+    .replace(/\r/g, "\n");
+}
+
+export function isAgentInputPromptReady(session: Session): boolean {
+  if (["idle", "waiting_input"].includes(session.status)) return true;
+  if (!session.pty || session.isRestored) return false;
+
+  const terminalText = stripTerminalControls(session.outputBuffer.join("").slice(-16_000));
+  const agentId = session.agentId.toLowerCase();
+
+  if (agentId.includes("codex")) {
+    return (
+      /OpenAI\s*Codex/i.test(terminalText) &&
+      /model:/i.test(terminalText) &&
+      /directory:/i.test(terminalText) &&
+      /permissions:/i.test(terminalText)
+    );
+  }
+
+  if (agentId.includes("claude")) {
+    return (
+      /Claude\s*Code/i.test(terminalText) &&
+      (/Try\s*["']/i.test(terminalText) || /bypass\s*permissions\s*on/i.test(terminalText))
+    );
+  }
+
+  return false;
+}
+
 export const DEFAULT_PTY_COLS = 80;
 export const DEFAULT_PTY_ROWS = 24;
 
@@ -538,6 +570,60 @@ export async function createSession(params: {
 
   sessions.set(sessionId, session);
 
+  let commandLaunched = false;
+  let startupInputsScheduled = false;
+  let claudePromptReady = agentId !== "claude";
+  let claudeStartupTail = "";
+
+  const writePromptAfter = (text: string, delay: number) => {
+    setTimeout(() => {
+      if (session.pty !== ptyProcess) return;
+      const terminalText = text.includes("\n")
+        ? `\x1b[200~${text}\x1b[201~`
+        : text;
+      ptyProcess.write(terminalText);
+      setTimeout(() => {
+        if (session.pty === ptyProcess) ptyProcess.write("\r");
+      }, 80);
+    }, delay);
+  };
+
+  const scheduleStartupInputs = () => {
+    if (startupInputsScheduled || !commandLaunched || !claudePromptReady) return;
+    startupInputsScheduled = true;
+    let promptDelay = agentId === "claude" ? 300 : 900;
+
+    if (agentId === "claude" && autoCareful !== false) {
+      writePromptAfter("/careful", promptDelay);
+      promptDelay += 2000;
+    }
+
+    if (ticketUrl) {
+      const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
+      const template = ticketPromptTemplate || defaultTemplate;
+      const ticketPrompt = template
+        .replace(/\{\{url\}\}/g, ticketUrl)
+        .replace(/\{\{id\}\}/g, ticketId || "")
+        .replace(/\{\{title\}\}/g, ticketTitle || "");
+      writePromptAfter(ticketPrompt, promptDelay);
+      promptDelay += 1800;
+    }
+
+    if (worktreePaths && Object.keys(worktreePaths).length > 1) {
+      const repoLines = Object.entries(worktreePaths)
+        .map(([name, path]) => `- ${name}: ${path}`)
+        .join("\n");
+      const contextPrompt = `This session has worktrees across multiple repos:\n${repoLines}\n\nAll repos are on branch: ${branchName}\nCoordinate changes across all repos as needed.`;
+      writePromptAfter(contextPrompt, promptDelay);
+      promptDelay += 1800;
+    }
+
+    const starterPrompt = initialPrompt?.trim();
+    if (starterPrompt) {
+      writePromptAfter(starterPrompt.slice(0, 12000), promptDelay);
+    }
+  };
+
   // Output decay + stale status watchdog
   const resetInterval = setInterval(() => {
     if (!sessions.has(sessionId) || !session.pty) {
@@ -601,6 +687,18 @@ export async function createSession(params: {
     session.lastOutputTime = Date.now();
     session.recentOutputSize += data.length;
 
+    if (agentId === "claude" && !claudePromptReady) {
+      claudeStartupTail = `${claudeStartupTail}${data}`.slice(-16_000);
+      const startupText = stripTerminalControls(claudeStartupTail);
+      if (
+        /Claude\s*Code/i.test(startupText) &&
+        (/Try\s*["']/i.test(startupText) || /bypass\s*permissions\s*on/i.test(startupText))
+      ) {
+        claudePromptReady = true;
+        setTimeout(scheduleStartupInputs, 250);
+      }
+    }
+
     // Auto-detect running status from PTY output
     // Works when plugin hasn't reported yet OR when plugin has gone silent
     if (session.status === "idle" && !session.pluginReportedStatus) {
@@ -628,47 +726,8 @@ export async function createSession(params: {
   log(`[pty-write] Writing command: ${finalCommand}`);
   setTimeout(() => {
     ptyProcess.write(`${finalCommand}\r`);
-
-    // Enable /careful for Claude Code sessions on startup (if enabled in settings)
-    if (agentId === "claude" && autoCareful !== false) {
-      setTimeout(() => {
-        ptyProcess.write("/careful\r");
-      }, 2000);
-    }
-
-    let promptDelay = agentId === "claude" ? 4000 : 1200;
-
-    if (ticketUrl) {
-      setTimeout(() => {
-        const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
-        const template = ticketPromptTemplate || defaultTemplate;
-        const ticketPrompt = template
-          .replace(/\{\{url\}\}/g, ticketUrl)
-          .replace(/\{\{id\}\}/g, ticketId || "")
-          .replace(/\{\{title\}\}/g, ticketTitle || "");
-        ptyProcess.write(ticketPrompt + "\r");
-      }, promptDelay);
-      promptDelay += 1800;
-    }
-
-    // If multi-repo worktrees were created, inject context
-    if (worktreePaths && Object.keys(worktreePaths).length > 1) {
-      setTimeout(() => {
-        const repoLines = Object.entries(worktreePaths!)
-          .map(([name, path]) => `- ${name}: ${path}`)
-          .join("\n");
-        const contextPrompt = `This session has worktrees across multiple repos:\n${repoLines}\n\nAll repos are on branch: ${branchName}\nCoordinate changes across all repos as needed.`;
-        ptyProcess.write(contextPrompt + "\r");
-      }, promptDelay);
-      promptDelay += 1800;
-    }
-
-    const starterPrompt = initialPrompt?.trim();
-    if (starterPrompt) {
-      setTimeout(() => {
-        ptyProcess.write(`${starterPrompt.slice(0, 12000)}\r`);
-      }, promptDelay);
-    }
+    commandLaunched = true;
+    scheduleStartupInputs();
   }, 300);
 
   log(`[session] Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}`);
@@ -720,6 +779,8 @@ export async function restoreSessions() {
       isRestored: true,
       worktreePaths: node.worktreePaths,
       launchCheckpoint: node.launchCheckpoint,
+      claudeSessionId: node.claudeSessionId,
+      codexSessionId: node.codexSessionId,
     };
 
     sessions.set(node.sessionId, session);

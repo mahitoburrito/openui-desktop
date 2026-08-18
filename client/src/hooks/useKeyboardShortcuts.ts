@@ -49,8 +49,8 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Escape - close focus-mode browser dock before exiting focus mode
-      if (e.key === "Escape" && viewMode === "focus" && browserPanelOpen) {
+      // Escape — close the browser dock from any view.
+      if (e.key === "Escape" && browserPanelOpen) {
         e.preventDefault();
         setBrowserPanelOpen(false);
         return;

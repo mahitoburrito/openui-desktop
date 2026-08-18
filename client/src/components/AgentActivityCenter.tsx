@@ -1,33 +1,22 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  AlertCircle,
-  CheckCircle2,
-  FileDiff,
-  Maximize2,
-  MessageSquare,
-  Search,
-  Terminal,
-  Trash2,
-  WifiOff,
-  X,
-} from "lucide-react";
 import { useStore, type AgentActivityEvent, type AgentStatus } from "../stores/useStore";
+import { Codicon } from "./Codicon";
 
 type ActivityFilter = "all" | "attention" | "done";
 
 const ATTENTION_STATUSES = new Set<AgentStatus>(["waiting_input", "error", "disconnected"]);
 const DONE_STATUSES = new Set<AgentStatus>(["idle"]);
 
-const statusIcon: Record<AgentStatus, typeof Terminal> = {
-  creating: Terminal,
-  running: Terminal,
-  tool_calling: Terminal,
-  waiting_input: MessageSquare,
-  idle: CheckCircle2,
-  disconnected: WifiOff,
-  error: AlertCircle,
+const statusIcon: Record<AgentStatus, string> = {
+  creating: "loading",
+  running: "terminal",
+  tool_calling: "tools",
+  waiting_input: "comment-discussion",
+  idle: "check",
+  disconnected: "debug-disconnect",
+  error: "error",
 };
 
 const statusLabel: Record<AgentStatus, string> = {
@@ -67,7 +56,7 @@ function ActivityRow({ event }: { event: AgentActivityEvent }) {
     removeAgentActivityEvent,
   } = useStore();
 
-  const Icon = statusIcon[event.status] || Terminal;
+  const icon = statusIcon[event.status] || "terminal";
   const sessionExists = sessions.has(event.nodeId);
 
   const openSession = () => {
@@ -91,13 +80,17 @@ function ActivityRow({ event }: { event: AgentActivityEvent }) {
   };
 
   return (
-    <div className="group px-3 py-2.5 border-b border-border/70 hover:bg-surface/70 transition-colors">
+    <div className="group border-b border-white/[0.055] px-3 py-2.5 transition-colors hover:bg-white/[0.035]">
       <div className="flex items-start gap-3">
         <div
           className="mt-0.5 h-8 w-8 flex-shrink-0 rounded-md flex items-center justify-center"
           style={{ backgroundColor: `${event.color}20`, color: event.color }}
         >
-          <Icon className="h-4 w-4" />
+          <Codicon
+            name={icon}
+            size={15}
+            className={event.status === "creating" ? "codicon-modifier-spin" : undefined}
+          />
         </div>
 
         <div className="min-w-0 flex-1">
@@ -120,7 +113,7 @@ function ActivityRow({ event }: { event: AgentActivityEvent }) {
             <span>{timeAgo(event.createdAt)}</span>
             {event.repoPath && (
               <>
-                <span>/</span>
+                <span>·</span>
                 <span className="font-mono truncate">{event.repoPath.split("/").pop() || event.repoPath}</span>
               </>
             )}
@@ -132,27 +125,27 @@ function ActivityRow({ event }: { event: AgentActivityEvent }) {
             type="button"
             onClick={focusSession}
             disabled={!sessionExists}
-            className="h-6 w-6 rounded flex items-center justify-center text-zinc-600 hover:text-blue-300 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:text-zinc-600 disabled:hover:bg-transparent transition-colors"
+            className="workspace-icon-button flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:text-zinc-200 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-600"
             title="Open in focus mode"
           >
-            <Maximize2 className="h-3.5 w-3.5" />
+            <Codicon name="screen-full" size={12} />
           </button>
           <button
             type="button"
             onClick={reviewChanges}
             disabled={!event.repoPath}
-            className="h-6 w-6 rounded flex items-center justify-center text-zinc-600 hover:text-green-300 hover:bg-green-500/10 disabled:opacity-30 disabled:hover:text-zinc-600 disabled:hover:bg-transparent transition-colors"
+            className="workspace-icon-button flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:text-zinc-200 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-600"
             title="Review repo changes"
           >
-            <FileDiff className="h-3.5 w-3.5" />
+            <Codicon name="git-compare" size={12} />
           </button>
           <button
             type="button"
             onClick={() => removeAgentActivityEvent(event.id)}
-            className="h-6 w-6 rounded flex items-center justify-center text-zinc-600 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+            className="workspace-icon-button flex h-6 w-6 items-center justify-center rounded text-zinc-600 hover:text-red-300"
             title="Remove event"
           >
-            <X className="h-3.5 w-3.5" />
+            <Codicon name="close" size={12} />
           </button>
         </div>
       </div>
@@ -212,17 +205,17 @@ export function AgentActivityCenter() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[84] bg-zinc-950/45"
+            className="fixed inset-0 z-[84] bg-zinc-950/35 backdrop-blur-[2px]"
             onClick={() => setActivityCenterOpen(false)}
           />
           <motion.aside
             initial={{ x: 24, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 24, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 420, damping: 42 }}
-            className="fixed right-3 top-[68px] bottom-3 z-[85] w-[min(440px,calc(100vw-24px))] overflow-hidden rounded-lg border border-zinc-700/70 bg-[#0b0e0d] shadow-2xl flex flex-col"
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="workspace-glass-strong fixed bottom-3 right-3 top-14 z-[85] flex w-[min(440px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl"
           >
-            <div className="flex-shrink-0 border-b border-border px-4 py-3">
+            <div className="flex-shrink-0 border-b border-white/[0.065] px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-white">Agent activity</div>
@@ -237,30 +230,30 @@ export function AgentActivityCenter() {
                     type="button"
                     onClick={clearAgentActivityEvents}
                     disabled={agentActivityEvents.length === 0}
-                    className="h-7 w-7 rounded flex items-center justify-center text-zinc-500 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:hover:text-zinc-500 disabled:hover:bg-transparent transition-colors"
+                    className="workspace-icon-button flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:text-red-300 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-500"
                     title="Clear activity"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Codicon name="trash" size={13} />
                   </button>
                   <button
                     type="button"
                     onClick={() => setActivityCenterOpen(false)}
-                    className="h-7 w-7 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-surface-active transition-colors"
+                    className="workspace-icon-button flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:text-zinc-100"
                     title="Close activity"
                   >
-                    <X className="h-4 w-4" />
+                    <Codicon name="close" size={14} />
                   </button>
                 </div>
               </div>
 
               <div className="mt-3 flex items-center gap-2">
                 <div className="relative min-w-0 flex-1">
-                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-600" />
+                  <Codicon name="search" size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-600" />
                   <input
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
                     placeholder="Search activity"
-                    className="w-full rounded-md border border-border bg-canvas py-1.5 pl-8 pr-2 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
+                    className="workspace-glass-segment w-full rounded-[7px] py-1.5 pl-8 pr-2 text-xs text-zinc-100 placeholder-zinc-600 transition-colors focus:outline-none"
                   />
                 </div>
               </div>
@@ -289,7 +282,7 @@ export function AgentActivityCenter() {
             <div className="min-h-0 flex-1 overflow-y-auto">
               {filteredEvents.length === 0 ? (
                 <div className="px-6 py-12 text-center">
-                  <Terminal className="mx-auto h-5 w-5 text-zinc-700" />
+                  <Codicon name="terminal" size={19} className="text-zinc-700" />
                   <div className="mt-3 text-sm text-zinc-500">
                     {agentActivityEvents.length === 0 ? "No agent events yet" : "No matching events"}
                   </div>

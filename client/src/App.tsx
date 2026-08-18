@@ -1,17 +1,12 @@
-import { useEffect, useCallback, useRef, type CSSProperties } from "react";
+import { useEffect, useCallback, useRef, useState, type CSSProperties } from "react";
 import {
   ReactFlow,
-  Background,
-  Controls,
   useNodesState,
-  BackgroundVariant,
   ReactFlowProvider,
   NodeChange,
   applyNodeChanges,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Plus } from "lucide-react";
-
 import { useStore, type AgentSession } from "./stores/useStore";
 import { getWorkspaceBackground } from "./theme/appearance";
 import { AgentNode } from "./components/AgentNode/index";
@@ -22,9 +17,9 @@ import { FocusMode } from "./components/FocusMode";
 import { MarkdownView } from "./components/MarkdownView";
 import { DiffView } from "./components/DiffView";
 import { BrowserView } from "./components/BrowserView";
+import { ResearchView } from "./components/ResearchView";
 import { NewSessionModal } from "./components/NewSessionModal";
 import { Header } from "./components/Header";
-import { CanvasControls } from "./components/CanvasControls";
 import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { AgentActivityCenter } from "./components/AgentActivityCenter";
 import { CommandPalette } from "./components/CommandPalette";
@@ -35,6 +30,7 @@ import { usePRBEIPC } from "./hooks/usePRBEIPC";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
 import { destroyCachedTerminal } from "./components/Terminal";
+import { Codicon } from "./components/Codicon";
 
 const nodeTypes = {
   agent: AgentNode,
@@ -104,6 +100,7 @@ function restoreServerSessionToCanvas(sessionData: any) {
     command: sessionData.command,
     color,
     createdAt: sessionData.createdAt,
+    lastActivityAt: sessionData.lastActivityAt,
     cwd: sessionData.cwd,
     originalCwd: sessionData.originalCwd,
     gitBranch: sessionData.gitBranch,
@@ -161,17 +158,32 @@ function AppContent() {
     viewMode,
     browserPanelOpen,
     browserPanelWidth,
-    workspaceBackground,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
-  const workspace = getWorkspaceBackground(workspaceBackground);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  // The canvas is one neutral pane of glass. It should never turn into an
+  // opaque theme-colored sheet that hides the macOS window below it.
+  const workspace = getWorkspaceBackground("graphite");
+  const canvasAtmosphere =
+    "linear-gradient(180deg, oklch(98% 0.004 255 / 0.025), oklch(10% 0.006 255 / 0.07))";
   const positionUpdateTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasRestoredRef = useRef(false);
-  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
+  const browserDockOpen = browserPanelOpen;
 
   // Initialize PRBE IPC listeners
   usePRBEIPC();
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api?.isElectron) return;
+
+    const updateFullscreen = (value: boolean) => setIsFullscreen(Boolean(value));
+    api.on("window:fullscreen-changed", updateFullscreen);
+    void api.invoke("window:is-fullscreen").then(updateFullscreen).catch(() => {});
+
+    return () => api.removeAllListeners("window:fullscreen-changed");
+  }, []);
 
   // Initialize keyboard shortcuts
   useKeyboardShortcuts();
@@ -254,6 +266,9 @@ function AppContent() {
                       data: { ...node.data, label: title },
                     });
                   }
+                }
+                if (existing.lastActivityAt !== sessionData.lastActivityAt) {
+                  sessionUpdates.lastActivityAt = sessionData.lastActivityAt;
                 }
 
                 if (Object.keys(sessionUpdates).length > 0) {
@@ -539,14 +554,14 @@ function AppContent() {
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: any) => {
-      // Clicking a card zooms into that session (focus view), like the
-      // mockup — the canvas is the map, the card is the room. The old
-      // right-hand detail sidebar stays closed.
+      // First click keeps the canvas visible and opens a lightweight chat
+      // preview. Double-click and the preview's expand button enter Focus.
       if (node.type === "agent") {
-        useStore.getState().openSessionInFocus(node.id);
+        setSelectedNodeId(node.id);
+        setSidebarOpen(true);
       }
     },
-    []
+    [setSelectedNodeId, setSidebarOpen]
   );
 
   const onPaneClick = useCallback(() => {
@@ -558,17 +573,20 @@ function AppContent() {
 
   return (
     <div
-      className="w-screen h-screen bg-canvas overflow-hidden flex flex-col"
+      className={`workspace-shell relative flex h-screen w-screen flex-col overflow-hidden ${
+        isFullscreen ? "workspace-shell-fullscreen" : ""
+      }`}
       style={{
-        background: workspace.canvas,
+        background: canvasAtmosphere,
         "--workspace-bg": workspace.canvas,
         "--workspace-bg-dark": workspace.canvasDark,
+        "--workspace-atmosphere": canvasAtmosphere,
         "--workspace-dots": workspace.dots,
         "--workspace-controls": workspace.controls,
         "--workspace-border": workspace.border,
       } as CSSProperties}
     >
-      <Header />
+      {viewMode !== "focus" && <Header isFullscreen={isFullscreen} />}
 
       <div className="flex-1 relative min-h-0">
         <div
@@ -580,8 +598,8 @@ function AppContent() {
 
           {/* Canvas area — shifts right when session list is open */}
           <div
-            className="absolute inset-0 transition-all duration-300"
-            style={{ left: sessionListOpen ? 280 : 0, background: workspace.canvas }}
+            className="canvas-atmosphere absolute inset-0 transition-all duration-300"
+            style={{ left: sessionListOpen ? 288 : 0 }}
           >
             <ReactFlow
               nodes={nodes}
@@ -599,19 +617,8 @@ function AppContent() {
               nodesConnectable={false}
               snapToGrid
               snapGrid={[24, 24]}
-              style={{ background: workspace.canvas }}
+              style={{ background: "transparent" }}
             >
-              <Background
-                variant={BackgroundVariant.Dots}
-                gap={22}
-                size={0.9}
-                color={workspace.dots}
-              />
-              <Controls
-                showInteractive={false}
-                position="bottom-left"
-              />
-              <CanvasControls />
             </ReactFlow>
 
             {/* Empty state */}
@@ -619,7 +626,7 @@ function AppContent() {
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="text-center pointer-events-auto">
                   <div className="w-16 h-16 rounded-2xl bg-surface border border-border flex items-center justify-center mx-auto mb-4">
-                    <Plus className="w-8 h-8 text-zinc-600" />
+                    <Codicon name="add" size={28} className="text-zinc-600" />
                   </div>
                   <h2 className="text-lg font-medium text-zinc-300 mb-2">No agents yet</h2>
                   <p className="text-sm text-zinc-500 mb-4 max-w-xs">
@@ -645,12 +652,16 @@ function AppContent() {
           {/* Diff viewer overlay */}
           <DiffView />
 
+          {/* Native Probe Research workspace. The regular browser remains a
+              separate dock and can sit beside this view. */}
+          <ResearchView />
+
           <Sidebar />
           <PRBEPanel />
         </div>
 
-        {/* Embedded browser dock, scoped to focus mode so the canvas never gets squeezed. */}
-        {viewMode === "focus" && <BrowserView />}
+        {/* Regular web browser dock. */}
+        <BrowserView />
       </div>
 
       <NewSessionModal

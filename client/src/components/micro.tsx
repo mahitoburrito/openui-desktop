@@ -11,6 +11,7 @@ import { AnimatePresence, motion, type Transition } from "framer-motion";
 // that fits a product surface: no layout shifts, 150–400ms, spring ease-out.
 
 export type MicroInteraction =
+  | "none"
   | "rotate" // 180° spin while hovered (reload, settings)
   | "rotate-quarter" // 90° tilt while hovered (add / create)
   | "shake" // disapproval wiggle (delete, destructive close)
@@ -18,31 +19,32 @@ export type MicroInteraction =
   | "nudge-left" // lean toward the action's direction (back, zoom out)
   | "nudge-right"; // (forward, external)
 
-const SPRING: Transition = { type: "spring", stiffness: 450, damping: 24 };
-const KEYFRAMES: Transition = { duration: 0.4 };
+const QUICK: Transition = { duration: 0.16, ease: [0.16, 1, 0.3, 1] };
 
 function animationFor(interaction: MicroInteraction, hovered: boolean) {
   switch (interaction) {
+    case "none":
+      return { animate: { x: 0, y: 0, scale: 1, rotate: 0 }, transition: QUICK };
     case "rotate":
-      return { animate: { rotate: hovered ? 180 : 0 }, transition: SPRING };
+      return { animate: { rotate: hovered ? 22 : 0 }, transition: QUICK };
     case "rotate-quarter":
-      return { animate: { rotate: hovered ? 90 : 0 }, transition: SPRING };
+      return { animate: { rotate: hovered ? 45 : 0 }, transition: QUICK };
     case "shake":
       return {
         animate: hovered
-          ? { y: [0, -2, 0, -2, 0], rotate: [0, -10, 10, -10, 0] }
+          ? { x: [0, -1, 1, 0] }
           : { y: 0, rotate: 0 },
-        transition: KEYFRAMES,
+        transition: QUICK,
       };
     case "pulse":
       return {
-        animate: { scale: hovered ? [1, 1.18, 1] : 1 },
-        transition: KEYFRAMES,
+        animate: { scale: hovered ? 1.06 : 1 },
+        transition: QUICK,
       };
     case "nudge-left":
-      return { animate: { x: hovered ? -2 : 0 }, transition: SPRING };
+      return { animate: { x: hovered ? -1.5 : 0 }, transition: QUICK };
     case "nudge-right":
-      return { animate: { x: hovered ? 2 : 0 }, transition: SPRING };
+      return { animate: { x: hovered ? 1.5 : 0 }, transition: QUICK };
   }
 }
 

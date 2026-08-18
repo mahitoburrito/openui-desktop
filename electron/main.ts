@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, dialog } from "electron";
+import { app, BrowserWindow, shell, dialog, ipcMain } from "electron";
 import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { startServer } from "../server/index";
@@ -53,6 +53,12 @@ const autoUpdateEnabled =
   (isReleaseChannelBuild() || process.env.OPENUI_ENABLE_AUTO_UPDATE === "true");
 
 function createWindow() {
+  const vitePort = process.env.VITE_PORT || 5173;
+  const rendererUrl = isDev
+    ? `http://localhost:${vitePort}`
+    : `http://localhost:${serverPort}`;
+  const rendererOrigin = new URL(rendererUrl).origin;
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -61,7 +67,12 @@ function createWindow() {
     title: "OpenUI Desktop",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
-    backgroundColor: "#0a0a0a",
+    // One native behind-window material gives the canvas a real macOS blur.
+    // The renderer only adds a faint tint, so colors below still come through.
+    transparent: process.platform === "darwin",
+    vibrancy: process.platform === "darwin" ? "under-window" : undefined,
+    visualEffectState: process.platform === "darwin" ? "active" : undefined,
+    backgroundColor: process.platform === "darwin" ? "#00000000" : "#0a0a0a",
     webPreferences: {
       preload: join(__dirname, "preload.js"),
       nodeIntegration: false,
@@ -69,21 +80,62 @@ function createWindow() {
     },
   });
 
-  // Open external links in default browser
+  const openLink = (url: string) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      const target = new URL(url);
+      if (target.protocol === "http:" || target.protocol === "https:") {
+        mainWindow.webContents.send("browser:open-requested", target.toString());
+        return;
+      }
+      if (target.protocol === "mailto:" || target.protocol === "tel:") {
+        void shell.openExternal(target.toString());
+      }
+    } catch {
+      // Ignore malformed links instead of letting them replace the app.
+    }
+  };
+
+  // Keep links inside OpenUI's browser dock. New-window links and normal
+  // same-tab links take different Electron paths, so guard both of them.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openLink(url);
     return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    try {
+      if (new URL(url).origin === rendererOrigin) return;
+    } catch {
+      // A malformed URL is never allowed to replace the renderer.
+    }
+    event.preventDefault();
+    openLink(url);
   });
   registerBrowserViewIpc(mainWindow);
 
+  const publishFullscreenState = (isFullscreen: boolean) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (process.platform === "darwin") {
+      // There is no useful window behind a macOS fullscreen space. Use the
+      // renderer's solid system surface there, then restore glass on exit.
+      mainWindow.setVibrancy(isFullscreen ? null : "under-window");
+    }
+    mainWindow.webContents.send("window:fullscreen-changed", isFullscreen);
+  };
+
+  mainWindow.on("enter-full-screen", () => publishFullscreenState(true));
+  mainWindow.on("leave-full-screen", () => publishFullscreenState(false));
+  mainWindow.webContents.on("did-finish-load", () => {
+    publishFullscreenState(mainWindow?.isFullScreen() ?? false);
+  });
+
   if (isDev) {
     // In dev mode, load from Vite dev server
-    const vitePort = process.env.VITE_PORT || 5173;
-    mainWindow.loadURL(`http://localhost:${vitePort}`);
+    mainWindow.loadURL(rendererUrl);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     // In production, load from the embedded server
-    mainWindow.loadURL(`http://localhost:${serverPort}`);
+    mainWindow.loadURL(rendererUrl);
   }
 
   mainWindow.on("close", (e) => {
@@ -124,6 +176,10 @@ app.whenReady().then(async () => {
       "Failed to start the embedded server. The application may not work correctly."
     );
   }
+
+  ipcMain.handle("window:is-fullscreen", (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false;
+  });
 
   createWindow();
 

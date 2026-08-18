@@ -1,13 +1,13 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import type { LucideIcon } from "lucide-react";
+import type { LucideIcon } from "./icons";
 import {
   X, Key, Check, AlertCircle, Loader2, ExternalLink, Bug,
-  SlidersHorizontal, Puzzle, Palette, Type, Monitor, Minus, Plus, Bell, FileText, Sparkles,
-} from "lucide-react";
+  SlidersHorizontal, Puzzle, Palette, Type, Monitor, Minus, Plus, Bell, FileText, Sparkles, Code,
+} from "./icons";
 import { usePRBEStore } from "../stores/usePRBEStore";
-import { useStore } from "../stores/useStore";
+import { DIFF_THEMES, useStore, type DiffTheme } from "../stores/useStore";
 import {
   TERMINAL_FONT_FAMILIES,
   TERMINAL_THEMES,
@@ -80,6 +80,15 @@ const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
   { id: "integrations", label: "Integrations", icon: Puzzle },
 ];
 
+const CODE_THEME_DETAILS: Record<DiffTheme, { name: string; preview: string[] }> = {
+  "github-dark": { name: "GitHub Dark", preview: ["#0d1117", "#ff7b72", "#a5d6ff", "#7ee787"] },
+  "github-light": { name: "GitHub Light", preview: ["#f6f8fa", "#cf222e", "#0550ae", "#116329"] },
+  "one-dark-pro": { name: "One Dark", preview: ["#282c34", "#c678dd", "#61afef", "#98c379"] },
+  dracula: { name: "Dracula", preview: ["#282a36", "#ff79c6", "#8be9fd", "#50fa7b"] },
+  nord: { name: "Nord", preview: ["#2e3440", "#b48ead", "#88c0d0", "#a3be8c"] },
+  "vitesse-dark": { name: "Vitesse", preview: ["#121212", "#db7093", "#4d9375", "#80a665"] },
+};
+
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [apiKey, setApiKey] = useState("");
@@ -107,6 +116,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setTerminalFontFamily,
     terminalFontSize,
     setTerminalFontSize,
+    diffTheme,
+    setDiffTheme,
   } = useStore();
   const [prbeApiKey, setPrbeApiKey] = useState("");
   const [hasPrbeKey, setHasPrbeKey] = useState(false);
@@ -365,6 +376,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       setTerminalFontFamily={setTerminalFontFamily}
                       terminalFontSize={terminalFontSize}
                       setTerminalFontSize={setTerminalFontSize}
+                      codeTheme={diffTheme}
+                      setCodeTheme={setDiffTheme}
                     />}
                     {tab === "integrations" && <IntegrationsTab
                       apiKey={apiKey}
@@ -443,6 +456,8 @@ function AppearanceTab({
   setTerminalFontFamily,
   terminalFontSize,
   setTerminalFontSize,
+  codeTheme,
+  setCodeTheme,
 }: {
   workspaceBackground: WorkspaceBackgroundId;
   setWorkspaceBackground: (v: WorkspaceBackgroundId) => void;
@@ -452,6 +467,8 @@ function AppearanceTab({
   setTerminalFontFamily: (v: TerminalFontFamilyId) => void;
   terminalFontSize: number;
   setTerminalFontSize: (v: number) => void;
+  codeTheme: DiffTheme;
+  setCodeTheme: (v: DiffTheme) => void;
 }) {
   const selectedTerminalTheme =
     TERMINAL_THEMES.find((theme) => theme.id === terminalTheme) ?? TERMINAL_THEMES[0];
@@ -497,6 +514,43 @@ function AppearanceTab({
               );
             })}
           </div>
+        </div>
+      </div>
+
+      <SectionHeader title="Code colors" />
+      <div className="rounded-lg border border-border bg-canvas/40 p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Code className="w-4 h-4 text-zinc-500" />
+          <div>
+            <div className="text-sm text-zinc-200">Syntax theme</div>
+            <div className="text-xs text-zinc-500">Used in Chat, Markdown, and Diffs</div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {DIFF_THEMES.map((themeId) => {
+            const theme = CODE_THEME_DETAILS[themeId];
+            const selected = codeTheme === themeId;
+            return (
+              <button
+                key={themeId}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setCodeTheme(themeId)}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  selected
+                    ? "border-zinc-300 bg-zinc-800"
+                    : "border-border bg-canvas/40 hover:border-zinc-600 hover:bg-zinc-800/50"
+                }`}
+              >
+                <div className="mb-2 flex h-7 overflow-hidden rounded-md border border-zinc-950/10">
+                  {theme.preview.map((color) => (
+                    <span key={color} className="flex-1" style={{ backgroundColor: color }} />
+                  ))}
+                </div>
+                <div className="text-xs font-medium text-zinc-100">{theme.name}</div>
+              </button>
+            );
+          })}
         </div>
       </div>
 

@@ -1,6 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
+import { useEffect, useRef, useState } from "react";
 import {
   X,
   FileText,
@@ -10,7 +8,8 @@ import {
   Eye,
   Copy,
   Check,
-} from "lucide-react";
+} from "./icons";
+import { HighlightedMarkdown } from "./HighlightedMarkdown";
 
 interface Props {
   path: string;
@@ -26,11 +25,6 @@ interface FileData {
   modified: number;
   content: string;
 }
-
-marked.setOptions({
-  gfm: true,
-  breaks: false,
-});
 
 export function MarkdownPane({ path, isActive, onClose, onClick }: Props) {
   const [data, setData] = useState<FileData | null>(null);
@@ -68,16 +62,6 @@ export function MarkdownPane({ path, isActive, onClose, onClick }: Props) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
-
-  const html = useMemo(() => {
-    if (!data) return "";
-    try {
-      const raw = marked.parse(data.content, { async: false }) as string;
-      return DOMPurify.sanitize(raw, { ADD_ATTR: ["target"] });
-    } catch (e: any) {
-      return `<p style="color:#ef4444">Render error: ${e.message}</p>`;
-    }
-  }, [data]);
 
   const handleCopyPath = async () => {
     try {
@@ -192,9 +176,9 @@ export function MarkdownPane({ path, isActive, onClose, onClick }: Props) {
               {data.content}
             </pre>
           ) : (
-            <div
-              className="markdown-body p-6 max-w-3xl mx-auto"
-              dangerouslySetInnerHTML={{ __html: html }}
+            <HighlightedMarkdown
+              text={data.content}
+              className="p-6 max-w-3xl mx-auto"
             />
           )
         )}

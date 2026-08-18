@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f4f6f7"/>
+      <stop offset="0.28" stop-color="#b9bec3"/>
+      <stop offset="0.55" stop-color="#777d83"/>
+      <stop offset="0.78" stop-color="#3b3f44"/>
+      <stop offset="1" stop-color="#202328"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.78"/>
+      <stop offset="0.46" stop-color="#9ea4aa" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#16191d" stop-opacity="0.8"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.56" stop-color="#e7eaed"/>
+      <stop offset="1" stop-color="#aeb4ba"/>
+    </linearGradient>
+    <pattern id="brush" width="12" height="12" patternUnits="userSpaceOnUse">
+      <path d="M0 2H12M0 7H12" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+      <path d="M0 5H12M0 10H12" stroke="#111418" stroke-opacity="0.025" stroke-width="1"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#080a0d" flood-opacity="0.48"/>
+    </filter>
+    <filter id="markShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#111419" flood-opacity="0.7"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="54" width="880" height="880" rx="214" fill="url(#metal)"/>
+    <rect x="72" y="54" width="880" height="880" rx="214" fill="url(#brush)"/>
+    <rect x="82" y="64" width="860" height="860" rx="204" fill="none" stroke="url(#edge)" stroke-width="10"/>
+    <path d="M125 240C175 128 273 97 414 84H731C824 84 889 132 923 208" fill="none" stroke="#ffffff" stroke-opacity="0.23" stroke-width="18" stroke-linecap="round"/>
+  </g>
+
+  <g fill="none" stroke="url(#mark)" stroke-linecap="round" filter="url(#markShadow)">
+    <path d="M512 265V775M257 520H767M332 340L692 700M692 340L332 700" stroke-width="42"/>
+    <path d="M778 166V318M702 242H854M724 188L832 296M832 188L724 296" stroke-width="24"/>
+  </g>
+</svg>

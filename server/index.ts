@@ -8,9 +8,11 @@ import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { apiRoutes } from "./routes/api";
 import { prbeRoutes } from "./routes/prbe";
+import { probeResearchRoutes } from "./routes/probeResearch";
 import {
   sessions,
   restoreSessions,
+  isAgentInputPromptReady,
   scheduleSessionTitleGeneration,
   setServerPort,
 } from "./services/sessionManager";
@@ -25,6 +27,7 @@ const app = new Hono();
 app.use("*", cors());
 app.route("/api", apiRoutes);
 app.route("/api/prbe", prbeRoutes);
+app.route("/api/probe-research", probeResearchRoutes);
 
 // Serve static files from client/dist in standalone (non-Electron) mode
 const CLIENT_DIST = join(__dirname, "..", "..", "..", "client", "dist");
@@ -155,6 +158,49 @@ export async function startServer(): Promise<number> {
         try {
           const msg = JSON.parse(message.toString());
           switch (msg.type) {
+            case "chat-input": {
+              const text = typeof msg.data === "string"
+                ? msg.data.replace(/\r\n?/g, "\n").replace(/\0/g, "").trim().slice(0, 12_000)
+                : "";
+              const agentId = session.agentId.toLowerCase();
+              const transcriptReady = agentId.includes("codex")
+                ? Boolean(session.codexSessionId)
+                : agentId.includes("claude")
+                  ? Boolean(session.claudeSessionId)
+                  : true;
+              // A brand-new agent does not always create its transcript until
+              // the first prompt is submitted. Once the PTY has gone idle, its
+              // input prompt is ready even when there is no transcript yet.
+              const promptReady = transcriptReady || isAgentInputPromptReady(session);
+
+              if (!text || !session.pty || !promptReady) {
+                ws.send(JSON.stringify({
+                  type: "chat-input-error",
+                  message: !promptReady ? "Agent is still starting" : "Session is unavailable",
+                }));
+                break;
+              }
+
+              const targetPty = session.pty;
+              const terminalText = text.includes("\n")
+                ? `\x1b[200~${text}\x1b[201~`
+                : text;
+              targetPty.write(terminalText);
+              session.lastInputTime = Date.now();
+
+              // Keep Return separate from the text. Sending both in one PTY
+              // packet makes Codex and Claude treat the message as a paste with
+              // a trailing newline instead of a submitted prompt.
+              setTimeout(() => {
+                if (session.pty !== targetPty) return;
+                targetPty.write("\r");
+                scheduleSessionTitleGeneration(sessionId, text);
+                if (ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: "chat-input-accepted" }));
+                }
+              }, 80);
+              break;
+            }
             case "input":
               if (session.pty) {
                 session.pty.write(msg.data);

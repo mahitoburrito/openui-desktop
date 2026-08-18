@@ -3,9 +3,7 @@
 @tailwind utilities;
 
 :root {
-  /* Founders Grotesk first: activates automatically once the licensed files
-     are installed. Archivo Variable is the bundled stand-in. */
-  font-family: "Founders Grotesk", "Archivo Variable", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: "Helvetica Neue", Helvetica, Arial, -apple-system, BlinkMacSystemFont, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -19,6 +17,28 @@
   --workspace-dots: oklch(28% 0.008 255);
   --workspace-controls: oklch(17% 0.007 255);
   --workspace-border: oklch(29% 0.009 255);
+  --ink: oklch(94% 0.006 255);
+  --ink-soft: oklch(76% 0.009 255);
+  --ink-muted: oklch(57% 0.01 255);
+  --line-soft: oklch(70% 0.012 255 / 0.09);
+  --glass-surface: oklch(16% 0.008 255 / 0.18);
+  --glass-surface-strong: oklch(12% 0.007 255 / 0.26);
+  --glass-surface-hover: oklch(30% 0.012 255 / 0.2);
+  --glass-border: oklch(92% 0.006 255 / 0.09);
+  --glass-highlight: oklch(98% 0.004 255 / 0.075);
+  --glass-shadow: 0 18px 54px oklch(3% 0.005 255 / 0.16), 0 3px 12px oklch(3% 0.005 255 / 0.08);
+  --focus-charcoal: oklch(10.8% 0.006 255);
+  --focus-charcoal-raised: oklch(15.2% 0.008 255);
+  --focus-charcoal-deep: oklch(8.8% 0.005 255);
+  --focus-charcoal-line: oklch(92% 0.006 255 / 0.075);
+  --fullscreen-surface: oklch(96% 0.006 255);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fullscreen-surface: oklch(11.5% 0.007 255);
+  }
 }
 
 * {
@@ -30,14 +50,243 @@ html, body {
   padding: 0;
   height: 100%;
   width: 100%;
-  background: oklch(14.5% 0.006 255);
+  background: transparent;
   color: oklch(93% 0.005 255);
   overflow: hidden;
 }
 
 #root {
   min-height: 100%;
-  background: var(--workspace-bg);
+  background: transparent;
+  isolation: isolate;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 1px solid oklch(72% 0.065 250 / 0.85);
+  outline-offset: 2px;
+}
+
+/* One shared material for floating workspace chrome. The native window owns
+   the blur; these translucent washes keep text readable over it. */
+.workspace-glass {
+  position: relative;
+  border: 1px solid var(--glass-border);
+  background:
+    linear-gradient(180deg, var(--glass-highlight), transparent 38%),
+    var(--glass-surface);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 oklch(99% 0.003 255 / 0.055);
+  -webkit-backdrop-filter: blur(16px) saturate(132%);
+  backdrop-filter: blur(16px) saturate(132%);
+}
+
+.workspace-glass-strong {
+  border: 1px solid var(--glass-border);
+  background:
+    linear-gradient(180deg, oklch(99% 0.003 255 / 0.075), transparent 30%),
+    var(--glass-surface-strong);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 oklch(99% 0.003 255 / 0.05);
+  -webkit-backdrop-filter: blur(20px) saturate(128%);
+  backdrop-filter: blur(20px) saturate(128%);
+}
+
+.workspace-glass-segment {
+  border: 1px solid oklch(96% 0.004 255 / 0.06);
+  background: oklch(12% 0.007 255 / 0.28);
+  box-shadow: inset 0 1px 0 oklch(98% 0.004 255 / 0.035);
+}
+
+.workspace-glass-menu {
+  border: 1px solid var(--glass-border);
+  background: oklch(13.5% 0.008 255 / 0.78);
+  box-shadow: 0 22px 60px oklch(3% 0.005 255 / 0.34), inset 0 1px 0 oklch(98% 0.004 255 / 0.05);
+  -webkit-backdrop-filter: blur(26px) saturate(125%);
+  backdrop-filter: blur(26px) saturate(125%);
+}
+
+/* Cmd+K needs stronger contrast than the passive canvas chrome. It keeps the
+   native color reflection, but the page below no longer competes with text. */
+.command-palette-surface {
+  background:
+    linear-gradient(180deg, oklch(98% 0.004 255 / 0.055), transparent 28%),
+    oklch(12.5% 0.008 255 / 0.86);
+  -webkit-backdrop-filter: blur(24px) saturate(120%);
+  backdrop-filter: blur(24px) saturate(120%);
+}
+
+.workspace-icon-button {
+  transition: color 150ms var(--ease-out-expo), background-color 150ms var(--ease-out-expo), transform 150ms var(--ease-out-expo);
+}
+
+.workspace-icon-button:hover {
+  background: var(--glass-surface-hover);
+}
+
+.workspace-icon-button:active {
+  transform: scale(0.94);
+}
+
+.workspace-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(70% 55% at 86% -8%, oklch(76% 0.025 246 / 0.025), transparent 62%),
+    radial-gradient(52% 46% at 2% 104%, oklch(70% 0.018 280 / 0.018), transparent 68%);
+}
+
+.workspace-shell {
+  /* Native macOS vibrancy owns the full-window blur. A second blur here makes
+     the background flat gray and creates halos around dark agent cards. */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.workspace-shell-fullscreen {
+  background: var(--fullscreen-surface) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .workspace-shell-fullscreen .probe-brand-mark {
+    filter: invert(1);
+  }
+
+  .workspace-shell-fullscreen .probe-brand-button {
+    color: oklch(82% 0.007 255);
+  }
+
+  .workspace-shell-fullscreen .probe-brand-button:hover {
+    color: oklch(96% 0.004 255);
+  }
+}
+
+.focus-glass-stage {
+  -webkit-backdrop-filter: blur(30px) saturate(118%);
+  backdrop-filter: blur(30px) saturate(118%);
+}
+
+/* Focus mode is the reading surface. It stays matte while the canvas and
+   session rail keep the native glass material. */
+.focus-charcoal-header,
+.focus-chat-surface {
+  background: var(--focus-charcoal);
+}
+
+.focus-charcoal-header {
+  border-bottom: 1px solid var(--focus-charcoal-line);
+}
+
+.focus-charcoal-control {
+  border: 1px solid var(--focus-charcoal-line);
+  background: var(--focus-charcoal-raised);
+  box-shadow: inset 0 1px 0 oklch(98% 0.004 255 / 0.04);
+}
+
+.focus-charcoal-segment {
+  border: 1px solid oklch(96% 0.004 255 / 0.055);
+  background: var(--focus-charcoal-deep);
+}
+
+/* Probe Research is a native reading surface, not another glass panel. The
+   web browser stays independent and can dock beside it. */
+.research-surface {
+  background:
+    radial-gradient(80% 60% at 86% -12%, oklch(65% 0.035 252 / 0.035), transparent 58%),
+    oklch(10.8% 0.006 255);
+  box-shadow: inset 0 1px 0 oklch(98% 0.004 255 / 0.025);
+}
+
+.research-surface ::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.research-surface ::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: oklch(90% 0.006 255 / 0.13);
+  background-clip: padding-box;
+}
+
+.research-surface ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.workspace-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  z-index: 120;
+  width: max-content;
+  max-width: 180px;
+  transform: translate(-50%, -3px);
+  border: 1px solid oklch(92% 0.006 255 / 0.12);
+  border-radius: 6px;
+  background: oklch(13% 0.008 255 / 0.94);
+  box-shadow: 0 10px 28px oklch(3% 0.005 255 / 0.42);
+  color: oklch(88% 0.006 255);
+  font-size: 10px;
+  font-weight: 520;
+  line-height: 1;
+  padding: 6px 7px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out-expo), transform 120ms var(--ease-out-expo);
+  transition-delay: 0ms;
+}
+
+.workspace-icon-button:hover .workspace-tooltip,
+.workspace-icon-button:focus-visible .workspace-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition-delay: 360ms;
+}
+
+.workspace-command-dock {
+  opacity: 0;
+  transform: translateY(-5px) scale(0.985);
+  pointer-events: none;
+  transition: opacity 160ms var(--ease-out-expo), transform 160ms var(--ease-out-expo);
+}
+
+.workspace-command-zone:hover .workspace-command-dock,
+.workspace-command-zone:focus-within .workspace-command-dock,
+.workspace-command-zone[data-visible="true"] .workspace-command-dock {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.workspace-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.agent-node-card {
+  background: oklch(18% 0.009 255);
+  border-color: oklch(90% 0.008 255 / 0.095);
+  box-shadow: 0 12px 34px oklch(3% 0.006 255 / 0.24), inset 0 1px 0 oklch(98% 0.004 255 / 0.035);
+}
+
+.agent-node-card:hover {
+  background: oklch(20% 0.01 255);
+  border-color: oklch(92% 0.007 255 / 0.17);
+  box-shadow: 0 16px 40px oklch(3% 0.006 255 / 0.32), inset 0 1px 0 oklch(98% 0.004 255 / 0.065);
+}
+
+.agent-node-card.is-selected {
+  box-shadow: 0 0 0 1px oklch(72% 0.055 250 / 0.3), 0 18px 44px oklch(3% 0.006 255 / 0.34), inset 0 1px 0 oklch(98% 0.004 255 / 0.07);
 }
 
 /* Electron draggable titlebar region */
@@ -51,11 +300,11 @@ html, body {
 
 /* React Flow canvas */
 .react-flow {
-  background: var(--workspace-bg) !important;
+  background: transparent !important;
 }
 
 .react-flow__background {
-  background-color: var(--workspace-bg) !important;
+  background-color: transparent !important;
 }
 
 .react-flow__pane {
@@ -78,46 +327,6 @@ html, body {
   background: transparent !important;
 }
 
-.react-flow__controls {
-  background: var(--workspace-controls) !important;
-  border: 1px solid var(--workspace-border) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 10px 24px rgb(0 0 0 / 0.24) !important;
-  overflow: hidden;
-}
-
-.react-flow__controls-button {
-  background: transparent !important;
-  border: none !important;
-  border-bottom: 1px solid var(--workspace-border) !important;
-  color: oklch(62% 0.012 260) !important;
-  width: 28px !important;
-  height: 28px !important;
-  padding: 6px !important;
-}
-
-.react-flow__controls-button:last-child {
-  border-bottom: none !important;
-}
-
-.react-flow__controls-button:hover {
-  background: oklch(27% 0.01 260 / 0.82) !important;
-  color: oklch(96% 0.004 260) !important;
-}
-
-.react-flow__controls-button svg {
-  fill: currentColor !important;
-  width: 14px !important;
-  height: 14px !important;
-}
-
-.react-flow__minimap {
-  background: var(--workspace-controls) !important;
-  border: 1px solid var(--workspace-border) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 10px 24px rgb(0 0 0 / 0.24) !important;
-}
-
 /* Hide edges/connections */
 .react-flow__edges {
   display: none !important;
@@ -138,70 +347,25 @@ html, body {
   border-radius: 7px;
 }
 
-.xterm-viewport::-webkit-scrollbar {
-  width: 6px;
-}
-
-.xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.xterm-viewport::-webkit-scrollbar-thumb {
-  background: oklch(35% 0.01 260);
-  border-radius: 3px;
-}
-
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: oklch(43% 0.012 260);
-}
-
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: oklch(35% 0.01 260);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: oklch(43% 0.012 260);
-}
-
-/* Animations */
-@keyframes pulse-ring {
-  0% {
-    transform: scale(0.8);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1.4);
-    opacity: 0;
+@media (prefers-reduced-transparency: reduce) {
+  .workspace-glass,
+  .workspace-glass-strong,
+  .workspace-glass-menu {
+    background: oklch(16% 0.008 255);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 
-.animate-pulse-ring {
-  animation: pulse-ring 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-/* Beautiful glow pulse animation for active agents */
-@keyframes glow-pulse {
-  0%, 100% {
-    filter: brightness(1) drop-shadow(0 0 8px var(--glow-color, #22C55E));
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
-  50% {
-    filter: brightness(1.02) drop-shadow(0 0 20px var(--glow-color, #22C55E)) drop-shadow(0 0 40px var(--glow-color, #22C55E));
-  }
-}
-
-.animate-glow-pulse {
-  animation: glow-pulse 2s ease-in-out infinite;
 }
 
 /* Markdown rendered content */
@@ -288,3 +452,31 @@ html, body {
   margin: 0.5em 0;
 }
 .markdown-body details summary { cursor: pointer; font-weight: 500; color: #fafafa; }
+
+/* Focus chat uses the markdown parser, but reads like a conversation instead
+   of a document viewer. */
+.chat-message-markdown {
+  color: oklch(84% 0.007 255);
+  font-size: 13.5px;
+  line-height: 1.75;
+  letter-spacing: -0.006em;
+}
+.chat-message-markdown p { margin: 0 0 0.8em; }
+.chat-message-markdown > *:last-child { margin-bottom: 0; }
+.chat-message-markdown h1,
+.chat-message-markdown h2,
+.chat-message-markdown h3 {
+  border: 0;
+  padding: 0;
+  margin: 1.35em 0 0.55em;
+  font-size: 1em;
+  color: oklch(94% 0.005 255);
+}
+.chat-message-markdown code {
+  border-color: oklch(92% 0.006 255 / 0.07);
+  background: oklch(15% 0.007 255);
+}
+.chat-message-markdown pre {
+  border-color: oklch(92% 0.006 255 / 0.07);
+  background: var(--focus-charcoal-deep);
+}

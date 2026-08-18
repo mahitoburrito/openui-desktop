@@ -1,50 +1,32 @@
-import { useState, useCallback, useMemo, useEffect, ReactNode } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { useStore, type AgentStatus } from "../stores/useStore";
 import {
-  X,
-  Maximize2,
-  Wrench,
-  MessageSquare,
-  WifiOff,
-  RotateCcw,
-} from "lucide-react";
-import { useStore, AgentStatus } from "../stores/useStore";
-import {
-  TERMINAL_THEMES,
   FOCUS_BACKDROPS,
-  getTerminalTheme,
+  TERMINAL_THEMES,
   getFocusBackdrop,
 } from "../theme/appearance";
-import { Codicon } from "./Codicon";
-import { MicroButton, ExpandRing } from "./micro";
-import { Terminal } from "./Terminal";
-import { ResizableSplit } from "./ResizableSplit";
-import { InPaneMarkdown } from "./InPaneMarkdown";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
+import { Codicon } from "./Codicon";
+import { InPaneMarkdown } from "./InPaneMarkdown";
+import { ResearchView } from "./ResearchView";
+import { ResizableSplit } from "./ResizableSplit";
+import { SessionChat } from "./SessionChat";
+import { Terminal } from "./Terminal";
+import { WorkspaceIconButton } from "./WorkspaceChrome";
+import { ExpandRing } from "./micro";
 
 const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
-  creating: { label: "Creating...", color: "#818CF8" },
+  creating: { label: "Creating…", color: "#818CF8" },
   running: { label: "Working", color: "#22C55E" },
   tool_calling: { label: "Working", color: "#22C55E" },
-  waiting_input: { label: "Needs Input", color: "#D97652" },
+  waiting_input: { label: "Needs input", color: "#D97652" },
   idle: { label: "Idle", color: "#FBBF24" },
   disconnected: { label: "Offline", color: "#6B7280" },
   error: { label: "Error", color: "#EF4444" },
 };
 
-const toolDisplayNames: Record<string, string> = {
-  Read: "Reading",
-  Write: "Writing",
-  Edit: "Editing",
-  Bash: "Running",
-  Grep: "Searching",
-  Glob: "Finding",
-  Task: "Tasking",
-  WebFetch: "Fetching",
-  WebSearch: "Searching",
-};
-
-type SplitLayout = "auto" | "columns" | "rows" | "grid";
+type WorkspaceView = "chat" | "terminal" | "split";
 
 export function FocusMode() {
   const {
@@ -53,6 +35,7 @@ export function FocusMode() {
     focusedSessionIds,
     addFocusedSession,
     removeFocusedSession,
+    selectedNodeId,
     sessions,
     nodes,
     setNewSessionModalOpen,
@@ -61,23 +44,18 @@ export function FocusMode() {
     setTerminalTheme,
     focusBackdrop,
     setFocusBackdrop,
-    setCommandPaletteOpen,
     browserPanelOpen,
     setBrowserPanelOpen,
   } = useStore();
 
   const [activePane, setActivePane] = useState<string | null>(null);
-  const [maximizedPane, setMaximizedPane] = useState<string | null>(null);
-  const [layout, setLayout] = useState<SplitLayout>("auto");
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
   const [openedFiles, setOpenedFiles] = useState<Record<string, string | null>>({});
   const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
-  const terminalPalette = getTerminalTheme(terminalTheme);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [researchPanelOpen, setResearchPanelOpen] = useState(false);
+  const [researchTarget, setResearchTarget] = useState<{ run?: string; metric?: string }>({});
   const backdrop = getFocusBackdrop(focusBackdrop);
-  const backdropActive = focusBackdrop !== "none";
-
-  const setOpenedFile = (nodeId: string, path: string | null) => {
-    setOpenedFiles((prev) => ({ ...prev, [nodeId]: path }));
-  };
 
   const focusedSessions = useMemo(
     () =>
@@ -85,76 +63,69 @@ export function FocusMode() {
         .map((nodeId) => ({
           nodeId,
           session: sessions.get(nodeId),
-          node: nodes.find((n) => n.id === nodeId),
+          node: nodes.find((node) => node.id === nodeId),
         }))
-        .filter((e) => e.session != null),
-    [focusedSessionIds, sessions, nodes]
+        .filter((entry) => entry.session != null),
+    [focusedSessionIds, nodes, sessions],
   );
 
   const availableSessions = useMemo(
     () =>
       Array.from(sessions.entries())
         .filter(([nodeId]) => !focusedSessionIds.includes(nodeId))
-        .map(([nodeId, session]) => ({
-          nodeId,
-          session,
-          node: nodes.find((n) => n.id === nodeId),
-        })),
-    [focusedSessionIds, sessions, nodes]
+        .map(([nodeId, session]) => ({ nodeId, session })),
+    [focusedSessionIds, sessions],
   );
 
-  // Auto-set active pane to first session if none set
   useEffect(() => {
-    if (focusedSessions.length > 0 && !activePane) {
-      setActivePane(focusedSessions[0].nodeId);
+    if (selectedNodeId && focusedSessions.some((entry) => entry.nodeId === selectedNodeId)) {
+      setActivePane(selectedNodeId);
+      return;
     }
-  }, [focusedSessions, activePane]);
-
-  // Clear maximized if that pane was removed
-  useEffect(() => {
-    if (maximizedPane && !focusedSessionIds.includes(maximizedPane)) {
-      setMaximizedPane(null);
+    if (!activePane || !focusedSessions.some((entry) => entry.nodeId === activePane)) {
+      setActivePane(focusedSessions[0]?.nodeId ?? null);
     }
-  }, [focusedSessionIds, maximizedPane]);
+  }, [activePane, focusedSessions, selectedNodeId]);
 
   useEffect(() => {
-    if (availableSessions.length === 0) {
-      setSessionPickerOpen(false);
-    }
-  }, [availableSessions.length]);
-
-  // A focus view with nothing to show is a dead state (stale persisted ids,
-  // deleted sessions): fall back to the canvas instead of a ghost "Focus"
-  // header over an unresponsive workspace.
-  useEffect(() => {
-    if (viewMode === "focus" && focusedSessions.length === 0) {
+    // Session data restores after the UI preference. Only leave focus when
+    // there are truly no pinned ids; an unresolved id may appear a moment
+    // before its live session during startup.
+    if (viewMode === "focus" && focusedSessionIds.length === 0) {
       setViewMode("canvas");
     }
-  }, [viewMode, focusedSessions.length, setViewMode]);
+  }, [focusedSessionIds.length, setViewMode, viewMode]);
 
-  const handleClose = useCallback(
+  useEffect(() => {
+    const openWorkspaceView = (event: Event) => {
+      const nextView = (event as CustomEvent<WorkspaceView>).detail;
+      if (nextView === "chat" || nextView === "terminal" || nextView === "split") {
+        setWorkspaceView(nextView);
+      }
+    };
+    window.addEventListener("openui:workspace-view", openWorkspaceView);
+    return () => window.removeEventListener("openui:workspace-view", openWorkspaceView);
+  }, []);
+
+  useEffect(() => {
+    const openResearchPanel = (event: Event) => {
+      const detail = (event as CustomEvent<{ run?: string; metric?: string }>).detail || {};
+      setResearchTarget(detail);
+      setResearchPanelOpen(true);
+      setAppearanceOpen(false);
+      setSessionPickerOpen(false);
+    };
+    window.addEventListener("openui:probe-research", openResearchPanel);
+    return () => window.removeEventListener("openui:probe-research", openResearchPanel);
+  }, []);
+
+  const handleRemoveFocusedSession = useCallback(
     (nodeId: string) => {
       removeFocusedSession(nodeId);
-      if (activePane === nodeId) {
-        setActivePane(null);
-      }
-      if (maximizedPane === nodeId) {
-        setMaximizedPane(null);
-      }
-      // If no more focused sessions, exit focus mode
-      if (focusedSessionIds.length <= 1) {
-        setViewMode("canvas");
-      }
+      if (activePane === nodeId) setActivePane(null);
+      if (focusedSessionIds.length <= 1) setViewMode("canvas");
     },
-    [removeFocusedSession, focusedSessionIds, setViewMode, activePane, maximizedPane]
-  );
-
-  const handleNewSession = useCallback(
-    (nodeId: string) => {
-      setNewSessionForNodeId(nodeId);
-      setNewSessionModalOpen(true);
-    },
-    [setNewSessionForNodeId, setNewSessionModalOpen]
+    [activePane, focusedSessionIds.length, removeFocusedSession, setViewMode],
   );
 
   const handleAddFocusedSession = useCallback(
@@ -162,491 +133,408 @@ export function FocusMode() {
       addFocusedSession(nodeId);
       setActivePane(nodeId);
       setSessionPickerOpen(false);
-      setMaximizedPane(null);
+      setWorkspaceView("chat");
     },
-    [addFocusedSession]
-  );
-
-  const toggleMaximize = useCallback(
-    (nodeId: string) => {
-      setMaximizedPane((prev) => (prev === nodeId ? null : nodeId));
-    },
-    []
+    [addFocusedSession],
   );
 
   if (viewMode !== "focus" || focusedSessions.length === 0) return null;
 
-  const count = focusedSessions.length;
-  // The header shows ONE session identity (the active pane), not a tab parade.
   const activeEntry =
     focusedSessions.find((entry) => entry.nodeId === activePane) ?? focusedSessions[0];
-  const activeInfo = activeEntry?.session;
-  const focusTitle = activeInfo
-    ? activeInfo.customName || activeInfo.agentName
-    : "Focus";
-  const focusStatus = statusConfig[activeInfo?.status ?? "idle"] || statusConfig.idle;
-  const visibleSessions = maximizedPane
-    ? focusedSessions.filter((s) => s.nodeId === maximizedPane)
-    : focusedSessions;
+  const activeInfo = activeEntry.session!;
+  const focusTitle = activeInfo.customName || activeInfo.agentName;
+  const focusCwd = activeInfo.cwd || activeInfo.originalCwd || "~";
+  const focusDirectory = focusCwd.split("/").filter(Boolean).pop() || "~";
+  const focusStatus = statusConfig[activeInfo.status] || statusConfig.idle;
+  const displayColor = getAgentAccentColor(
+    activeInfo.agentId,
+    activeInfo.customColor || activeInfo.color,
+  );
 
-  // Pick effective layout. "auto" picks columns up to 3, otherwise grid.
-  const effectiveLayout: SplitLayout = maximizedPane
-    ? "columns"
-    : layout === "auto"
-    ? count <= 3
-      ? "columns"
-      : "grid"
-    : layout;
+  const renderSessionWorkspace = (
+    entry: (typeof focusedSessions)[number],
+    showPaneHeader: boolean,
+  ) => {
+    const info = entry.session!;
+    const cwd = info.cwd || info.originalCwd || "~";
+    const status = statusConfig[info.status] || statusConfig.idle;
+    const color = getAgentAccentColor(info.agentId, info.customColor || info.color);
+    const title = info.customName || info.agentName;
 
-  const renderPane = ({
-    nodeId,
-    session,
-    node,
-  }: (typeof focusedSessions)[number]) => {
-    if (!session) return null;
-    const displayColor = getAgentAccentColor(
-      session.agentId,
-      session.customColor || session.color,
+    const terminal = (
+      <div className="relative h-full min-h-0 overflow-hidden bg-[oklch(0.105_0.005_260/.34)]">
+        <Terminal
+          key={`focus-${info.sessionId}`}
+          sessionId={info.sessionId}
+          color={color}
+          nodeId={entry.nodeId}
+          cwd={info.cwd}
+          glass
+          onOpenFile={(path) =>
+            setOpenedFiles((current) => ({ ...current, [entry.nodeId]: path }))
+          }
+        />
+        <AnimatePresence>
+          {openedFiles[entry.nodeId] && (
+            <InPaneMarkdown
+              key={openedFiles[entry.nodeId]!}
+              path={openedFiles[entry.nodeId]!}
+              onClose={() =>
+                setOpenedFiles((current) => ({ ...current, [entry.nodeId]: null }))
+              }
+            />
+          )}
+        </AnimatePresence>
+      </div>
     );
-    const displayName = session.customName || session.agentName;
-    const iconId = (node?.data?.icon as string) || "cpu";
-    const status = statusConfig[session.status] || statusConfig.idle;
-    const isActive = activePane === nodeId;
-    const isDisconnected = session.status === "disconnected";
-    const needsInput = session.status === "waiting_input";
-    const toolDisplay = session.currentTool
-      ? toolDisplayNames[session.currentTool] || session.currentTool
-      : null;
+
+    const chat = (
+      <SessionChat
+        key={`chat-${info.sessionId}`}
+        sessionId={info.sessionId}
+        directory={cwd}
+        statusLabel={status.label}
+        statusColor={status.color}
+        agentId={info.agentId}
+        agentName={info.agentName}
+        agentColor={color}
+        showHeader={!showPaneHeader}
+      />
+    );
+
+    const content = workspaceView === "chat" ? (
+      chat
+    ) : workspaceView === "split" ? (
+      <ResizableSplit
+        direction="row"
+        storageKey={`chat-terminal:${info.sessionId}`}
+        minPaneSize={220}
+      >
+        {chat}
+        {terminal}
+      </ResizableSplit>
+    ) : (
+      terminal
+    );
+
+    if (!showPaneHeader) return content;
 
     return (
-      <div
-        key={nodeId}
-        className={`flex flex-col h-full min-h-0 cursor-text transition-all ${
-          isActive ? "bg-canvas" : "bg-canvas-dark"
-        }${backdropActive ? " overflow-hidden rounded-lg ring-1 ring-white/5" : ""}`}
-        onClick={() => setActivePane(nodeId)}
-        style={{
-          backgroundColor: isActive ? terminalPalette.surface : terminalPalette.background,
-          outline: isActive
-            ? `1px solid ${displayColor}40`
-            : needsInput
-            ? `1px solid ${status.color}60`
-            : "none",
-        }}
+      <section
+        key={entry.nodeId}
+        onPointerDown={() => setActivePane(entry.nodeId)}
+        className={`flex h-full min-h-0 flex-col bg-[var(--focus-charcoal)] ${activeEntry.nodeId === entry.nodeId ? "ring-1 ring-inset ring-white/[0.08]" : ""}`}
+        aria-label={`${title} focus pane`}
       >
-        <div
-          className="flex-shrink-0 h-8 px-2.5 flex items-center justify-between border-b transition-colors"
-          style={{
-            borderColor: isActive ? `${displayColor}30` : terminalPalette.border,
-            backgroundColor: isActive ? `${displayColor}08` : "transparent",
-          }}
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <div
-              className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0"
-              style={{ backgroundColor: `${displayColor}15` }}
-            >
-              <AgentIcon
-                agentId={session.agentId}
-                iconId={iconId}
-                className="w-2.5 h-2.5"
-                style={{ color: displayColor }}
-              />
-            </div>
-            <span className="text-[11px] font-medium text-white truncate">
-              {displayName}
-            </span>
-            <div
-              className="flex items-center gap-1 flex-shrink-0 px-1.5 py-0.5 rounded-full"
-              style={{ backgroundColor: `${status.color}15` }}
-            >
-              <div className="relative">
-                <div
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: status.color }}
-                />
-                {(session.status === "running" || session.status === "tool_calling") && (
-                  <div
-                    className="absolute inset-0 w-1.5 h-1.5 rounded-full animate-ping"
-                    style={{
-                      backgroundColor: status.color,
-                      opacity: 0.4,
-                      animationDuration: "2s",
-                    }}
-                  />
-                )}
-              </div>
-              <span
-                className="text-[9px] font-medium"
-                style={{ color: status.color }}
-              >
-                {status.label}
-              </span>
-              {session.status === "tool_calling" && toolDisplay && (
-                <span className="text-[8px] text-zinc-500 flex items-center gap-0.5">
-                  <Wrench className="w-2 h-2" />
-                  {toolDisplay}
-                </span>
-              )}
-              {needsInput && (
-                <MessageSquare
-                  className="w-2.5 h-2.5"
-                  style={{ color: status.color }}
-                />
-              )}
-              {isDisconnected && (
-                <WifiOff className="w-2.5 h-2.5" style={{ color: status.color }} />
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-0.5 flex-shrink-0">
-            {isDisconnected && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleNewSession(nodeId);
-                }}
-                className="w-5 h-5 rounded flex items-center justify-center text-red-400 hover:bg-red-500/10 transition-colors"
-                title="New session"
-              >
-                <RotateCcw className="w-2.5 h-2.5" />
-              </button>
-            )}
-            {count > 1 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleMaximize(nodeId);
-                }}
-                className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                  maximizedPane === nodeId
-                    ? "text-blue-400 bg-blue-500/10"
-                    : "text-zinc-600 hover:text-zinc-300 hover:bg-surface-active"
-                }`}
-                title={maximizedPane === nodeId ? "Restore" : "Maximize"}
-              >
-                <Maximize2 className="w-2.5 h-2.5" />
-              </button>
-            )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleClose(nodeId);
-              }}
-              className="w-5 h-5 rounded flex items-center justify-center text-zinc-600 hover:text-white hover:bg-surface-active transition-colors"
-              title="Remove from focus view"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-
-        <div
-          className="flex-1 min-h-0 relative"
-          style={{ backgroundColor: terminalPalette.background }}
-        >
-          <Terminal
-            key={`focus-${session.sessionId}`}
-            sessionId={session.sessionId}
-            color={displayColor}
-            nodeId={nodeId}
-            cwd={session.cwd}
-            onOpenFile={(p) => setOpenedFile(nodeId, p)}
+        <header className="flex h-9 flex-shrink-0 items-center gap-2 border-b border-white/[0.055] px-2.5">
+          <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-[6px] bg-white/[0.035]">
+            <AgentIcon
+              agentId={info.agentId}
+              iconId={(entry.node?.data?.icon as string) || info.agentId}
+              className="h-3 w-3"
+              style={{ color }}
+            />
+          </span>
+          <strong className="min-w-0 flex-1 truncate text-[10.5px] font-medium text-zinc-400">{title}</strong>
+          <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
+          <span className="text-[9px]" style={{ color: status.color }}>{status.label}</span>
+          <WorkspaceIconButton
+            icon="close"
+            label={`Close ${title}`}
+            onClick={() => handleRemoveFocusedSession(entry.nodeId)}
+            className="h-6 w-6"
+            iconSize={11}
           />
-          <AnimatePresence>
-            {openedFiles[nodeId] && (
-              <InPaneMarkdown
-                key={openedFiles[nodeId]!}
-                path={openedFiles[nodeId]!}
-                onClose={() => setOpenedFile(nodeId, null)}
-              />
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
+        </header>
+        <div className="min-h-0 flex-1">{content}</div>
+      </section>
     );
   };
 
-  // Build the split tree based on effective layout.
-  // When >1 session in same direction, use a single ResizableSplit.
-  // For "grid", chunk into rows of up to 4, then vertical split of horizontal splits.
-  const sessionsKey = visibleSessions.map((s) => s.nodeId).join(",");
-  let body: ReactNode;
-  if (visibleSessions.length === 1) {
-    body = renderPane(visibleSessions[0]);
-  } else if (effectiveLayout === "rows") {
-    body = (
-      <ResizableSplit
-        direction="col"
-        storageKey={`rows:${sessionsKey}`}
-      >
-        {visibleSessions.map(renderPane)}
-      </ResizableSplit>
-    );
-  } else if (effectiveLayout === "grid") {
-    const cols = Math.min(4, Math.ceil(Math.sqrt(visibleSessions.length)));
-    const rows: (typeof visibleSessions)[] = [];
-    for (let i = 0; i < visibleSessions.length; i += cols) {
-      rows.push(visibleSessions.slice(i, i + cols));
-    }
-    body = (
-      <ResizableSplit
-        direction="col"
-        storageKey={`grid-rows:${sessionsKey}`}
-      >
-        {rows.map((row, rowIdx) =>
-          row.length === 1 ? (
-            renderPane(row[0])
-          ) : (
-            <ResizableSplit
-              key={rowIdx}
-              direction="row"
-              storageKey={`grid-row-${rowIdx}:${row.map((s) => s.nodeId).join(",")}`}
-            >
-              {row.map(renderPane)}
-            </ResizableSplit>
-          ),
-        )}
-      </ResizableSplit>
-    );
-  } else {
-    // columns (default for >1)
-    body = (
-      <ResizableSplit
-        direction="row"
-        storageKey={`cols:${sessionsKey}`}
-      >
-        {visibleSessions.map(renderPane)}
-      </ResizableSplit>
-    );
-  }
+  const sessionBody = focusedSessions.length > 1 ? (
+    <ResizableSplit
+      direction="row"
+      storageKey={`focus-sessions:${focusedSessions.map((entry) => entry.nodeId).join(":")}`}
+      minPaneSize={320}
+    >
+      {focusedSessions.map((entry) => renderSessionWorkspace(entry, true))}
+    </ResizableSplit>
+  ) : (
+    renderSessionWorkspace(activeEntry, false)
+  );
+
+  const body = researchPanelOpen ? (
+    <ResizableSplit direction="row" storageKey="focus-probe-research" minPaneSize={360}>
+      {sessionBody}
+      <ResearchView
+        embedded
+        requestedRun={researchTarget.run}
+        requestedMetric={researchTarget.metric}
+        onClose={() => setResearchPanelOpen(false)}
+      />
+    </ResizableSplit>
+  ) : sessionBody;
 
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="absolute inset-0 z-30 flex flex-col"
+      transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+      className="focus-glass-stage absolute inset-0 z-30 flex flex-col overflow-hidden"
       style={{ background: backdrop.background }}
     >
-      {/* Top bar: one session identity on the left, tools clustered on the right */}
-      <div
-        className={`flex-shrink-0 h-9 pl-2 pr-2.5 flex items-center justify-between border-b border-border ${
-          backdropActive ? "bg-canvas-dark/70 backdrop-blur" : "bg-canvas-dark"
-        }`}
-      >
-        <div className="flex min-w-0 items-center gap-0.5">
-          <MicroButton
-            interaction="nudge-left"
-            onClick={() => setViewMode("canvas")}
-            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-surface-active hover:text-zinc-100 transition-colors"
-            title="Zoom out to canvas (Escape)"
-            aria-label="Zoom out to canvas"
+      <div className="focus-charcoal-header absolute inset-x-0 top-0 z-[70] h-12" aria-hidden="true" />
+      <div className="titlebar-drag pointer-events-none absolute inset-x-0 top-0 z-[75] flex h-12 items-center px-3">
+        <div className="focus-charcoal-control titlebar-no-drag pointer-events-auto relative ml-[92px] min-w-0 rounded-[11px] p-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setAppearanceOpen(false);
+              setSessionPickerOpen((open) => !open);
+            }}
+            className="flex h-9 min-w-[210px] max-w-[430px] items-center gap-2.5 rounded-[9px] px-2.5 text-left transition-colors hover:bg-white/[0.055] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            aria-expanded={sessionPickerOpen}
           >
-            <Codicon name="zoom-out" size={15} />
-          </MicroButton>
-          <div className="flex min-w-0 items-center gap-2 px-1.5">
-            <span className="truncate text-xs font-medium text-zinc-100">{focusTitle}</span>
-            {count > 1 && (
-              <span className="flex-shrink-0 text-[10px] text-zinc-500">· {count} panes</span>
-            )}
             <span
-              className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
-              style={{ backgroundColor: focusStatus.color }}
-              title={focusStatus.label}
-            />
-          </div>
+              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[7px] border border-white/[0.06] bg-white/[0.035]"
+            >
+              <AgentIcon
+                agentId={activeInfo.agentId}
+                iconId={(activeEntry.node?.data?.icon as string) || activeInfo.agentId}
+                className="h-3.5 w-3.5"
+                style={{ color: displayColor }}
+              />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-semibold leading-4 text-zinc-100">
+                {focusTitle}
+              </span>
+              <span className="flex min-w-0 items-center gap-1.5 text-[9px] leading-3 text-zinc-600">
+                <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ backgroundColor: focusStatus.color }} />
+                <span style={{ color: focusStatus.color }}>{focusStatus.label}</span>
+                <span aria-hidden="true">·</span>
+                <span className="truncate" title={focusCwd}>{focusDirectory}</span>
+              </span>
+            </span>
+            <Codicon name="chevron-down" size={11} className="flex-shrink-0 text-zinc-600" />
+          </button>
+
+          <AnimatePresence>
+            {sessionPickerOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                className="workspace-glass-menu absolute left-0 top-12 z-[90] w-72 overflow-hidden rounded-[11px]"
+              >
+                <div className="border-b border-white/[0.065] px-3 py-2 text-[9px] font-medium uppercase tracking-[0.1em] text-zinc-600">
+                  Sessions
+                </div>
+                <div className="max-h-72 overflow-y-auto py-1">
+                  {focusedSessions.map(({ nodeId, session, node }) => {
+                    if (!session) return null;
+                    const color = getAgentAccentColor(
+                      session.agentId,
+                      session.customColor || session.color,
+                    );
+                    const status = statusConfig[session.status] || statusConfig.idle;
+                    return (
+                      <div key={nodeId} className="group flex items-center px-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActivePane(nodeId);
+                            setSessionPickerOpen(false);
+                          }}
+                          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[7px] px-2 py-2 text-left transition-colors hover:bg-white/[0.055]"
+                        >
+                          <AgentIcon
+                            agentId={session.agentId}
+                            iconId={(node?.data?.icon as string) || session.agentId}
+                            className="h-3.5 w-3.5 flex-shrink-0"
+                            style={{ color }}
+                          />
+                          <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-300">
+                            {session.customName || session.agentName}
+                          </span>
+                          <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
+                          {nodeId === activeEntry.nodeId && <Codicon name="check" size={12} className="text-zinc-300" />}
+                        </button>
+                        {focusedSessions.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFocusedSession(nodeId)}
+                            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[7px] text-zinc-700 opacity-0 transition-[opacity,color,background-color] hover:bg-white/[0.055] hover:text-zinc-300 group-hover:opacity-100"
+                            aria-label="Remove from focus"
+                          >
+                            <Codicon name="close" size={11} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {availableSessions.length > 0 && (
+                    <>
+                      <div className="mx-3 my-1 h-px bg-white/[0.065]" />
+                      <div className="px-3 py-1 text-[9px] uppercase tracking-[0.1em] text-zinc-700">Open session</div>
+                      {availableSessions.map(({ nodeId, session }) => (
+                        <button
+                          key={nodeId}
+                          type="button"
+                          onClick={() => handleAddFocusedSession(nodeId)}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-zinc-500 transition-colors hover:bg-white/[0.055] hover:text-zinc-200"
+                        >
+                          <Codicon name="add" size={12} />
+                          <span className="truncate">{session.customName || session.agentName}</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
-        <div className="flex items-center gap-1">
-          <MicroButton
-            interaction="pulse"
-            onClick={() => setCommandPaletteOpen(true)}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-surface-active hover:text-zinc-100 transition-colors"
-            title="Search commands (Cmd+K)"
-            aria-label="Search"
-          >
-            <Codicon name="search" size={14} />
-          </MicroButton>
+        <div className="workspace-command-zone titlebar-no-drag pointer-events-auto relative ml-auto flex h-12 items-center justify-end pl-10">
+        <nav className="workspace-command-dock focus-charcoal-control relative flex items-center gap-0.5 rounded-[11px] p-1" aria-label="Focus tools">
+          <WorkspaceIconButton
+            icon="zoom-out"
+            label="Canvas"
+            interaction="nudge-left"
+            onClick={() => setViewMode("canvas")}
+            title="Back to canvas (Escape)"
+            iconSize={14}
+          />
+          <span className="mx-0.5 h-4 w-px bg-white/[0.075]" />
+          <div className="focus-charcoal-segment flex items-center gap-0.5 rounded-[7px] p-0.5">
+            <WorkspaceIconButton
+              icon="comment-discussion"
+              label="Chat"
+              active={workspaceView === "chat"}
+              onClick={() => setWorkspaceView("chat")}
+              className="h-7 w-7"
+              iconSize={14}
+            />
+            <WorkspaceIconButton
+              icon="terminal"
+              label="Terminal"
+              active={workspaceView === "terminal"}
+              onClick={() => setWorkspaceView("terminal")}
+              className="h-7 w-7"
+              iconSize={14}
+            />
+            <WorkspaceIconButton
+              icon="split-horizontal"
+              label="Chat and terminal"
+              active={workspaceView === "split"}
+              onClick={() => setWorkspaceView("split")}
+              className="h-7 w-7"
+              iconSize={14}
+            />
+          </div>
+          <WorkspaceIconButton
+            icon="graph-line"
+            label="Model training"
+            active={researchPanelOpen}
+            onClick={() => {
+              setAppearanceOpen(false);
+              setSessionPickerOpen(false);
+              setResearchPanelOpen((open) => !open);
+            }}
+            title="Probe model training"
+            iconSize={14}
+          />
+          <WorkspaceIconButton
+            icon="globe"
+            label="Browser"
+            active={browserPanelOpen}
+            onClick={() => {
+              setAppearanceOpen(false);
+              setSessionPickerOpen(false);
+              setBrowserPanelOpen(!browserPanelOpen);
+            }}
+            title="Browser dock (Cmd+Shift+B)"
+            iconSize={14}
+          />
+          <WorkspaceIconButton
+            icon="add"
+            label="New session"
+            interaction="rotate-quarter"
+            onClick={() => {
+              setAppearanceOpen(false);
+              setSessionPickerOpen(false);
+              setNewSessionForNodeId(null);
+              setNewSessionModalOpen(true);
+            }}
+            iconSize={14}
+          />
           <div className="relative">
-            <button
-              onClick={() => setSessionPickerOpen((open) => !open)}
-              disabled={availableSessions.length === 0}
-              className="flex items-center gap-1.5 px-2 py-1 rounded text-[10px] text-zinc-400 hover:text-white hover:bg-surface-active disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-400 transition-colors"
-              title={
-                availableSessions.length === 0
-                  ? "All sessions are already in focus"
-                  : "Add session to focus mode"
-              }
-            >
-              <Codicon name="add" size={13} />
-              Session
-            </button>
-
+            <WorkspaceIconButton
+              icon="symbol-color"
+              label="Appearance"
+              active={appearanceOpen}
+              onClick={() => {
+                setSessionPickerOpen(false);
+                setAppearanceOpen((open) => !open);
+              }}
+              iconSize={14}
+            />
             <AnimatePresence>
-              {sessionPickerOpen && (
+              {appearanceOpen && (
                 <motion.div
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.12 }}
-                  className="absolute right-0 top-7 z-[80] w-64 rounded-md border border-border bg-canvas-dark shadow-2xl overflow-hidden"
+                  transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                  className="workspace-glass-menu absolute right-0 top-10 z-[90] w-64 rounded-[10px] p-3"
                 >
-                  <div className="px-2.5 py-1.5 border-b border-border text-[9px] uppercase tracking-wider text-zinc-600 font-semibold">
-                    Add To Focus
+                  <div className="text-[9px] font-medium uppercase tracking-[0.1em] text-zinc-600">Backdrop</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    {FOCUS_BACKDROPS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setFocusBackdrop(option.id)}
+                        className={`relative h-7 w-7 rounded-full border transition-transform duration-150 hover:scale-105 ${focusBackdrop === option.id ? "border-zinc-200" : "border-white/10"}`}
+                        style={{
+                          background:
+                            option.preview.length > 1
+                              ? `linear-gradient(135deg, ${option.preview.join(", ")})`
+                              : option.preview[0],
+                        }}
+                        title={`${option.name}: ${option.description}`}
+                      >
+                        <ExpandRing active={focusBackdrop === option.id} />
+                      </button>
+                    ))}
                   </div>
-                  <div className="max-h-72 overflow-y-auto py-1">
-                    {availableSessions.map(({ nodeId, session, node }) => {
-                      const displayColor = getAgentAccentColor(
-                        session.agentId,
-                        session.customColor || session.color,
-                      );
-                      const displayName = session.customName || session.agentName;
-                      const iconId = (node?.data?.icon as string) || session.agentId;
-                      const status = statusConfig[session.status] || statusConfig.idle;
-
-                      return (
-                        <button
-                          key={nodeId}
-                          onClick={() => handleAddFocusedSession(nodeId)}
-                          className="w-full min-w-0 px-2.5 py-2 flex items-center gap-2 text-left hover:bg-surface-active transition-colors"
-                          title={`Add ${displayName} to focus mode`}
-                        >
-                          <div
-                            className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
-                            style={{ backgroundColor: `${displayColor}18` }}
-                          >
-                            <AgentIcon
-                              agentId={session.agentId}
-                              iconId={iconId}
-                              className="w-3.5 h-3.5"
-                              style={{ color: displayColor }}
-                            />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] text-zinc-200 truncate">
-                              {displayName}
-                            </div>
-                            <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-zinc-600">
-                              <span
-                                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                style={{ backgroundColor: status.color }}
-                              />
-                              <span>{status.label}</span>
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
+                  <div className="mt-4 text-[9px] font-medium uppercase tracking-[0.1em] text-zinc-600">Terminal</div>
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                    {TERMINAL_THEMES.map((theme) => (
+                      <button
+                        key={theme.id}
+                        type="button"
+                        onClick={() => setTerminalTheme(theme.id)}
+                        className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-[10px] transition-colors ${terminalTheme === theme.id ? "border-white/20 bg-white/[0.07] text-zinc-200" : "border-white/[0.06] text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"}`}
+                      >
+                        <span className="h-3 w-3 rounded-sm" style={{ backgroundColor: theme.background }} />
+                        {theme.name}
+                      </button>
+                    ))}
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
-
-          <span className="mx-1 h-4 w-px bg-border" />
-
-          {/* Focus wallpapers (iMessage-style backdrops) */}
-          <div className="hidden md:flex items-center gap-1 mr-1 px-1 py-0.5 rounded bg-canvas/60">
-            {FOCUS_BACKDROPS.map((option) => (
-              <button
-                key={option.id}
-                onClick={() => setFocusBackdrop(option.id)}
-                className={`relative w-5 h-5 rounded-full border transition-transform hover:scale-105 ${
-                  focusBackdrop === option.id ? "border-zinc-200" : "border-zinc-700"
-                }`}
-                style={{
-                  background:
-                    option.preview.length > 1
-                      ? `linear-gradient(135deg, ${option.preview.join(", ")})`
-                      : option.preview[0],
-                }}
-                title={`${option.name} backdrop — ${option.description}`}
-              >
-                <ExpandRing active={focusBackdrop === option.id} />
-              </button>
-            ))}
-          </div>
-
-          <div className="hidden md:flex items-center gap-1 mr-2 px-1 py-0.5 rounded bg-canvas">
-            {TERMINAL_THEMES.map((theme) => (
-              <button
-                key={theme.id}
-                onClick={() => setTerminalTheme(theme.id)}
-                className={`w-5 h-5 rounded border transition-transform hover:scale-105 ${
-                  terminalTheme === theme.id ? "border-zinc-200" : "border-zinc-700"
-                }`}
-                style={{ backgroundColor: theme.background }}
-                title={`${theme.name} terminal background`}
-              />
-            ))}
-          </div>
-
-          {/* Layout switcher — only show when >1 session and not maximized */}
-          {count > 1 && !maximizedPane && (
-            <div className="flex items-center gap-0.5 mr-2 px-1 py-0.5 rounded bg-canvas">
-              <button
-                onClick={() => setLayout("auto")}
-                className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                  layout === "auto" ? "text-white bg-surface-active" : "text-zinc-600 hover:text-zinc-400"
-                }`}
-                title="Auto layout"
-              >
-                <Codicon name="layout" size={13} />
-              </button>
-              <button
-                onClick={() => setLayout("columns")}
-                className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                  layout === "columns" ? "text-white bg-surface-active" : "text-zinc-600 hover:text-zinc-400"
-                }`}
-                title="Side by side"
-              >
-                <Codicon name="split-horizontal" size={13} />
-              </button>
-              <button
-                onClick={() => setLayout("rows")}
-                className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                  layout === "rows" ? "text-white bg-surface-active" : "text-zinc-600 hover:text-zinc-400"
-                }`}
-                title="Stacked"
-              >
-                <Codicon name="split-vertical" size={13} />
-              </button>
-              {count >= 3 && (
-                <button
-                  onClick={() => setLayout("grid")}
-                  className={`w-5 h-5 rounded flex items-center justify-center transition-colors ${
-                    layout === "grid" ? "text-white bg-surface-active" : "text-zinc-600 hover:text-zinc-400"
-                  }`}
-                  title="Grid"
-                >
-                  <Codicon name="table" size={13} />
-                </button>
-              )}
-            </div>
-          )}
-
-          <span className="mx-1 h-4 w-px bg-border" />
-
-          <MicroButton
-            interaction="pulse"
-            onClick={() => setBrowserPanelOpen(!browserPanelOpen)}
-            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-              browserPanelOpen
-                ? "bg-surface-active text-zinc-100"
-                : "text-zinc-500 hover:bg-surface-active hover:text-zinc-100"
-            }`}
-            title="Browser dock (Cmd+Shift+B)"
-            aria-label="Browser dock"
-          >
-            <Codicon name="globe" size={14} />
-          </MicroButton>
+        </nav>
         </div>
       </div>
 
-      {/* Resizable terminal panes — wallpaper frames the panes when active */}
-      <div className={`flex-1 min-h-0 ${backdropActive ? "p-2.5" : "bg-border"}`}>{body}</div>
+      <main className="min-h-0 flex-1 pt-12">{body}</main>
     </motion.div>
   );
 }

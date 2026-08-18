@@ -1,28 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import {
-  ChevronDown,
-  ChevronRight,
-  Folder,
-  GitBranch,
-  Pin,
-  Search,
-  Trash2,
-  X,
-} from "lucide-react";
 import { type Node } from "@xyflow/react";
 import { useStore, type AgentSession, type AgentStatus } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { destroyCachedTerminal } from "./Terminal";
+import { Codicon } from "./Codicon";
 
 const statusDot: Record<AgentStatus, string> = {
-  creating: "#818CF8",
-  running: "#22C55E",
-  tool_calling: "#22C55E",
-  waiting_input: "#D97652",
-  idle: "#8A8F98",
-  disconnected: "#6B7280",
-  error: "#EF4444",
+  creating: "oklch(0.72 0.08 270)",
+  running: "oklch(0.72 0.1 150)",
+  tool_calling: "oklch(0.72 0.1 150)",
+  waiting_input: "oklch(0.72 0.1 48)",
+  idle: "oklch(0.62 0.015 260)",
+  disconnected: "oklch(0.52 0.012 260)",
+  error: "oklch(0.68 0.14 25)",
+};
+
+const statusLabel: Record<AgentStatus, string> = {
+  creating: "Starting",
+  running: "Working",
+  tool_calling: "Working",
+  waiting_input: "Needs input",
+  idle: "Ready",
+  disconnected: "Offline",
+  error: "Error",
 };
 
 type SessionEntry = {
@@ -47,27 +48,25 @@ function sessionCreatedAt(entry: SessionEntry): number {
   return new Date(entry.session.createdAt).getTime() || 0;
 }
 
-// Chrome/Dia-style tab group palette — stable per project name.
-const GROUP_COLORS = [
-  "#3B82F6", "#EF4444", "#FBBF24", "#22C55E", "#EC4899", "#8B5CF6", "#14B8A6", "#D97652",
-];
+const STALE_SESSION_MS = 24 * 60 * 60 * 1000;
+const SESSION_RAIL_HOVER_DELAY_MS = 2000;
+
+function sessionLastActivityAt(entry: SessionEntry): number {
+  return entry.session.lastActivityAt || sessionCreatedAt(entry);
+}
+
+function isCleanupCandidate(entry: SessionEntry, now = Date.now()): boolean {
+  if (entry.session.status === "disconnected") return true;
+  return entry.session.status === "idle" && now - sessionLastActivityAt(entry) >= STALE_SESSION_MS;
+}
 
 function groupKeyFor(session: AgentSession): string {
   return session.originalCwd || session.cwd || "Other";
 }
 
-function groupColorFor(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  }
-  return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length];
-}
-
 type SessionGroup = {
   key: string;
   name: string;
-  color: string;
   entries: SessionEntry[];
   newestAt: number;
 };
@@ -79,13 +78,10 @@ export function SessionListPanel() {
     sessions,
     nodes,
     statusFilter,
-    searchQuery,
-    setSearchQuery,
     selectedNodeId,
     setSelectedNodeId,
     setSidebarOpen,
     viewMode,
-    setViewMode,
     addFocusedSession,
     removeFocusedSession,
     focusedSessionIds,
@@ -96,24 +92,22 @@ export function SessionListPanel() {
     setDeleteToast,
   } = useStore();
 
-  const searchInputRef = useRef<HTMLInputElement>(null);
   const focusRailCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusRailOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visibleCount, setVisibleCount] = useState(12);
   const [focusRailOpen, setFocusRailOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedForDelete, setSelectedForDelete] = useState<Set<string>>(new Set());
 
   const inFocusMode = viewMode === "focus";
 
-  const isSearching = searchQuery.trim().length > 0;
-
-  const { allOnlineSessions, sessionGroups, offlineEntries } = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+  const { allOnlineSessions, sessionGroups, allEntries } = useMemo(() => {
     const allEntries = Array.from(sessions.entries()).map(([nodeId, session]) => ({
       nodeId,
       session,
       node: nodes.find((node) => node.id === nodeId),
     })) as SessionEntry[];
 
-    const offline = allEntries.filter((entry) => entry.session.status === "disconnected");
     const entries = allEntries.filter((entry) => entry.session.status !== "disconnected");
 
     const statusFiltered = entries.filter((entry) => {
@@ -124,21 +118,9 @@ export function SessionListPanel() {
       return entry.session.status === statusFilter;
     });
 
-    const filtered = q
-      ? statusFiltered.filter((entry) => {
-          const title = getSessionTitle(entry).toLowerCase();
-          return (
-            title.includes(q) ||
-            entry.session.cwd.toLowerCase().includes(q) ||
-            (entry.session.gitBranch || "").toLowerCase().includes(q) ||
-            (entry.session.ticketId || "").toLowerCase().includes(q) ||
-            (entry.session.ticketTitle || "").toLowerCase().includes(q)
-          );
-        })
-      : statusFiltered;
-
-    // Newest first everywhere: inside groups, and groups by their newest session.
-    const sorted = [...filtered].sort((a, b) => sessionCreatedAt(b) - sessionCreatedAt(a));
+    // Selection is also the cleanup view, so include offline sessions there.
+    const listedEntries = selectionMode ? allEntries : statusFiltered;
+    const sorted = [...listedEntries].sort((a, b) => sessionCreatedAt(b) - sessionCreatedAt(a));
 
     const groupsByKey = new Map<string, SessionGroup>();
     for (const entry of sorted) {
@@ -146,7 +128,7 @@ export function SessionListPanel() {
       let group = groupsByKey.get(key);
       if (!group) {
         const name = key.split("/").pop() || key;
-        group = { key, name, color: groupColorFor(name), entries: [], newestAt: 0 };
+        group = { key, name, entries: [], newestAt: 0 };
         groupsByKey.set(key, group);
       }
       group.entries.push(entry);
@@ -158,9 +140,14 @@ export function SessionListPanel() {
     return {
       allOnlineSessions: sorted,
       sessionGroups: groups,
-      offlineEntries: offline,
+      allEntries,
     };
-  }, [nodes, searchQuery, sessions, statusFilter]);
+  }, [nodes, selectionMode, sessions, statusFilter]);
+
+  const cleanupCandidates = useMemo(
+    () => allEntries.filter((entry) => isCleanupCandidate(entry)),
+    [allEntries],
+  );
 
   // Cap rendered rows across groups, expanding with "View more".
   const visibleGroups = useMemo(() => {
@@ -168,7 +155,7 @@ export function SessionListPanel() {
     let budget = visibleCount;
     for (const group of sessionGroups) {
       if (budget <= 0) break;
-      const collapsed = !isSearching && collapsedSessionGroups.includes(group.key);
+      const collapsed = collapsedSessionGroups.includes(group.key);
       if (collapsed) {
         out.push({ ...group, entries: [] });
         continue;
@@ -178,26 +165,31 @@ export function SessionListPanel() {
       out.push({ ...group, entries: take });
     }
     return out;
-  }, [collapsedSessionGroups, isSearching, sessionGroups, visibleCount]);
+  }, [collapsedSessionGroups, sessionGroups, visibleCount]);
 
   const renderedCount = visibleGroups.reduce((sum, group) => sum + group.entries.length, 0);
   const collapsedCount = sessionGroups.reduce(
     (sum, group) =>
-      !isSearching && collapsedSessionGroups.includes(group.key) ? sum + group.entries.length : sum,
+      collapsedSessionGroups.includes(group.key) ? sum + group.entries.length : sum,
     0,
   );
   const hasMore = renderedCount + collapsedCount < allOnlineSessions.length;
 
-  const handleClearOffline = useCallback(async () => {
-    if (offlineEntries.length === 0) return;
+  const handleDeleteEntries = useCallback(async (entries: SessionEntry[]) => {
+    if (entries.length === 0) return;
+    const activeCount = entries.filter(
+      (entry) => !["idle", "disconnected", "error"].includes(entry.session.status),
+    ).length;
     const confirmed = window.confirm(
-      `Clear ${offlineEntries.length} offline session${offlineEntries.length === 1 ? "" : "s"}? You'll have 5 seconds to undo.`,
+      activeCount > 0
+        ? `${activeCount} selected session${activeCount === 1 ? " is" : "s are"} still active. Delete all ${entries.length}? You'll have 5 seconds to undo.`
+        : `Delete ${entries.length} selected session${entries.length === 1 ? "" : "s"}? You'll have 5 seconds to undo.`,
     );
     if (!confirmed) return;
 
     const cleared: { sessionId: string; nodeId: string; sessionName: string }[] = [];
     await Promise.all(
-      offlineEntries.map(async (entry) => {
+      entries.map(async (entry) => {
         try {
           const res = await fetch(`/api/sessions/${entry.session.sessionId}/soft-delete`, {
             method: "POST",
@@ -235,8 +227,9 @@ export function SessionListPanel() {
       items: cleared,
       timeout,
     });
+    setSelectedForDelete(new Set());
+    setSelectionMode(false);
   }, [
-    offlineEntries,
     removeFocusedSession,
     removeNode,
     removeSession,
@@ -246,9 +239,32 @@ export function SessionListPanel() {
     setSidebarOpen,
   ]);
 
-  useEffect(() => {
-    setVisibleCount(12);
-  }, [searchQuery]);
+  const startSelection = useCallback((preselectCleanup: boolean) => {
+    setSelectionMode(true);
+    setSelectedForDelete(
+      new Set(preselectCleanup ? cleanupCandidates.map((entry) => entry.nodeId) : []),
+    );
+    setVisibleCount((count) => Math.max(count, Math.min(allEntries.length, 48)));
+  }, [allEntries.length, cleanupCandidates]);
+
+  const toggleSelectedForDelete = useCallback((nodeId: string) => {
+    setSelectedForDelete((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
+
+  const cancelSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedForDelete(new Set());
+  }, []);
+
+  const deleteSelected = useCallback(() => {
+    const selectedEntries = allEntries.filter((entry) => selectedForDelete.has(entry.nodeId));
+    void handleDeleteEntries(selectedEntries);
+  }, [allEntries, handleDeleteEntries, selectedForDelete]);
 
   useEffect(() => {
     if (!inFocusMode) {
@@ -264,16 +280,38 @@ export function SessionListPanel() {
       if (focusRailCloseTimerRef.current) {
         clearTimeout(focusRailCloseTimerRef.current);
       }
+      if (focusRailOpenTimerRef.current) {
+        clearTimeout(focusRailOpenTimerRef.current);
+      }
     },
     [],
   );
 
   const openFocusRail = useCallback(() => {
+    if (focusRailOpenTimerRef.current) {
+      clearTimeout(focusRailOpenTimerRef.current);
+      focusRailOpenTimerRef.current = null;
+    }
     if (focusRailCloseTimerRef.current) {
       clearTimeout(focusRailCloseTimerRef.current);
       focusRailCloseTimerRef.current = null;
     }
     setFocusRailOpen(true);
+  }, []);
+
+  const scheduleFocusRailOpen = useCallback(() => {
+    if (focusRailOpen) return;
+    if (focusRailOpenTimerRef.current) clearTimeout(focusRailOpenTimerRef.current);
+    focusRailOpenTimerRef.current = setTimeout(() => {
+      focusRailOpenTimerRef.current = null;
+      openFocusRail();
+    }, SESSION_RAIL_HOVER_DELAY_MS);
+  }, [focusRailOpen, openFocusRail]);
+
+  const cancelFocusRailOpen = useCallback(() => {
+    if (!focusRailOpenTimerRef.current) return;
+    clearTimeout(focusRailOpenTimerRef.current);
+    focusRailOpenTimerRef.current = null;
   }, []);
 
   const scheduleFocusRailClose = useCallback(() => {
@@ -288,6 +326,10 @@ export function SessionListPanel() {
 
   const handleSessionClick = useCallback(
     (nodeId: string) => {
+      if (selectionMode) {
+        toggleSelectedForDelete(nodeId);
+        return;
+      }
       setSelectedNodeId(nodeId);
       if (viewMode === "focus") {
         // Already in focus: clicking a list row adds it as another pane.
@@ -297,22 +339,29 @@ export function SessionListPanel() {
         return;
       }
 
-      // From canvas, opening a session means entering it (mockup behavior).
-      useStore.getState().openSessionInFocus(nodeId);
+      // From canvas, one click opens the chat preview and keeps the map in view.
+      setSidebarOpen(true);
     },
-    [addFocusedSession, setSelectedNodeId, setSidebarOpen, viewMode],
+    [
+      addFocusedSession,
+      selectionMode,
+      setSelectedNodeId,
+      setSidebarOpen,
+      toggleSelectedForDelete,
+      viewMode,
+    ],
   );
 
   // Double-click mirrors AgentNode: pin the session and jump into focus mode.
   const handleSessionDoubleClick = useCallback(
     (nodeId: string) => {
+      if (selectionMode) return;
       setSelectedNodeId(nodeId);
-      addFocusedSession(nodeId);
-      setViewMode("focus");
+      useStore.getState().openSessionInFocus(nodeId);
       setSidebarOpen(false);
       setFocusRailOpen(false);
     },
-    [addFocusedSession, setSelectedNodeId, setSidebarOpen, setViewMode],
+    [selectionMode, setSelectedNodeId, setSidebarOpen],
   );
 
   const handleSessionPinToggle = useCallback(
@@ -326,28 +375,25 @@ export function SessionListPanel() {
     [addFocusedSession, removeFocusedSession],
   );
 
-  const showPanel = inFocusMode ? focusRailOpen : sessionListOpen;
-
-  if (inFocusMode && !focusRailOpen) {
-    return (
-      <div
-        className="fixed left-0 top-14 bottom-0 z-[70] w-3"
-        onMouseEnter={openFocusRail}
-        title="Show sessions"
-      >
-        <div className="absolute left-0 top-1/2 h-16 w-1 -translate-y-1/2 rounded-r bg-zinc-500/30" />
-      </div>
-    );
-  }
+  const showPanel = inFocusMode ? focusRailOpen : sessionListOpen || focusRailOpen;
 
   if (!showPanel) {
     return (
       <button
-        onClick={() => setSessionListOpen(true)}
-        className="fixed left-0 top-14 z-40 flex items-center gap-1 rounded-br-lg border-b border-r border-border bg-surface px-1.5 py-3 text-zinc-500 transition-colors hover:bg-surface-active hover:text-white"
-        title="Open session list (Cmd+\\)"
+        type="button"
+        className={`group fixed bottom-0 left-0 top-12 w-5 cursor-default bg-transparent outline-none ${
+          inFocusMode ? "z-[95]" : "z-[55]"
+        }`}
+        onPointerEnter={scheduleFocusRailOpen}
+        onPointerLeave={cancelFocusRailOpen}
+        onFocus={openFocusRail}
+        onClick={openFocusRail}
+        aria-label="Show sessions after hovering for two seconds"
       >
-        <ChevronRight className="h-4 w-4" />
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute left-0 top-1/2 h-14 w-px -translate-y-1/2 rounded-full bg-current text-zinc-500/0 transition-colors duration-200 group-hover:text-zinc-500/35 group-focus-visible:text-zinc-400/70"
+        />
       </button>
     );
   }
@@ -357,72 +403,87 @@ export function SessionListPanel() {
       initial={{ x: "-100%", opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: "-100%", opacity: 0 }}
-      transition={{ type: "spring", stiffness: 400, damping: 40 }}
-      onMouseEnter={() => {
-        if (inFocusMode) openFocusRail();
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+      onPointerEnter={() => {
+        if (inFocusMode || !sessionListOpen) openFocusRail();
       }}
-      onMouseLeave={() => {
-        if (inFocusMode) scheduleFocusRailClose();
+      onPointerLeave={() => {
+        if ((inFocusMode || !sessionListOpen) && !selectionMode) scheduleFocusRailClose();
       }}
-      className={`fixed left-0 top-14 bottom-0 flex w-[280px] flex-col border-r border-border bg-canvas-dark ${
-        inFocusMode ? "z-[70] shadow-2xl" : "z-40"
+      className={`workspace-glass-strong fixed flex flex-col overflow-hidden ${
+        inFocusMode
+          ? "bottom-0 left-0 top-12 z-[70] w-[288px] rounded-none border-b-0 border-l-0 shadow-2xl"
+          : "bottom-2 left-2 top-12 z-40 w-[276px] rounded-xl"
       }`}
     >
-      <div className="flex-shrink-0 border-b border-border px-3 py-2.5">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-            Sessions
+      <div className="flex-shrink-0 border-b border-white/[0.065] px-3 py-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-medium text-zinc-300">
+            {selectionMode ? `${selectedForDelete.size} selected` : "Sessions"}
           </span>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-zinc-700">{allOnlineSessions.length}</span>
-            {offlineEntries.length > 0 && (
+            {selectionMode ? (
+              <>
+                {cleanupCandidates.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => startSelection(true)}
+                    className="rounded-[5px] px-1.5 py-1 text-[10px] text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
+                    title="Select offline sessions and sessions idle for 24 hours"
+                  >
+                    Old {cleanupCandidates.length}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={cancelSelection}
+                  className="rounded-[5px] px-1.5 py-1 text-[10px] text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-[10px] text-zinc-700">{allOnlineSessions.length}</span>
+                {cleanupCandidates.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => startSelection(true)}
+                    className="flex h-5 items-center gap-1 rounded-[5px] px-1 text-zinc-600 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
+                    title={`Review ${cleanupCandidates.length} offline or 24-hour idle session${cleanupCandidates.length === 1 ? "" : "s"}`}
+                  >
+                    <Codicon name="trash" size={12} />
+                    <span className="text-[10px]">{cleanupCandidates.length}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => startSelection(false)}
+                  className="rounded-[5px] px-1.5 py-1 text-[10px] text-zinc-500 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
+                >
+                  Select
+                </button>
+              </>
+            )}
+            {!selectionMode && (
               <button
                 type="button"
-                onClick={handleClearOffline}
-                className="flex h-5 items-center gap-1 rounded px-1 text-zinc-600 transition-colors hover:bg-surface-active hover:text-red-400"
-                title={`Clear ${offlineEntries.length} offline session${offlineEntries.length === 1 ? "" : "s"}`}
+                onClick={() => {
+                  if (inFocusMode || !sessionListOpen) {
+                    setFocusRailOpen(false);
+                  } else {
+                    setSessionListOpen(false);
+                  }
+                }}
+                className="flex h-5 w-5 items-center justify-center rounded-[5px] text-zinc-600 transition-colors hover:bg-white/[0.05] hover:text-zinc-200"
+                title="Close sessions"
               >
-                <Trash2 className="h-3 w-3" />
-                <span className="text-[10px]">{offlineEntries.length}</span>
+                <Codicon name="close" size={12} />
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                if (inFocusMode) {
-                  setFocusRailOpen(false);
-                } else {
-                  setSessionListOpen(false);
-                }
-              }}
-              className="flex h-5 w-5 items-center justify-center rounded text-zinc-600 transition-colors hover:bg-surface-active hover:text-zinc-200"
-              title="Close sessions"
-            >
-              <X className="h-3 w-3" />
-            </button>
           </div>
         </div>
 
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
-          <input
-            ref={searchInputRef}
-            type="text"
-            placeholder="Search sessions"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full rounded-md border border-border bg-canvas py-1.5 pl-8 pr-7 text-xs text-white placeholder-zinc-600 transition-colors focus:border-zinc-500 focus:outline-none"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
-              title="Clear search"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
@@ -433,129 +494,123 @@ export function SessionListPanel() {
         ) : (
           <>
             {visibleGroups.map((group) => {
-              const isCollapsed = !isSearching && collapsedSessionGroups.includes(group.key);
+              const isCollapsed = collapsedSessionGroups.includes(group.key);
               const totalInGroup =
                 sessionGroups.find((g) => g.key === group.key)?.entries.length ?? 0;
               return (
-                <div key={group.key} className="mb-0.5">
-                  {/* Dia/Chrome-style tab group header */}
+                <div key={group.key} className="mb-1">
                   <button
                     type="button"
                     onClick={() => toggleSessionGroup(group.key)}
-                    className="group/header flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-surface"
+                    className="group/header flex h-8 w-full items-center gap-1.5 px-2.5 text-left text-zinc-500 transition-colors hover:bg-white/[0.03] hover:text-zinc-300"
                     title={group.key}
+                    aria-expanded={!isCollapsed}
                   >
                     {isCollapsed ? (
-                      <ChevronRight className="h-3 w-3 flex-shrink-0 text-zinc-600" />
+                      <Codicon name="chevron-right" size={12} className="flex-shrink-0" />
                     ) : (
-                      <ChevronDown className="h-3 w-3 flex-shrink-0 text-zinc-600" />
+                      <Codicon name="chevron-down" size={12} className="flex-shrink-0" />
                     )}
-                    <span
-                      className="h-2 w-2 flex-shrink-0 rounded-full"
-                      style={{ backgroundColor: group.color }}
+                    <Codicon
+                      name={isCollapsed ? "folder" : "folder-opened"}
+                      size={14}
+                      className="flex-shrink-0 text-zinc-500 group-hover/header:text-zinc-300"
                     />
-                    <span
-                      className="truncate text-[10px] font-semibold uppercase tracking-wider"
-                      style={{ color: group.color }}
-                    >
+                    <span className="truncate text-[11px] font-medium">
                       {group.name}
                     </span>
-                    <span className="ml-auto flex-shrink-0 text-[9px] text-zinc-600">
+                    <span className="ml-auto flex-shrink-0 font-mono text-[9px] text-zinc-600">
                       {totalInGroup}
                     </span>
                   </button>
 
                   {!isCollapsed && (
-                    <div
-                      className="ml-[13px] border-l pl-0"
-                      style={{ borderColor: `${group.color}40` }}
-                    >
+                    <div className="ml-[18px] border-l border-white/[0.055] pb-0.5 pl-1.5 pr-1.5">
                       {group.entries.map(({ nodeId, session, node }) => {
               const isSelected = selectedNodeId === nodeId;
+              const isMarkedForDelete = selectedForDelete.has(nodeId);
               const displayName = getSessionTitle({ nodeId, session, node });
               const displayColor = getAgentAccentColor(
                 session.agentId,
                 session.customColor || session.color,
               );
               const iconId = (node?.data?.icon as string) || session.agentId;
-              const dirName = session.cwd?.split("/").filter(Boolean).pop() || session.cwd || "";
               const statusColor = statusDot[session.status] || statusDot.idle;
               const isPinned = focusedSessionIds.includes(nodeId);
 
               return (
                 <div
                   key={nodeId}
-                  className={`group/session flex w-full items-start gap-2 border-l-2 pr-2 text-left transition-colors ${
-                    isSelected
-                      ? "border-l-zinc-200 bg-surface-active"
-                      : "border-l-transparent hover:border-l-zinc-600 hover:bg-surface"
+                  className={`group/session flex w-full items-center rounded-[7px] pr-1 text-left transition-colors ${
+                    selectionMode && isMarkedForDelete
+                      ? "bg-white/[0.075]"
+                      : isSelected && !selectionMode
+                      ? "bg-white/[0.065]"
+                      : "hover:bg-white/[0.035]"
                   }`}
                 >
                   <button
                     type="button"
                     onClick={() => handleSessionClick(nodeId)}
                     onDoubleClick={() => handleSessionDoubleClick(nodeId)}
-                    className="flex min-w-0 flex-1 items-start gap-2.5 py-2 pl-3 text-left"
-                    title="Double-click to focus"
+                    className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2 text-left"
+                    title={selectionMode ? "Select session" : "Double-click to focus"}
                   >
-                    <div
-                      className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md"
-                      style={{ backgroundColor: `${displayColor}20` }}
-                    >
+                    <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[6px] border border-white/[0.06] bg-white/[0.025]">
                       <AgentIcon
                         agentId={session.agentId}
                         iconId={iconId}
-                        className="h-4 w-4"
+                        className="h-3.5 w-3.5"
                         style={{ color: displayColor }}
                       />
                     </div>
 
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate text-xs font-medium text-zinc-100">
+                        <span className="truncate text-[11px] font-medium text-zinc-200">
                           {displayName}
                         </span>
+                      </div>
+                      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[9px] text-zinc-600">
                         <span
                           className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
                           style={{ backgroundColor: statusColor }}
-                          title={session.status.replace("_", " ")}
                         />
-                      </div>
-                      {(dirName || session.gitBranch) && (
-                        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[9px] text-zinc-600">
-                          {dirName && (
-                            <span className="flex min-w-0 items-center gap-0.5 font-mono">
-                              <Folder className="h-2 w-2 flex-shrink-0" />
-                              <span className="truncate">{dirName}</span>
-                            </span>
-                          )}
+                        <span>{statusLabel[session.status]}</span>
                           {session.gitBranch && (
-                            <span className="flex min-w-0 items-center gap-0.5 font-mono">
-                              <GitBranch className="h-2 w-2 flex-shrink-0" />
+                            <span className="flex min-w-0 items-center gap-0.5">
+                              <span aria-hidden="true">·</span>
+                              <Codicon name="git-branch-compact" size={9} className="flex-shrink-0" />
                               <span className="truncate">{session.gitBranch}</span>
                             </span>
                           )}
-                        </div>
-                      )}
+                      </div>
                     </div>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleSessionPinToggle(nodeId, isPinned)}
-                    className={`mt-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded transition-colors ${
-                      isPinned
-                        ? "text-zinc-100 bg-surface-active"
-                        : "text-zinc-600 hover:bg-surface-active hover:text-zinc-200"
-                    }`}
-                    title={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
-                    aria-label={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
-                  >
-                    <Pin
-                      className="h-3.5 w-3.5"
-                      fill={isPinned ? "currentColor" : "none"}
+                  {selectionMode ? (
+                    <input
+                      type="checkbox"
+                      checked={isMarkedForDelete}
+                      onChange={() => toggleSelectedForDelete(nodeId)}
+                      className="mr-1 h-3.5 w-3.5 flex-shrink-0 accent-zinc-400"
+                      aria-label={`Select ${displayName} for deletion`}
                     />
-                  </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleSessionPinToggle(nodeId, isPinned)}
+                      className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[6px] transition-[color,background-color,opacity] ${
+                        isPinned
+                          ? "bg-white/[0.06] text-zinc-200"
+                          : "text-zinc-600 opacity-0 hover:bg-white/[0.05] hover:text-zinc-200 group-hover/session:opacity-100 focus-visible:opacity-100"
+                      }`}
+                      title={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
+                      aria-label={isPinned ? "Unpin from focus mode" : "Pin to focus mode"}
+                    >
+                      <Codicon name={isPinned ? "pinned" : "pin"} size={13} />
+                    </button>
+                  )}
                 </div>
               );
                       })}
@@ -579,6 +634,19 @@ export function SessionListPanel() {
           </>
         )}
       </div>
+      {selectionMode && (
+        <div className="flex flex-shrink-0 items-center justify-between border-t border-white/[0.065] px-3 py-2.5">
+          <span className="text-[10px] text-zinc-600">Offline or idle 24h</span>
+          <button
+            type="button"
+            onClick={deleteSelected}
+            disabled={selectedForDelete.size === 0}
+            className="rounded-[6px] bg-[oklch(0.42_0.07_25/0.35)] px-2.5 py-1.5 text-[10px] font-medium text-[oklch(0.76_0.1_25)] transition-colors hover:bg-[oklch(0.46_0.08_25/0.5)] disabled:cursor-not-allowed disabled:bg-white/[0.025] disabled:text-zinc-700"
+          >
+            Delete{selectedForDelete.size > 0 ? ` ${selectedForDelete.size}` : ""}
+          </button>
+        </div>
+      )}
     </motion.aside>
   );
 }

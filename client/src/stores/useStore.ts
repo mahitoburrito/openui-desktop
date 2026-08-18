@@ -26,6 +26,7 @@ export interface Agent {
 }
 
 export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error" | "creating";
+export type BrowserOpenSource = "manual" | "chat-click" | "chat-auto";
 
 export interface CheckpointSummary {
   id: string;
@@ -63,6 +64,7 @@ export interface AgentSession {
   command: string;
   color: string;
   createdAt: string;
+  lastActivityAt?: number;
   cwd: string;
   originalCwd?: string; // Mother repo path when using worktrees
   gitBranch?: string;
@@ -92,7 +94,7 @@ export interface DeleteToast {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-export type ViewMode = "canvas" | "focus" | "markdown" | "diff";
+export type ViewMode = "canvas" | "focus" | "markdown" | "diff" | "research";
 export type StatusFilter = AgentStatus | "all";
 
 export interface AgentActivityEvent {
@@ -146,6 +148,8 @@ interface AppState {
   // Config
   launchCwd: string;
   setLaunchCwd: (cwd: string) => void;
+  recentWorkingDirectories: string[];
+  rememberWorkingDirectory: (cwd: string) => void;
 
   // Agents
   agents: Agent[];
@@ -233,6 +237,7 @@ interface AppState {
   // Embedded browser preview
   browserUrl: string;
   setBrowserUrl: (url: string) => void;
+  openBrowserUrl: (url: string, source?: BrowserOpenSource) => void;
   browserPanelOpen: boolean;
   setBrowserPanelOpen: (open: boolean) => void;
   browserPanelWidth: number;
@@ -280,7 +285,8 @@ function loadPersistedUIState(): Partial<AppState> {
       const parsed = JSON.parse(raw);
       const persistedViewMode =
         parsed.viewMode === "focus" ||
-        parsed.viewMode === "diff"
+        parsed.viewMode === "diff" ||
+        parsed.viewMode === "research"
           ? parsed.viewMode
           : "canvas";
       return {
@@ -336,6 +342,13 @@ function loadPersistedUIState(): Partial<AppState> {
         canvasLayoutSnapshots: Array.isArray(parsed.canvasLayoutSnapshots)
           ? parsed.canvasLayoutSnapshots.slice(0, 8)
           : [],
+        recentWorkingDirectories: Array.isArray(parsed.recentWorkingDirectories)
+          ? parsed.recentWorkingDirectories
+              .filter((directory: unknown): directory is string =>
+                typeof directory === "string" && directory.trim().length > 0
+              )
+              .slice(0, 5)
+          : [],
       };
     }
   } catch {
@@ -362,6 +375,18 @@ export const useStore = create<AppState>((set) => ({
   // Config
   launchCwd: "",
   setLaunchCwd: (cwd) => set({ launchCwd: cwd }),
+  recentWorkingDirectories: persisted.recentWorkingDirectories ?? [],
+  rememberWorkingDirectory: (cwd) =>
+    set((state) => {
+      const directory = cwd.trim();
+      if (!directory) return state;
+      return {
+        recentWorkingDirectories: [
+          directory,
+          ...state.recentWorkingDirectories.filter((item) => item !== directory),
+        ].slice(0, 5),
+      };
+    }),
 
   // Agents
   agents: [],
@@ -449,13 +474,15 @@ export const useStore = create<AppState>((set) => ({
 
   // Focus Mode
   viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
-  // Leaving focus mode also closes the browser dock — it only renders in
-  // focus mode, and leaving it "open" makes it pop back up unrequested the
-  // next time focus mode is entered.
+  // The browser can sit beside Focus or the native Research view. Other
+  // modes close it so an old page does not reappear later.
   setViewMode: (mode) =>
     set((state) => ({
       viewMode: mode,
-      browserPanelOpen: mode === "focus" ? state.browserPanelOpen : false,
+      browserPanelOpen:
+        mode === "focus" || mode === "research"
+          ? state.browserPanelOpen
+          : false,
     })),
   focusedSessionIds: persisted.focusedSessionIds ?? [],
   addFocusedSession: (nodeId) =>
@@ -513,6 +540,11 @@ export const useStore = create<AppState>((set) => ({
   // Embedded browser preview
   browserUrl: (persisted.browserUrl as string) ?? "",
   setBrowserUrl: (url) => set({ browserUrl: url }),
+  openBrowserUrl: (url, source = "manual") => set({
+    browserUrl: url,
+    browserPanelOpen: true,
+    browserAutoOpened: source === "chat-auto",
+  }),
   browserPanelOpen: (persisted.browserPanelOpen as boolean) ?? false,
   setBrowserPanelOpen: (open) => set({ browserPanelOpen: open }),
   browserPanelWidth: clampBrowserPanelWidth(persisted.browserPanelWidth),
@@ -652,6 +684,7 @@ useStore.subscribe((state) => {
         agentActivityEvents: state.agentActivityEvents,
         launchPromptTemplates: state.launchPromptTemplates.filter((template) => !template.builtIn),
         canvasLayoutSnapshots: state.canvasLayoutSnapshots,
+        recentWorkingDirectories: state.recentWorkingDirectories,
       })
     );
   } catch {

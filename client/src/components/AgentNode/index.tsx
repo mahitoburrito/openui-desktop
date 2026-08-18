@@ -1,12 +1,12 @@
 import { useCallback, useState } from "react";
 import { NodeProps } from "@xyflow/react";
 import { motion } from "framer-motion";
-import { FilePlus, Loader2 } from "lucide-react";
 import { useStore, AgentStatus } from "../../stores/useStore";
 import { AgentNodeCard } from "./AgentNodeCard";
 import { AgentNodeContextMenu } from "./AgentNodeContextMenu";
 import { useAgentNodeState } from "./useAgentNodeState";
 import { getAgentAccentColor } from "../AgentIcon";
+import { Codicon } from "../Codicon";
 
 interface AgentNodeData {
   label: string;
@@ -33,10 +33,9 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
     closeContextMenu,
   } = useAgentNodeState(id, nodeData, session);
 
-  const addFocusedSession = useStore((state) => state.addFocusedSession);
+  const openSessionInFocus = useStore((state) => state.openSessionInFocus);
   const setViewMode = useStore((state) => state.setViewMode);
   const setDiffRepoPath = useStore((state) => state.setDiffRepoPath);
-  const focusedSessionIds = useStore((state) => state.focusedSessionIds);
   const [isRestoringCheckpoint, setIsRestoringCheckpoint] = useState(false);
   const displayColor = getAgentAccentColor(
     session?.agentId || nodeData.agentId,
@@ -45,11 +44,8 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
   const displayName = session?.customName || session?.agentName || nodeData.label || "Agent";
 
   const handleDoubleClick = useCallback(() => {
-    if (!focusedSessionIds.includes(id)) {
-      addFocusedSession(id);
-    }
-    setViewMode("focus");
-  }, [id, focusedSessionIds, addFocusedSession, setViewMode]);
+    openSessionInFocus(id);
+  }, [id, openSessionInFocus]);
 
   const handleRestoreLaunchCheckpoint = useCallback(async () => {
     const checkpoint = session?.launchCheckpoint;
@@ -168,6 +164,7 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
           agentId={nodeData.agentId}
           status={status}
           currentTool={currentTool}
+          createdAt={session?.createdAt}
           cwd={session?.cwd}
           originalCwd={session?.originalCwd}
           gitBranch={session?.gitBranch}
@@ -183,8 +180,8 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
 
         {isDraggingFile && (
           <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-blue-500/15 border-2 border-dashed border-blue-400/70 backdrop-blur-[1px] pointer-events-none">
-            <div className="text-center px-2">
-              <FilePlus className="w-6 h-6 text-blue-300 mx-auto mb-1" />
+            <div className="px-2 text-center">
+              <Codicon name="cloud-upload" size={22} className="mb-1 text-blue-300" />
               <p className="text-[11px] text-blue-200 font-medium">Drop files to attach</p>
             </div>
           </div>
@@ -201,9 +198,9 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
             }`}
           >
             {uploadState.phase === "uploading" ? (
-              <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />
+              <Codicon name="loading" size={12} className="codicon-modifier-spin flex-shrink-0" />
             ) : (
-              <FilePlus className="w-3 h-3 flex-shrink-0" />
+              <Codicon name="cloud-upload" size={12} className="flex-shrink-0" />
             )}
             <span className="truncate">{uploadState.message}</span>
           </div>

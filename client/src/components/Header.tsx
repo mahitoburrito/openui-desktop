@@ -1,14 +1,12 @@
-import { Bell, Folder, Globe, Maximize2, Plus, Search, Trash2 } from "lucide-react";
 import { useStore } from "../stores/useStore";
 import { destroyCachedTerminal } from "./Terminal";
-import { MicroButton } from "./micro";
+import { WorkspaceIconButton } from "./WorkspaceChrome";
 
-export function Header() {
+export function Header({ isFullscreen = false }: { isFullscreen?: boolean }) {
   const {
     setAddAgentModalOpen,
     sessions,
     launchCwd,
-    setCommandPaletteOpen,
     addFocusedSession,
     focusedSessionIds,
     removeFocusedSession,
@@ -30,8 +28,19 @@ export function Header() {
   } = useStore();
 
   const selectedSession = selectedNodeId ? sessions.get(selectedNodeId) : null;
+  const latestSession = Array.from(sessions.values()).sort(
+    (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
+  )[0];
+  const workspaceCwd =
+    selectedSession?.originalCwd ||
+    selectedSession?.cwd ||
+    latestSession?.originalCwd ||
+    latestSession?.cwd ||
+    launchCwd;
+  const workspaceName = workspaceCwd?.split("/").filter(Boolean).pop() || "~";
   const canOpenFocusMode = !!selectedSession || focusedSessionIds.length > 0;
-  const canOpenBrowserPreview = viewMode === "focus" || canOpenFocusMode;
+  const canOpenBrowserPreview = viewMode === "focus" || viewMode === "research" || canOpenFocusMode;
+  const isTrackingOpen = viewMode === "research";
   const unreadActivityCount = agentActivityEvents.filter(
     (event) => event.createdAt > activityLastSeenAt,
   ).length;
@@ -46,7 +55,7 @@ export function Header() {
   };
 
   const openBrowserPreview = () => {
-    if (viewMode === "focus") {
+    if (viewMode === "focus" || viewMode === "research") {
       setBrowserPanelOpen(!browserPanelOpen);
       return;
     }
@@ -57,6 +66,11 @@ export function Header() {
     setSidebarOpen(false);
     setViewMode("focus");
     setBrowserPanelOpen(true);
+  };
+
+  const openModelTracking = () => {
+    setSidebarOpen(false);
+    setViewMode(viewMode === "research" ? "canvas" : "research");
   };
 
   const deleteSelectedSession = async () => {
@@ -96,54 +110,45 @@ export function Header() {
     });
   };
 
-  const commandButton =
-    "relative flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-active hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-zinc-500";
-
-  const workspaceName = launchCwd?.split("/").filter(Boolean).pop() || "~";
-
   return (
-    <header className="relative h-14 px-4 flex items-center justify-between border-b border-border bg-canvas-dark titlebar-drag">
-      <div className="flex min-w-0 items-center gap-2 pl-16">
-        <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-zinc-600 font-serif text-[14px] italic leading-none text-zinc-100">
-          o
-        </span>
-        <span className="text-[13px] font-semibold tracking-tight text-zinc-100">OpenUI</span>
-      </div>
-
-      {/* Centered location, like the mockup: "<workspace> | Canvas" */}
-      <div
-        className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-2.5 text-xs md:flex"
-        title={launchCwd || "~"}
-      >
-        <span className="flex items-center gap-1.5 font-medium text-zinc-200">
-          <Folder className="h-3.5 w-3.5 text-zinc-500" />
-          {workspaceName}
-        </span>
-        <span className="h-3 w-px bg-border" />
-        <span className="text-zinc-500">{viewMode === "focus" ? "Focus" : "Canvas"}</span>
-      </div>
-
-      <div className="flex items-center gap-1.5 titlebar-no-drag">
+    <header className="titlebar-drag pointer-events-none absolute inset-x-0 top-0 z-[60] flex h-12 items-center px-3">
+      <div className={`flex min-w-0 items-center gap-2 ${isFullscreen ? "ml-1" : "ml-[82px]"}`}>
         <button
-          onClick={() => setCommandPaletteOpen(true)}
-          className="mr-1 flex h-8 items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-xs text-zinc-500 transition-colors hover:bg-surface-hover hover:text-zinc-200"
-          title="Search commands (Cmd+K)"
+          type="button"
+          onClick={openModelTracking}
+          className="probe-brand-button titlebar-no-drag pointer-events-auto flex h-7 items-center gap-1.5 rounded-[7px] px-1.5 text-zinc-700 transition-colors hover:bg-white/[0.09] hover:text-zinc-950"
+          title="Open native Probe model training"
         >
-          <Search className="h-3.5 w-3.5" />
-          <span className="hidden lg:inline">Find anything</span>
-          <kbd className="rounded border border-border bg-surface-active px-1 py-0.5 font-sans text-[9px] text-zinc-500">
-            ⌘K
-          </kbd>
+          <img src="/probe-mark.svg" alt="" className="probe-brand-mark h-[17px] w-[17px]" />
+          <span className="text-[11px] font-semibold tracking-[-0.015em]">Probe</span>
         </button>
-        <MicroButton
-          interaction="pulse"
+        {workspaceName.toLowerCase() !== "probe" && (
+          <span
+            className="max-w-40 truncate text-[10px] font-medium tracking-[-0.01em] text-zinc-600"
+            title={workspaceCwd || "~"}
+          >
+            {workspaceName}
+          </span>
+        )}
+      </div>
+
+      <div className="workspace-command-zone titlebar-no-drag pointer-events-auto ml-auto flex h-12 items-center justify-end pl-8">
+      <div className="workspace-command-dock workspace-glass flex items-center gap-0.5 rounded-[10px] p-1">
+        <WorkspaceIconButton
+          icon="graph-line"
+          label="Model training"
+          onClick={openModelTracking}
+          active={isTrackingOpen}
+          title="Open native Probe model training"
+        />
+        <WorkspaceIconButton
+          icon="globe"
+          label="Web preview"
           onClick={openBrowserPreview}
           disabled={!canOpenBrowserPreview}
-          className={`${commandButton} ${
-            viewMode === "focus" && browserPanelOpen ? "bg-surface-active text-zinc-100" : ""
-          }`}
+          active={(viewMode === "focus" || viewMode === "research") && browserPanelOpen}
           title={
-            viewMode === "focus"
+            viewMode === "focus" || viewMode === "research"
               ? browserUrl
                 ? `Web preview: ${browserUrl}`
                 : "Web preview (Cmd+Shift+B)"
@@ -151,15 +156,12 @@ export function Header() {
                 ? "Open web preview in focus mode"
                 : "Select or pin a session to preview a browser"
           }
-          aria-label="Web preview"
-        >
-          <Globe className="h-4 w-4" />
-        </MicroButton>
-        <MicroButton
-          interaction="pulse"
+        />
+        <WorkspaceIconButton
+          icon="screen-full"
+          label="Focus session"
           onClick={openFocusMode}
           disabled={!canOpenFocusMode}
-          className={commandButton}
           title={
             selectedSession
               ? "Open selected session in focus mode"
@@ -167,44 +169,40 @@ export function Header() {
                 ? "Open pinned sessions in focus mode"
                 : "Select or pin a session to focus"
           }
-        >
-          <Maximize2 className="h-4 w-4" />
-        </MicroButton>
-        <MicroButton
+        />
+        <WorkspaceIconButton
+          icon="bell"
+          label="Agent activity"
           interaction="shake"
           onClick={() => setActivityCenterOpen(!activityCenterOpen)}
-          className={commandButton}
+          active={activityCenterOpen}
           title={
             unreadActivityCount > 0
               ? `${unreadActivityCount} unread agent event${unreadActivityCount === 1 ? "" : "s"}`
               : "Agent activity"
           }
-          aria-label="Agent activity"
-        >
-          <Bell className="h-4 w-4" />
-          {unreadActivityCount > 0 && (
-            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-semibold leading-none text-white ring-2 ring-canvas-dark">
+          badge={unreadActivityCount > 0 ? (
+            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-semibold leading-none text-zinc-50 ring-2 ring-[oklch(0.16_0.008_255/.9)]">
               {unreadActivityCount > 9 ? "9+" : unreadActivityCount}
             </span>
-          )}
-        </MicroButton>
-        <MicroButton
-          interaction="shake"
+          ) : null}
+        />
+        <WorkspaceIconButton
+          icon="trash"
+          label="Delete session"
+          interaction="none"
           onClick={deleteSelectedSession}
           disabled={!selectedSession}
-          className={commandButton}
           title={selectedSession ? "Delete selected session" : "Select a session to delete"}
-        >
-          <Trash2 className="h-4 w-4" />
-        </MicroButton>
-        <MicroButton
+        />
+        <WorkspaceIconButton
+          icon="add"
+          label="New agent"
           interaction="rotate-quarter"
           onClick={() => setAddAgentModalOpen(true)}
-          className="flex h-8 w-8 items-center justify-center rounded-md bg-zinc-100 text-canvas transition-colors hover:bg-white"
-          title="New agent"
-        >
-          <Plus className="h-4 w-4" />
-        </MicroButton>
+          primary
+        />
+      </div>
       </div>
     </header>
   );

@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "./icons";
 import { useStore } from "../stores/useStore";
 import { MarkdownPane } from "./MarkdownPane";
 

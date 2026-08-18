@@ -17,6 +17,7 @@ interface TerminalProps {
   color: string;
   nodeId: string;
   cwd?: string;
+  glass?: boolean;
   onOpenFile?: (absPath: string) => void;
   onReady?: (sendInput: (text: string) => void) => void;
 }
@@ -148,10 +149,10 @@ export function destroyCachedTerminal(sessionId: string) {
   cache.delete(sessionId);
 }
 
-function buildTheme(color: string, themeId: TerminalThemeId) {
+function buildTheme(color: string, themeId: TerminalThemeId, glass = false) {
   const theme = getTerminalTheme(themeId);
   return {
-    background: theme.background,
+    background: glass ? "rgba(9, 11, 11, 0.36)" : theme.background,
     foreground: theme.foreground,
     cursor: color,
     cursorAccent: theme.cursorAccent,
@@ -367,6 +368,7 @@ export function Terminal({
   color,
   nodeId,
   cwd,
+  glass = false,
   onOpenFile,
   onReady,
 }: TerminalProps) {
@@ -398,11 +400,12 @@ export function Terminal({
   useEffect(() => {
     const entry = cache.get(sessionId);
     if (entry) {
-      entry.term.options.theme = buildTheme(color, terminalThemeId);
+      entry.term.options.allowTransparency = true;
+      entry.term.options.theme = buildTheme(color, terminalThemeId, glass);
       entry.term.options.fontFamily = terminalFont.stack;
       entry.term.options.fontSize = clampedFontSize;
       entry.term.options.lineHeight = 1.42;
-      entry.wrapperDiv.style.backgroundColor = terminalTheme.background;
+      entry.wrapperDiv.style.backgroundColor = glass ? "rgba(9, 11, 11, 0.36)" : terminalTheme.background;
       entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
       const fitTimer = setTimeout(() => entry.fitAddon.fit(), 0);
       return () => clearTimeout(fitTimer);
@@ -412,6 +415,7 @@ export function Terminal({
     color,
     terminalThemeId,
     terminalTheme.background,
+    glass,
     terminalFont.stack,
     clampedFontSize,
   ]);
@@ -480,7 +484,7 @@ export function Terminal({
     const wrapperDiv = document.createElement("div");
     wrapperDiv.style.width = "100%";
     wrapperDiv.style.height = "100%";
-    wrapperDiv.style.backgroundColor = terminalTheme.background;
+    wrapperDiv.style.backgroundColor = glass ? "rgba(9, 11, 11, 0.36)" : terminalTheme.background;
 
     const term = new XTerm({
       cursorBlink: true,
@@ -490,7 +494,8 @@ export function Terminal({
       fontWeight: "400",
       lineHeight: 1.42,
       letterSpacing: 0,
-      theme: buildTheme(color, terminalThemeId),
+      theme: buildTheme(color, terminalThemeId, glass),
+      allowTransparency: true,
       allowProposedApi: true,
       scrollback: 10000,
     });
@@ -754,7 +759,7 @@ export function Terminal({
       className="relative w-full h-full"
       style={{
         minHeight: "200px",
-        backgroundColor: terminalTheme.surface,
+        backgroundColor: glass ? "rgba(13, 16, 16, 0.44)" : terminalTheme.surface,
       }}
     >
       <div
@@ -762,9 +767,9 @@ export function Terminal({
         className="w-full h-full"
         style={{
           padding: "14px",
-          backgroundColor: terminalTheme.background,
-          border: `1px solid ${terminalTheme.border}`,
-          boxShadow: `inset 0 1px 0 ${terminalTheme.foreground}0f`,
+          backgroundColor: glass ? "rgba(9, 11, 11, 0.36)" : terminalTheme.background,
+          border: "none",
+          boxShadow: "none",
           minHeight: "200px",
           overflow: "hidden",
         }}

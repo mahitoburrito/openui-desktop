@@ -116,7 +116,7 @@ export const FOCUS_BACKDROPS: FocusBackdrop[] = [
     id: "none",
     name: "Graphite",
     description: "Plain workspace",
-    background: "oklch(8.5% 0.004 260)",
+    background: "oklch(8.5% 0.004 260 / 0.34)",
     preview: ["oklch(8.5% 0.004 260)"],
   },
   {
@@ -124,7 +124,7 @@ export const FOCUS_BACKDROPS: FocusBackdrop[] = [
     name: "Aurora",
     description: "Violet and blue wash",
     background:
-      "radial-gradient(120% 90% at 12% -10%, oklch(36% 0.1 295 / 0.34), transparent 55%), radial-gradient(110% 85% at 95% 110%, oklch(38% 0.09 230 / 0.3), transparent 60%), oklch(8.5% 0.004 260)",
+      "radial-gradient(120% 90% at 12% -10%, oklch(36% 0.1 295 / 0.18), transparent 55%), radial-gradient(110% 85% at 95% 110%, oklch(38% 0.09 230 / 0.15), transparent 60%), oklch(8.5% 0.004 260 / 0.36)",
     preview: ["oklch(24% 0.07 295)", "oklch(22% 0.06 230)"],
   },
   {
@@ -132,7 +132,7 @@ export const FOCUS_BACKDROPS: FocusBackdrop[] = [
     name: "Ember",
     description: "Low warm glow",
     background:
-      "radial-gradient(120% 95% at 85% -10%, oklch(38% 0.07 45 / 0.3), transparent 55%), radial-gradient(100% 80% at 5% 110%, oklch(32% 0.06 25 / 0.26), transparent 60%), oklch(8.5% 0.004 260)",
+      "radial-gradient(120% 95% at 85% -10%, oklch(38% 0.07 45 / 0.16), transparent 55%), radial-gradient(100% 80% at 5% 110%, oklch(32% 0.06 25 / 0.13), transparent 60%), oklch(8.5% 0.004 260 / 0.36)",
     preview: ["oklch(24% 0.05 45)", "oklch(18% 0.04 25)"],
   },
   {
@@ -140,7 +140,7 @@ export const FOCUS_BACKDROPS: FocusBackdrop[] = [
     name: "Abyss",
     description: "Deep ocean blue",
     background:
-      "radial-gradient(130% 100% at 50% -15%, oklch(30% 0.08 250 / 0.4), transparent 60%), linear-gradient(180deg, oklch(10% 0.02 250), oklch(8% 0.015 260))",
+      "radial-gradient(130% 100% at 50% -15%, oklch(30% 0.08 250 / 0.2), transparent 60%), linear-gradient(180deg, oklch(10% 0.02 250 / 0.4), oklch(8% 0.015 260 / 0.32))",
     preview: ["oklch(22% 0.06 250)", "oklch(12% 0.02 255)"],
   },
   {
@@ -148,7 +148,7 @@ export const FOCUS_BACKDROPS: FocusBackdrop[] = [
     name: "Meadow",
     description: "Soft green field",
     background:
-      "radial-gradient(120% 90% at 20% -10%, oklch(34% 0.07 150 / 0.3), transparent 55%), radial-gradient(100% 80% at 90% 110%, oklch(30% 0.06 175 / 0.24), transparent 60%), oklch(8.5% 0.004 260)",
+      "radial-gradient(120% 90% at 20% -10%, oklch(34% 0.07 150 / 0.16), transparent 55%), radial-gradient(100% 80% at 90% 110%, oklch(30% 0.06 175 / 0.13), transparent 60%), oklch(8.5% 0.004 260 / 0.36)",
     preview: ["oklch(22% 0.05 150)", "oklch(16% 0.04 175)"],
   },
 ];

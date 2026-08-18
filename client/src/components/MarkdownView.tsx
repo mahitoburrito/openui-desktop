@@ -8,7 +8,7 @@ import {
   Grid2X2,
   Square,
   FileText,
-} from "lucide-react";
+} from "./icons";
 import { useStore } from "../stores/useStore";
 import { ResizableSplit } from "./ResizableSplit";
 import { MarkdownPane } from "./MarkdownPane";

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { NodeProps, NodeResizer } from "@xyflow/react";
-import { Trash2, Palette } from "lucide-react";
+import { Trash2, Palette } from "./icons";
 import { useStore } from "../stores/useStore";
 
 const CATEGORY_COLORS = ["#D97652", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#14B8A6", "#EF4444", "#FBBF24"];

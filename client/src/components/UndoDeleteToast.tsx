@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Undo2, X } from "lucide-react";
+import { Undo2, X } from "./icons";
 import { useStore } from "../stores/useStore";
 
 export function UndoDeleteToast() {

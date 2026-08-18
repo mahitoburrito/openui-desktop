@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { Trash2 } from "lucide-react";
+import { Trash2 } from "../icons";
 
 interface AgentNodeContextMenuProps {
   position: { x: number; y: number };

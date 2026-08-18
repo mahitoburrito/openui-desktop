@@ -20,7 +20,7 @@ import {
   History,
   Save,
   RotateCcw,
-} from "lucide-react";
+} from "./icons";
 import { DIFF_THEMES, useStore, type DiffTheme } from "../stores/useStore";
 import {
   parseDiff,

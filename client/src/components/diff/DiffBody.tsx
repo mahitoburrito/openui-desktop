@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Loader2, Undo2 } from "lucide-react";
+import { Loader2, Undo2 } from "../icons";
 import {
   toSplitRows,
   type DiffLine,

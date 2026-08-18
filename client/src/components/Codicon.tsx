@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 // use these for workspace chrome (headers, panel toggles, view switchers).
 export function Codicon({
   name,
-  size = 16,
+  size,
   className,
   style,
 }: {
@@ -13,10 +13,13 @@ export function Codicon({
   className?: string;
   style?: CSSProperties;
 }) {
+  const utilitySize = className?.match(/(?:^|\s)(?:h|w)-(\d+(?:\.\d+)?)(?:\s|$)/)?.[1];
+  const resolvedSize = size ?? (utilitySize ? Number(utilitySize) * 4 : 16);
+
   return (
     <i
       className={`codicon codicon-${name}${className ? ` ${className}` : ""}`}
-      style={{ fontSize: size, ...style }}
+      style={{ fontSize: resolvedSize, ...style }}
       aria-hidden="true"
     />
   );

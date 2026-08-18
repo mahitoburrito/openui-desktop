@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { MessageSquare, Shield, FolderOpen, Eye, Send } from "lucide-react";
+import { MessageSquare, Shield, FolderOpen, Eye, Send } from "./icons";
 import { usePRBEStore } from "../stores/usePRBEStore";
 import { InteractionType } from "../types/prbe";
 import type {

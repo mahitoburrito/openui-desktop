@@ -13,7 +13,7 @@ import {
   CheckCircle2,
   MessageSquare,
   Send,
-} from "lucide-react";
+} from "./icons";
 import { usePRBEStore } from "../stores/usePRBEStore";
 import { useStore } from "../stores/useStore";
 import type { PRBEStatusEvent } from "../types/prbe";
@@ -77,8 +77,8 @@ export function PRBEPanel() {
     startInvestigation,
     stopInvestigation,
   } = usePRBEStore();
-  const { viewMode, browserPanelOpen, browserPanelWidth } = useStore();
-  const browserDockOpen = viewMode === "focus" && browserPanelOpen;
+  const { browserPanelOpen, browserPanelWidth } = useStore();
+  const browserDockOpen = browserPanelOpen;
 
   const [query, setQuery] = useState("");
   const [followUpMessage, setFollowUpMessage] = useState("");

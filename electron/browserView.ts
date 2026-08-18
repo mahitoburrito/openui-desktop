@@ -1,4 +1,5 @@
 import { BrowserWindow, WebContentsView, ipcMain, shell } from "electron";
+import { isExternalAuthUrl, normalizeBrowserUrl } from "./browserPolicy";
 
 interface BrowserBounds {
   x: number;
@@ -11,6 +12,8 @@ let view: WebContentsView | null = null;
 let host: BrowserWindow | null = null;
 let lastBounds: BrowserBounds | null = null;
 let currentUrl = "";
+let lastExternalUrl = "";
+let lastExternalAt = 0;
 
 const CHANNELS = [
   "browser:open",
@@ -21,16 +24,18 @@ const CHANNELS = [
   "browser:forward",
   "browser:hide",
   "browser:close",
+  "browser:openExternal",
 ];
 
-function normalizeUrl(input: string): string {
-  const url = input.trim();
-  if (!url) return "";
-  if (/^https?:\/\//i.test(url)) return url;
-  if (/^localhost(:\d+)?/i.test(url) || /^\d+\.\d+\.\d+\.\d+/.test(url)) {
-    return `http://${url}`;
-  }
-  return `https://${url}`;
+async function openExternalAuth(url: string) {
+  view?.setVisible(false);
+  host?.webContents.send("browser:external-opened", { url, reason: "oauth" });
+
+  const now = Date.now();
+  if (url === lastExternalUrl && now - lastExternalAt < 1500) return;
+  lastExternalUrl = url;
+  lastExternalAt = now;
+  await shell.openExternal(url).catch(() => undefined);
 }
 
 function emitState() {
@@ -63,10 +68,28 @@ function ensureView(): WebContentsView {
   wc.on("did-start-loading", emitState);
   wc.on("did-stop-loading", emitState);
   wc.on("page-title-updated", emitState);
+  wc.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || input.key !== "Escape" || input.isAutoRepeat) return;
+    event.preventDefault();
+    view?.setVisible(false);
+    host?.webContents.send("browser:close-requested");
+    host?.webContents.focus();
+  });
   wc.setWindowOpenHandler(({ url }) => {
+    if (isExternalAuthUrl(url)) {
+      void openExternalAuth(url);
+      return { action: "deny" };
+    }
     wc.loadURL(url).catch(() => shell.openExternal(url));
     return { action: "deny" };
   });
+  const guardAuthNavigation = (event: Electron.Event, url: string) => {
+    if (!isExternalAuthUrl(url)) return;
+    event.preventDefault();
+    void openExternalAuth(url);
+  };
+  wc.on("will-navigate", guardAuthNavigation);
+  wc.on("will-redirect", guardAuthNavigation);
 
   return view;
 }
@@ -96,8 +119,12 @@ export function registerBrowserViewIpc(window: BrowserWindow) {
   removeExistingHandlers();
 
   ipcMain.handle("browser:open", async (_event, url: string) => {
-    const target = normalizeUrl(url || currentUrl);
+    const target = normalizeBrowserUrl(url || currentUrl);
     if (!target) return { ok: false };
+    if (isExternalAuthUrl(target)) {
+      await openExternalAuth(target);
+      return { ok: true, external: true };
+    }
     const browserView = ensureView();
     browserView.setVisible(true);
     applyBounds();
@@ -116,8 +143,12 @@ export function registerBrowserViewIpc(window: BrowserWindow) {
   });
 
   ipcMain.handle("browser:navigate", async (_event, url: string) => {
-    const target = normalizeUrl(url);
+    const target = normalizeBrowserUrl(url);
     if (!target) return { ok: false };
+    if (isExternalAuthUrl(target)) {
+      await openExternalAuth(target);
+      return { ok: true, external: true };
+    }
     const browserView = ensureView();
     browserView.setVisible(true);
     currentUrl = target;
@@ -154,6 +185,13 @@ export function registerBrowserViewIpc(window: BrowserWindow) {
     destroyBrowserView();
     return { ok: true };
   });
+
+  ipcMain.handle("browser:openExternal", async (_event, url: string) => {
+    const target = normalizeBrowserUrl(url);
+    if (!target) return { ok: false };
+    await shell.openExternal(target);
+    return { ok: true };
+  });
 }
 
 export function destroyBrowserView() {
@@ -168,4 +206,6 @@ export function destroyBrowserView() {
   view = null;
   lastBounds = null;
   currentUrl = "";
+  lastExternalUrl = "";
+  lastExternalAt = 0;
 }

@@ -16,7 +16,7 @@ import {
   ArrowUp,
   Github,
   RefreshCw,
-} from "lucide-react";
+} from "./icons";
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
@@ -64,6 +64,12 @@ type TabType = "blank" | "linear" | "github";
 const NODE_WIDTH = 200;
 const NODE_HEIGHT = 120;
 const SPACING = 24; // Grid snap size
+const MAX_RECENT_DIRECTORIES = 5;
+
+function getDirectoryName(path: string): string {
+  const normalizedPath = path.replace(/\/+$/, "");
+  return normalizedPath.split("/").pop() || path;
+}
 
 // Find a free position near the target that doesn't overlap existing nodes
 function findFreePosition(
@@ -146,8 +152,11 @@ export function NewSessionModal({
     addNode,
     addSession,
     updateSession,
+    sessions,
     nodes,
     launchCwd,
+    recentWorkingDirectories,
+    rememberWorkingDirectory,
     newSessionInitialPrompt,
     setNewSessionInitialPrompt,
   } = useStore();
@@ -156,6 +165,20 @@ export function NewSessionModal({
   const reactFlowInstance = useReactFlow();
 
   const isReplacing = !!existingSession;
+
+  const recentDirectoryOptions = Array.from(
+    new Set([
+      ...recentWorkingDirectories,
+      ...Array.from(sessions.values())
+        .sort(
+          (first, second) =>
+            new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime()
+        )
+        .map((session) => session.originalCwd || session.cwd)
+        .filter((directory) => directory.trim().length > 0),
+      ...(launchCwd ? [launchCwd] : []),
+    ])
+  ).slice(0, MAX_RECENT_DIRECTORIES);
 
   // Form state
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
@@ -343,6 +366,7 @@ export function NewSessionModal({
 
   const selectDirectory = (path: string) => {
     setCwd(path);
+    rememberWorkingDirectory(path);
     setShowDirPicker(false);
     // Scan for repos in the selected directory
     scanForRepos(path);
@@ -426,6 +450,7 @@ export function NewSessionModal({
     if (!selectedAgent) return;
 
     const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
+    if (workingDir) rememberWorkingDirectory(workingDir);
     const fullCommand = selectedAgent.command
       ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
       : commandArgs;
@@ -1331,6 +1356,38 @@ export function NewSessionModal({
                         <FolderOpen className="w-4 h-4" />
                       </button>
                     </div>
+
+                    {recentDirectoryOptions.length > 0 && (
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-[10px] text-zinc-600 flex-shrink-0">Recent</span>
+                        <div className="flex flex-wrap gap-1.5 min-w-0">
+                          {recentDirectoryOptions.map((directory) => {
+                            const isSelected = cwd === directory;
+                            return (
+                              <button
+                                key={directory}
+                                type="button"
+                                onClick={() => {
+                                  setCwd(directory);
+                                  rememberWorkingDirectory(directory);
+                                  scanForRepos(directory);
+                                }}
+                                className={`inline-flex max-w-40 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                                  isSelected
+                                    ? "border-zinc-500/70 bg-surface-active text-zinc-200"
+                                    : "border-border bg-canvas text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                                }`}
+                                title={directory}
+                                aria-label={`Use recent directory ${directory}`}
+                              >
+                                <FolderOpen className="w-3 h-3 flex-shrink-0" />
+                                <span className="truncate">{getDirectoryName(directory)}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Directory picker inline panel */}
                     {showDirPicker && (
