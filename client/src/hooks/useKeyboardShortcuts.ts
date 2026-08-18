@@ -1,9 +1,10 @@
 import { useEffect } from "react";
 import { useStore } from "../stores/useStore";
-import { useReactFlow } from "@xyflow/react";
+import { useReactFlow, useStoreApi } from "@xyflow/react";
 
 export function useKeyboardShortcuts() {
   const reactFlow = useReactFlow();
+  const rfStore = useStoreApi();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -24,12 +25,26 @@ export function useKeyboardShortcuts() {
         setActivityCenterOpen,
         browserPanelOpen,
         setBrowserPanelOpen,
+        selectionModeActive,
+        setSelectionModeActive,
       } = useStore.getState();
 
       // Escape — close transient panels first
       if (e.key === "Escape" && activityCenterOpen) {
         e.preventDefault();
         setActivityCenterOpen(false);
+        return;
+      }
+
+      // Escape — exit selection mode (unless an overlay owns the key: the
+      // palette/modals handle their own Escape and one press must not also
+      // silently destroy the selection behind them)
+      if (e.key === "Escape" && selectionModeActive && viewMode === "canvas") {
+        const { commandPaletteOpen, addAgentModalOpen, newSessionModalOpen } =
+          useStore.getState();
+        if (commandPaletteOpen || addAgentModalOpen || newSessionModalOpen) return;
+        e.preventDefault();
+        setSelectionModeActive(false);
         return;
       }
 
@@ -47,6 +62,33 @@ export function useKeyboardShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "a" || e.key === "A")) {
         e.preventDefault();
         setActivityCenterOpen(true);
+        return;
+      }
+
+      // Cmd+A — select all sessions while in selection mode
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === "a" &&
+        selectionModeActive &&
+        viewMode === "canvas"
+      ) {
+        const target = e.target as HTMLElement | null;
+        if (
+          target &&
+          (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+        ) {
+          return;
+        }
+        e.preventDefault();
+        // Select through React Flow's API so its internal selection state
+        // stays in sync (prop-level selected flags alone diverge from it).
+        rfStore.getState().addSelectedNodes(
+          useStore
+            .getState()
+            .nodes.filter((n) => n.type === "agent")
+            .map((n) => n.id),
+        );
         return;
       }
 
@@ -109,8 +151,11 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Cmd+1 through Cmd+9 — jump to nth session
+      // Cmd+1 through Cmd+9 — jump to nth session (not in selection mode:
+      // it would reopen the sidebar and re-arm single-delete state the mode
+      // deliberately cleared)
       if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
+        if (selectionModeActive && viewMode === "canvas") return;
         const index = parseInt(e.key) - 1;
         const sessionEntries = Array.from(sessions.entries());
         if (index < sessionEntries.length) {
@@ -134,6 +179,7 @@ export function useKeyboardShortcuts() {
 
       // Cmd+Enter — pin selected session and enter focus mode
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        if (selectionModeActive && viewMode === "canvas") return;
         const selectedNodeId = useStore.getState().selectedNodeId;
         if (selectedNodeId && sessions.has(selectedNodeId)) {
           e.preventDefault();
@@ -148,5 +194,5 @@ export function useKeyboardShortcuts() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [reactFlow]);
+  }, [reactFlow, rfStore]);
 }

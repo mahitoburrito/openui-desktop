@@ -3163,6 +3163,10 @@ apiRoutes.post("/sessions/:sessionId/soft-delete", (c) => {
     clearTimeout(session.deleteTimeout);
   }
 
+  // Grace period must comfortably exceed the client's 5s undo window: bulk
+  // deletes fan out N requests and the client toast only starts after they
+  // all settle, so a tight server timer can hard-kill sessions the user can
+  // still "undo" on screen.
   session.deleteTimeout = setTimeout(() => {
     const s = sessions.get(sessionId);
     if (s && s.pendingDelete) {
@@ -3170,7 +3174,7 @@ apiRoutes.post("/sessions/:sessionId/soft-delete", (c) => {
       saveState(sessions);
       log(`[session] Hard-deleted ${sessionId} after timeout`);
     }
-  }, 5000);
+  }, 15000);
 
   saveState(sessions);
   return c.json({ success: true, workspace });

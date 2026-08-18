@@ -198,6 +198,11 @@ interface AppState {
   setSelectedNodeId: (id: string | null) => void;
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
+  // Selection mode — canvas multi-select for bulk actions
+  selectionModeActive: boolean;
+  setSelectionModeActive: (on: boolean) => void;
+  multiSelectedNodeIds: string[];
+  setMultiSelectedNodeIds: (ids: string[]) => void;
   addAgentModalOpen: boolean;
   setAddAgentModalOpen: (open: boolean) => void;
   newSessionModalOpen: boolean;
@@ -451,6 +456,25 @@ export const useStore = create<AppState>((set) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   sidebarOpen: false,
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  selectionModeActive: false,
+  setSelectionModeActive: (on) =>
+    set((state) => ({
+      selectionModeActive: on,
+      multiSelectedNodeIds: [],
+      // Both directions start from a clean slate: clear selection flags, and
+      // keep category boxes out of the marquee while the mode is on.
+      nodes: state.nodes.map((n) => {
+        if (n.type === "category") {
+          const nextSelectable = on ? false : undefined;
+          if (n.selectable === nextSelectable && !n.selected) return n;
+          return { ...n, selected: false, selectable: nextSelectable };
+        }
+        return n.selected ? { ...n, selected: false } : n;
+      }),
+      ...(on ? { selectedNodeId: null, sidebarOpen: false } : {}),
+    })),
+  multiSelectedNodeIds: [],
+  setMultiSelectedNodeIds: (ids) => set({ multiSelectedNodeIds: ids }),
   addAgentModalOpen: false,
   setAddAgentModalOpen: (open) => set({ addAgentModalOpen: open }),
   newSessionModalOpen: false,
@@ -491,14 +515,28 @@ export const useStore = create<AppState>((set) => ({
 
   // Focus Mode
   viewMode: (persisted.viewMode as ViewMode) ?? "canvas",
-  // Leaving focus mode also closes the browser dock — it only renders in
-  // focus mode, and leaving it "open" makes it pop back up unrequested the
-  // next time focus mode is entered.
   setViewMode: (mode) =>
-    set((state) => ({
-      viewMode: mode,
-      browserPanelOpen: mode === "focus" ? state.browserPanelOpen : false,
-    })),
+    set((state) => {
+      const leavingCanvasSelection = mode !== "canvas" && state.selectionModeActive;
+      return {
+        viewMode: mode,
+        // The browser dock only renders in focus mode. Close it when leaving
+        // so it does not reopen unexpectedly on the next focused session.
+        browserPanelOpen: mode === "focus" ? state.browserPanelOpen : false,
+        ...(leavingCanvasSelection
+          ? {
+              selectionModeActive: false,
+              multiSelectedNodeIds: [],
+              nodes: state.nodes.map((node) => {
+                if (node.type === "category") {
+                  return { ...node, selected: false, selectable: undefined };
+                }
+                return node.selected ? { ...node, selected: false } : node;
+              }),
+            }
+          : {}),
+      };
+    }),
   focusedSessionIds: persisted.focusedSessionIds ?? [],
   addFocusedSession: (nodeId) =>
     set((state) => ({
@@ -593,7 +631,15 @@ export const useStore = create<AppState>((set) => ({
 
   // Delete toast
   deleteToast: null,
-  setDeleteToast: (toast) => set({ deleteToast: toast }),
+  setDeleteToast: (toast) =>
+    set((state) => {
+      // A replaced toast's auto-dismiss timer would otherwise fire later and
+      // dismiss the new toast early, cutting its undo window short.
+      if (state.deleteToast && state.deleteToast !== toast) {
+        clearTimeout(state.deleteToast.timeout);
+      }
+      return { deleteToast: toast };
+    }),
 
   agentActivityEvents:
     (persisted.agentActivityEvents as AgentActivityEvent[] | undefined) ?? [],

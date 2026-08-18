@@ -1,4 +1,4 @@
-import { Folder, Maximize2, Search } from "lucide-react";
+import { Folder, Maximize2, MousePointer2, Search } from "lucide-react";
 import { useStore } from "../stores/useStore";
 
 export function Header() {
@@ -11,6 +11,9 @@ export function Header() {
     selectedNodeId,
     setSidebarOpen,
     setViewMode,
+    viewMode,
+    selectionModeActive,
+    setSelectionModeActive,
   } = useStore();
 
   const selectedSession = selectedNodeId ? sessions.get(selectedNodeId) : null;
@@ -37,6 +40,24 @@ export function Header() {
       </div>
 
       <div className="titlebar-no-drag flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => setSelectionModeActive(!selectionModeActive)}
+          disabled={viewMode !== "canvas"}
+          className={`${commandButton} ${
+            selectionModeActive ? "bg-surface-active text-zinc-100" : ""
+          }`}
+          title={
+            viewMode !== "canvas"
+              ? "Selection mode is available on the canvas"
+              : selectionModeActive
+                ? "Exit selection mode (Esc)"
+                : "Selection mode — click or drag a box to select multiple sessions"
+          }
+          aria-label="Selection mode"
+        >
+          <MousePointer2 className="h-4 w-4" />
+        </button>
         <button
           type="button"
           onClick={() => setCommandPaletteOpen(true)}
