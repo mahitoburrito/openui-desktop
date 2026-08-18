@@ -148,6 +148,8 @@ export function NewSessionModal({
     updateSession,
     nodes,
     launchCwd,
+    lastPickedDirectory,
+    setLastPickedDirectory,
     newSessionInitialPrompt,
     setNewSessionInitialPrompt,
   } = useStore();
@@ -317,7 +319,7 @@ export function NewSessionModal({
 
   const openDirPicker = () => {
     setShowDirPicker(true);
-    browsePath(cwd || launchCwd);
+    browsePath(cwd || lastPickedDirectory || launchCwd);
   };
 
   const scanForRepos = async (path: string) => {
@@ -343,6 +345,7 @@ export function NewSessionModal({
 
   const selectDirectory = (path: string) => {
     setCwd(path);
+    setLastPickedDirectory(path);
     setShowDirPicker(false);
     // Scan for repos in the selected directory
     scanForRepos(path);
@@ -434,6 +437,9 @@ export function NewSessionModal({
     const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
     const isMultiRepo = createWorktree && selectedReposList.length > 1;
     const effectiveWorkingDir = workingDir;
+    if (effectiveWorkingDir) {
+      setLastPickedDirectory(effectiveWorkingDir);
+    }
     const multiRepoParams = isMultiRepo ? {
       multiRepoMode,
       additionalRepos: selectedReposList
@@ -464,6 +470,12 @@ export function NewSessionModal({
               customName: customName || existingSession.customName,
               customColor: existingSession.customColor,
               initialPrompt: starterPrompt || undefined,
+              ...(selectedAgent.profileId && {
+                agentProfile: {
+                  id: selectedAgent.profileId,
+                  version: selectedAgent.profileVersion,
+                },
+              }),
               ...(createWorktree && branchName && {
                 branchName,
                 baseBranch,
@@ -572,6 +584,12 @@ export function NewSessionModal({
               nodeId,
               customName: count > 1 ? agentName : customName || undefined,
                 initialPrompt: starterPrompt || undefined,
+                ...(selectedAgent.profileId && {
+                  agentProfile: {
+                    id: selectedAgent.profileId,
+                    version: selectedAgent.profileVersion,
+                  },
+                }),
                 ...(agentIndex === 0 && createWorktree && branchName && {
                   branchName,
                   baseBranch,
@@ -1287,8 +1305,8 @@ export function NewSessionModal({
                     />
                   </div>
 
-                  {/* Command arguments */}
-                  <div className="space-y-2">
+                  {/* Command arguments stay out of the path for managed profiles. */}
+                  {!selectedAgent?.profileId && <div className="space-y-2">
                     <label className="text-xs text-zinc-500 flex items-center gap-1.5">
                       <Terminal className="w-3 h-3" />
                       {selectedAgent?.command ? "Arguments (optional)" : "Command"}
@@ -1305,7 +1323,7 @@ export function NewSessionModal({
                         {selectedAgent.command}{selectedAgent.command && commandArgs ? " " : ""}{commandArgs}
                       </p>
                     )}
-                  </div>
+                  </div>}
 
                   {/* Working directory */}
                   <div className="space-y-2">
@@ -1331,6 +1349,21 @@ export function NewSessionModal({
                         <FolderOpen className="w-4 h-4" />
                       </button>
                     </div>
+
+                    {lastPickedDirectory && (
+                      <button
+                        type="button"
+                        onClick={() => selectDirectory(lastPickedDirectory)}
+                        className="flex w-full items-center gap-2 rounded-md border border-border bg-canvas px-3 py-2 text-left transition-colors hover:bg-surface-active"
+                        title={lastPickedDirectory}
+                      >
+                        <FolderOpen className="h-4 w-4 flex-shrink-0 text-zinc-500" />
+                        <span className="text-xs font-medium text-zinc-400">Last picked</span>
+                        <span className="min-w-0 flex-1 truncate text-xs font-mono text-zinc-500">
+                          {lastPickedDirectory}
+                        </span>
+                      </button>
+                    )}
 
                     {/* Directory picker inline panel */}
                     {showDirPicker && (

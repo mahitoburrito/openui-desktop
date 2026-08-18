@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
   FileDiff,
+  FileText,
   Folder,
   GitBranch,
   Globe,
@@ -55,6 +56,18 @@ interface PackageScriptsResponse {
   packageJsonPath: string | null;
   packageManager: string;
   scripts: PackageScriptTask[];
+}
+
+interface MarkdownFileSearchItem {
+  name: string;
+  path: string;
+  size: number;
+  modified: number;
+}
+
+interface MarkdownFilesResponse {
+  root: string;
+  files: MarkdownFileSearchItem[];
 }
 
 function normalize(value: string): string {
@@ -133,6 +146,7 @@ export function CommandPalette() {
     browserPanelOpen,
     setBrowserPanelOpen,
     openMarkdownFiles,
+    addMarkdownFile,
     setWorkspaceBackground,
     setTerminalTheme,
     setActivityCenterOpen,
@@ -144,6 +158,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [projectTasks, setProjectTasks] = useState<PackageScriptsResponse | null>(null);
+  const [markdownFiles, setMarkdownFiles] = useState<MarkdownFilesResponse | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const taskRoot = useMemo(() => {
@@ -151,11 +166,19 @@ export function CommandPalette() {
     return selectedSession?.originalCwd || selectedSession?.cwd || diffRepoPath || launchCwd;
   }, [diffRepoPath, launchCwd, selectedNodeId, sessions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!commandPaletteOpen) return;
     setQuery("");
-    const timeout = setTimeout(() => inputRef.current?.focus(), 0);
-    return () => clearTimeout(timeout);
+    const focusInput = () => {
+      inputRef.current?.focus({ preventScroll: true });
+    };
+    focusInput();
+    const frame = requestAnimationFrame(focusInput);
+    const timeout = setTimeout(focusInput, 100);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timeout);
+    };
   }, [commandPaletteOpen]);
 
   useEffect(() => {
@@ -192,6 +215,29 @@ export function CommandPalette() {
       .then((data) => setProjectTasks(data))
       .catch((error) => {
         if (error.name !== "AbortError") setProjectTasks(null);
+      });
+
+    return () => controller.abort();
+  }, [commandPaletteOpen, taskRoot]);
+
+  useEffect(() => {
+    if (!commandPaletteOpen || !taskRoot) {
+      setMarkdownFiles(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    fetch(`/api/files/list?path=${encodeURIComponent(taskRoot)}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.error || "Failed to load workspace files");
+        return data as MarkdownFilesResponse;
+      })
+      .then((data) => setMarkdownFiles(data))
+      .catch((error) => {
+        if (error.name !== "AbortError") setMarkdownFiles(null);
       });
 
     return () => controller.abort();
@@ -317,6 +363,16 @@ export function CommandPalette() {
         keepOpen: true,
         keywords: "session agent jump open",
         run: () => setQuery("session "),
+      },
+      {
+        id: "find-file",
+        title: "Find a file",
+        hint: "Search Markdown files in the active workspace",
+        icon: FileText,
+        surface: true,
+        keepOpen: true,
+        keywords: "file markdown md search open",
+        run: () => setQuery("file "),
       },
       {
         id: "themes",
@@ -547,9 +603,28 @@ export function CommandPalette() {
       run: () => launchProjectTask(task),
     }));
 
+    const fileCommands = (markdownFiles?.files || []).map((file) => {
+      const workspaceRoot = markdownFiles?.root || taskRoot || "";
+      const relativePath = workspaceRoot && file.path.startsWith(`${workspaceRoot}/`)
+        ? file.path.slice(workspaceRoot.length + 1)
+        : file.path;
+      return {
+        id: `file-${file.path}`,
+        title: `Open file: ${file.name}`,
+        hint: relativePath,
+        icon: FileText,
+        keywords: `file markdown md ${relativePath}`,
+        run: () => {
+          addMarkdownFile(file.path);
+          setViewMode("markdown");
+        },
+      };
+    });
+
     return [
       ...base,
       ...filterCommands,
+      ...fileCommands,
       ...taskCommands,
       ...sessionCommands,
       ...focusCommands,
@@ -559,6 +634,7 @@ export function CommandPalette() {
       ...terminalCommands,
     ];
   }, [
+    addMarkdownFile,
     addFocusedSession,
     addNode,
     addSession,
@@ -568,6 +644,7 @@ export function CommandPalette() {
     diffRepoPath,
     focusedSessionIds.length,
     launchCwd,
+    markdownFiles,
     nodes,
     openMarkdownFiles.length,
     projectTasks,
@@ -648,19 +725,27 @@ export function CommandPalette() {
             onClick={() => setCommandPaletteOpen(false)}
           />
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search commands"
             initial={{ opacity: 0, y: -12, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.98 }}
-            className="fixed left-1/2 top-24 z-[91] w-[min(640px,calc(100vw-32px))] -translate-x-1/2 rounded-xl border border-border bg-canvas-dark shadow-2xl overflow-hidden"
+            className="titlebar-no-drag fixed inset-x-4 top-[12vh] z-[91] mx-auto w-[min(640px,calc(100vw-32px))] overflow-hidden rounded-2xl border border-border bg-canvas-dark shadow-[0_28px_90px_rgb(0_0_0_/_0.58)]"
+            onPointerDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
               <Palette className="w-4 h-4 text-zinc-500" />
               <input
                 ref={inputRef}
+                autoFocus
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="New agent, sessions, themes, filter, sort..."
+                onPointerDown={(event) => event.currentTarget.focus()}
+                placeholder="Commands, sessions, or files..."
                 className="flex-1 bg-transparent text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none"
+                aria-label="Search commands"
+                spellCheck={false}
               />
               <span className="text-[10px] text-zinc-600">Esc</span>
             </div>
@@ -679,11 +764,11 @@ export function CommandPalette() {
                       type="button"
                       onClick={() => void runCommand(command)}
                       onMouseEnter={() => setSelectedIndex(index)}
-                      className={`w-full px-3 py-2.5 flex items-center gap-3 text-left transition-colors ${
+                      className={`mx-2 flex w-[calc(100%-1rem)] items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
                         selected ? "bg-surface-active" : "hover:bg-surface-active/70"
                       }`}
                     >
-                      <div className="w-7 h-7 rounded-md bg-surface flex items-center justify-center text-zinc-400">
+                      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-surface text-zinc-400">
                         <Icon className="w-3.5 h-3.5" />
                       </div>
                       <div className="min-w-0 flex-1">

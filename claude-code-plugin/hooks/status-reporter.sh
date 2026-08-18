@@ -141,6 +141,14 @@ if [ -n "$STATUS" ]; then
     -d "$PAYLOAD" \
     --max-time 2 2>&1) || true
   echo "[$(date)] Response: $RESPONSE" >> "$DEBUG_LOG" 2>/dev/null || true
+
+  # PreToolUse hooks can return a structured denial. Keep this fallback free
+  # of jq so a pinned OpenUI read-only/tool-allowlist policy is enforced even
+  # on minimal systems. The reason is intentionally generic here; the full
+  # server-side reason is retained in the session permission audit log.
+  if [ "$HOOK_EVENT" = "PreToolUse" ] && echo "$RESPONSE" | grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by the pinned OpenUI agent profile"}}'
+  fi
 fi
 
 # Always exit successfully so we don't block Claude

@@ -3,7 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { useStore, AgentStatus } from "../stores/useStore";
+import { useStore, AgentStatus, type TerminalOsc52ClipboardAccess } from "../stores/useStore";
 import {
   clampTerminalFontSize,
   getTerminalFontFamily,
@@ -11,6 +11,21 @@ import {
   type TerminalThemeId,
 } from "../theme/appearance";
 import { extractLocalPreviewUrls, stripAnsiForUrlScan } from "../utils/localPreview";
+import {
+  encodeKittyKeyboardEvent,
+  KittyKeyboardProtocol,
+} from "../../../resources/terminal-protocol/kittyKeyboard.mjs";
+import {
+  InlineTerminalInput,
+  type InlineTerminalInputSnapshot,
+} from "../../../resources/terminal-protocol/inlineInput.mjs";
+import {
+  applyTerminalSuggestion,
+  inlineSuggestionKinds,
+  nextTerminalSuggestionComponent,
+  terminalSuggestionSuffix,
+  type TerminalSuggestion,
+} from "./terminalSuggestions";
 
 interface TerminalProps {
   sessionId: string;
@@ -19,6 +34,18 @@ interface TerminalProps {
   cwd?: string;
   onOpenFile?: (absPath: string) => void;
   onReady?: (sendInput: (text: string) => void) => void;
+  onPromptInputChange?: (sessionId: string, state: TerminalInputSyncState) => void;
+  onUserInput?: (sessionId: string, data: string) => boolean;
+  synchronizedPreview?: {
+    sourceName: string;
+    text: string;
+  };
+  workbench?: boolean;
+}
+
+export interface TerminalInputSyncState extends InlineTerminalInputSnapshot {
+  connected: boolean;
+  editorIdentity?: string;
 }
 
 // Quote a path for shell pasting if it contains characters that would break tokenization.
@@ -43,10 +70,33 @@ const CLIPBOARD_IMAGE_TYPES = new Set([
   "image/webp",
   "image/svg+xml",
 ]);
+const OSC52_MAX_ENCODED_CHARS = 60 * 1024;
+const OSC52_MAX_READ_BYTES = 32 * 1024;
 
 type ClipboardUploadState = {
   phase: "idle" | "uploading" | "done" | "error";
   message?: string;
+};
+
+type InlineInputState = InlineTerminalInputSnapshot;
+
+type InlineSuggestionAnchor = {
+  left: number;
+  menuLeft: number;
+  menuWidth: number;
+  top: number;
+  placeAbove: boolean;
+};
+
+const EMPTY_INLINE_INPUT: InlineInputState = new InlineTerminalInput().snapshot();
+const INLINE_KIND_LABELS: Partial<Record<TerminalSuggestion["kind"], string>> = {
+  history: "History",
+  file: "Path",
+  command: "Command",
+  subcommand: "Subcommand",
+  option: "Option",
+  argument: "Argument",
+  variable: "Variable",
 };
 
 function stripTrailingPunct(s: string): string {
@@ -108,12 +158,92 @@ function clipboardImageFiles(data: DataTransfer): File[] {
     .map(namedClipboardImage);
 }
 
+interface NativeClipboardImage {
+  mimeType: string;
+  base64: string;
+  byteLength: number;
+}
+
+async function nativeClipboardImageFile(): Promise<File | null> {
+  if (!window.electronAPI?.isElectron) return null;
+  const image = await window.electronAPI.invoke("clipboard:read-image") as NativeClipboardImage | null;
+  if (!image || image.mimeType !== "image/png" || !image.base64 || image.byteLength <= 0) return null;
+  const binary = atob(image.base64);
+  if (binary.length !== image.byteLength) throw new Error("Clipboard image was truncated");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return new File([bytes], `clipboard-image-${Date.now()}.png`, {
+    type: "image/png",
+    lastModified: Date.now(),
+  });
+}
+
+function decodeOsc52Text(encoded: string): string | null {
+  if (encoded.length > OSC52_MAX_ENCODED_CHARS ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    return null;
+  }
+  try {
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function encodeOsc52Text(value: string): string | null {
+  const bytes = new TextEncoder().encode(value);
+  if (bytes.byteLength > OSC52_MAX_READ_BYTES) return null;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 8_192) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 8_192));
+  }
+  return btoa(binary);
+}
+
+async function handleOsc52Clipboard(
+  data: string,
+  access: TerminalOsc52ClipboardAccess,
+  sendResponse: (data: string) => void,
+): Promise<boolean> {
+  const separator = data.indexOf(";");
+  if (separator < 0) return true;
+  const selection = data.slice(0, separator);
+  const payload = data.slice(separator + 1);
+  if (!/^[cps]$/.test(selection)) return true;
+
+  if (payload === "?") {
+    if (access !== "read_write" || !navigator.clipboard?.readText) return true;
+    try {
+      const encoded = encodeOsc52Text(await navigator.clipboard.readText());
+      if (encoded !== null) sendResponse(`\x1b]52;${selection};${encoded}\x07`);
+    } catch {
+      // Clipboard permission failures are a fail-closed read.
+    }
+    return true;
+  }
+
+  if (access === "deny" || !navigator.clipboard?.writeText) return true;
+  const decoded = decodeOsc52Text(payload);
+  if (decoded === null) return true;
+  try {
+    await navigator.clipboard.writeText(decoded);
+  } catch {
+    // Clipboard permission failures are a fail-closed write.
+  }
+  return true;
+}
+
 interface CachedTerminal {
+  sessionId: string;
   term: XTerm;
   fitAddon: FitAddon;
   wrapperDiv: HTMLDivElement;
   ws: WebSocket | null;
-  kittyModeStack: number[];
+  reconnectTimer?: ReturnType<typeof setTimeout>;
+  reconnectAttempt: number;
+  kittyKeyboard: KittyKeyboardProtocol;
   previewScanBuffer: string;
   pendingPreviewUrl: string | null;
   lastUserInputAt: number;
@@ -122,6 +252,13 @@ interface CachedTerminal {
   updateSession: (nodeId: string, update: Record<string, unknown>) => void;
   cwd: string | undefined;
   onOpenFile: ((absPath: string) => void) | undefined;
+  inlineTracker: InlineTerminalInput;
+  editorIdentity?: string;
+  onInlineInputChange?: (state: InlineInputState) => void;
+  onPromptInputChange?: (sessionId: string, state: TerminalInputSyncState) => void;
+  onUserInput?: (sessionId: string, data: string) => boolean;
+  inlineKeyHandler?: (event: KeyboardEvent) => boolean;
+  onCursorUpdate?: () => void;
 }
 
 const cache = new Map<string, CachedTerminal>();
@@ -139,10 +276,52 @@ const RUN_DONE_STATUSES: ReadonlySet<AgentStatus> = new Set([
   "waiting_input",
 ]);
 
+function trackInlineInput(entry: CachedTerminal, data: string) {
+  const before = entry.inlineTracker.snapshot().revision;
+  const next = entry.inlineTracker.note(data);
+  if (next.revision !== before) {
+    entry.onInlineInputChange?.(next);
+    entry.onPromptInputChange?.(entry.sessionId, terminalInputSyncState(entry));
+  }
+}
+
+function terminalProgramIdentity(command: unknown): string | undefined {
+  if (typeof command !== "string") return undefined;
+  const tokens = command.trim().match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index].replace(/^['"]|['"]$/g, "");
+    if (["command", "exec", "nohup", "sudo"].includes(token)) {
+      index++;
+      continue;
+    }
+    if (token === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      index++;
+      continue;
+    }
+    return token.split(/[\\/]/).pop()?.toLowerCase();
+  }
+  return undefined;
+}
+
+function terminalInputSyncState(entry: CachedTerminal): TerminalInputSyncState {
+  return {
+    ...entry.inlineTracker.snapshot(),
+    connected: entry.ws?.readyState === WebSocket.OPEN,
+    editorIdentity: entry.editorIdentity,
+  };
+}
+
+export function getTerminalInputSyncState(sessionId: string): TerminalInputSyncState | null {
+  const entry = cache.get(sessionId);
+  return entry ? terminalInputSyncState(entry) : null;
+}
+
 export function destroyCachedTerminal(sessionId: string) {
   const entry = cache.get(sessionId);
   if (!entry) return;
   entry.alive = false;
+  if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
   entry.ws?.close();
   entry.term.dispose();
   cache.delete(sessionId);
@@ -176,14 +355,25 @@ function buildTheme(color: string, themeId: TerminalThemeId) {
   };
 }
 
+export function sendTerminalInputDirect(sessionId: string, data: string, focus = true): boolean {
+  const entry = cache.get(sessionId);
+  if (!entry || entry.ws?.readyState !== WebSocket.OPEN) return false;
+  trackInlineInput(entry, data);
+  entry.lastUserInputAt = Date.now();
+  entry.ws.send(JSON.stringify({ type: "input", data }));
+  if (focus) entry.term.focus();
+  return true;
+}
+
 function createSendInput(sessionId: string) {
   return (data: string) => {
-    const e = cache.get(sessionId);
-    if (!e) return;
-    e.lastUserInputAt = Date.now();
-    if (e.ws?.readyState === WebSocket.OPEN) {
-      e.ws.send(JSON.stringify({ type: "input", data }));
+    const entry = cache.get(sessionId);
+    if (!entry) return;
+    if (entry.onUserInput?.(sessionId, data)) {
+      entry.term.focus();
+      return;
     }
+    sendTerminalInputDirect(sessionId, data);
   };
 }
 
@@ -255,57 +445,24 @@ function connectWs(
 ) {
   if (!entry.alive) return;
 
-  // Buffer for escape sequences split across WebSocket messages
-  let partialBuf = "";
-
-  // Single-pass left-to-right processing of kitty keyboard protocol escapes.
-  const kittyRe = /\x1b\[\?u|\x1b\[>(\d+)u|\x1b\[<(\d*)u/g;
-
-  const processOutput = (data: string): string => {
-    const input = partialBuf + data;
-    partialBuf = "";
-
-    let result = "";
-    let lastIndex = 0;
-    kittyRe.lastIndex = 0;
-
-    let match;
-    while ((match = kittyRe.exec(input)) !== null) {
-      result += input.slice(lastIndex, match.index);
-      lastIndex = kittyRe.lastIndex;
-
-      if (match[0] === "\x1b[?u") {
-        const flags = entry.kittyModeStack[entry.kittyModeStack.length - 1] || 0;
-        sendInput(`\x1b[?${flags}u`);
-      } else if (match[1] !== undefined) {
-        entry.kittyModeStack.push(parseInt(match[1], 10));
-      } else {
-        const count = match[2] ? parseInt(match[2], 10) : 1;
-        for (let i = 0; i < count && entry.kittyModeStack.length > 1; i++) {
-          entry.kittyModeStack.pop();
-        }
-      }
-    }
-
-    result += input.slice(lastIndex);
-
-    const trailing = /\x1b$|\x1b\[[?<>]\d*$/.exec(result);
-    if (trailing) {
-      partialBuf = trailing[0];
-      result = result.slice(0, trailing.index);
-    }
-
-    return result;
-  };
-
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${window.location.host}/ws?sessionId=${sessionId}`;
   const ws = new WebSocket(wsUrl);
+  const processOutput = (data: string) => entry.kittyKeyboard.processOutput(data, (response) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "terminalResponse", data: response }));
+    }
+  });
   entry.ws = ws;
+  if (entry.reconnectTimer) {
+    clearTimeout(entry.reconnectTimer);
+    entry.reconnectTimer = undefined;
+  }
 
   let isFirstMessage = true;
 
   ws.onopen = () => {
+    entry.reconnectAttempt = 0;
     ws.send(
       JSON.stringify({
         type: "resize",
@@ -313,24 +470,22 @@ function connectWs(
         rows: entry.term.rows,
       }),
     );
-    onReady?.((text: string) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data: text }));
-      }
-    });
+    entry.onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
+    onReady?.(sendInput);
   };
 
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "output") {
-        const output = processOutput(msg.data);
         if (isFirstMessage) {
           isFirstMessage = false;
+          entry.kittyKeyboard.reset();
           entry.term.write("\x1b[2J\x1b[H\x1b[0m");
         }
+        const output = processOutput(msg.data);
         capturePendingLocalPreview(entry, output);
-        entry.term.write(output);
+        entry.term.write(output, () => entry.onCursorUpdate?.());
       } else if (msg.type === "status") {
         entry.updateSession(entry.nodeId, {
           status: msg.status as AgentStatus,
@@ -341,6 +496,17 @@ function connectWs(
         if (RUN_DONE_STATUSES.has(msg.status as AgentStatus)) {
           flushPendingLocalPreview(entry);
         }
+      } else if (msg.type === "terminalState") {
+        const activeBlock = Array.isArray(msg.blocks)
+          ? msg.blocks.find((block: any) => block?.id === msg.activeBlockId)
+          : undefined;
+        entry.editorIdentity = msg.alternateScreen
+          ? terminalProgramIdentity(activeBlock?.command)
+          : undefined;
+        const before = entry.inlineTracker.snapshot().revision;
+        const next = entry.inlineTracker.updateLifecycle(msg.phase, msg.alternateScreen);
+        if (next.revision !== before) entry.onInlineInputChange?.(next);
+        entry.onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
       } else if (msg.type === "nameGenerated") {
         entry.updateSession(entry.nodeId, { customName: msg.name });
       }
@@ -348,14 +514,26 @@ function connectWs(
       if (typeof event.data === "string") {
         capturePendingLocalPreview(entry, event.data);
       }
-      entry.term.write(event.data);
+      entry.term.write(event.data, () => entry.onCursorUpdate?.());
     }
   };
 
   ws.onerror = () => {};
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (entry.ws === ws) {
       entry.ws = null;
+      entry.onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
+      if (entry.alive && ![1003, 1007, 1008, 1009].includes(event.code)) {
+        const attempt = entry.reconnectAttempt || 0;
+        entry.reconnectAttempt = attempt + 1;
+        const delay = Math.min(5_000, 250 * (2 ** Math.min(attempt, 5)));
+        entry.reconnectTimer = setTimeout(() => {
+          entry.reconnectTimer = undefined;
+          if (entry.alive && (!entry.ws || entry.ws.readyState >= WebSocket.CLOSING)) {
+            connectWs(entry, sessionId, sendInput, onReady);
+          }
+        }, delay);
+      }
     }
   };
 }
@@ -367,6 +545,10 @@ export function Terminal({
   cwd,
   onOpenFile,
   onReady,
+  onPromptInputChange,
+  onUserInput,
+  synchronizedPreview,
+  workbench = false,
 }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
   const terminalThemeId = useStore((state) => state.terminalTheme);
@@ -376,6 +558,19 @@ export function Terminal({
   const [isDragOver, setIsDragOver] = useState(false);
   const [clipboardUpload, setClipboardUpload] = useState<ClipboardUploadState>({
     phase: "idle",
+  });
+  const [inlineInput, setInlineInput] = useState<InlineInputState>(EMPTY_INLINE_INPUT);
+  const [inlineSuggestions, setInlineSuggestions] = useState<TerminalSuggestion[]>([]);
+  const [inlineLoading, setInlineLoading] = useState(false);
+  const [inlineMenuOpen, setInlineMenuOpen] = useState(false);
+  const [inlineSelectedIndex, setInlineSelectedIndex] = useState(0);
+  const [dismissedInlineBuffer, setDismissedInlineBuffer] = useState<string | null>(null);
+  const [inlineAnchor, setInlineAnchor] = useState<InlineSuggestionAnchor | null>(null);
+  const inlineUiRef = useRef({
+    suggestions: [] as TerminalSuggestion[],
+    menuOpen: false,
+    selectedIndex: 0,
+    dismissedBuffer: null as string | null,
   });
   const terminalTheme = getTerminalTheme(terminalThemeId);
   const terminalFont = getTerminalFontFamily(terminalFontFamilyId);
@@ -389,6 +584,9 @@ export function Terminal({
       entry.updateSession = updateSession;
       entry.cwd = cwd;
       entry.onOpenFile = onOpenFile;
+      entry.onInlineInputChange = setInlineInput;
+      entry.onPromptInputChange = onPromptInputChange;
+      entry.onUserInput = onUserInput;
     }
   });
 
@@ -431,6 +629,11 @@ export function Terminal({
       existing.updateSession = updateSession;
       existing.cwd = cwd;
       existing.onOpenFile = onOpenFile;
+      existing.onInlineInputChange = setInlineInput;
+      existing.onPromptInputChange = onPromptInputChange;
+      existing.onUserInput = onUserInput;
+      setInlineInput(existing.inlineTracker.snapshot());
+      onPromptInputChange?.(sessionId, terminalInputSyncState(existing));
 
       container.appendChild(existing.wrapperDiv);
 
@@ -502,11 +705,13 @@ export function Terminal({
     container.appendChild(wrapperDiv);
 
     const entry: CachedTerminal = {
+      sessionId,
       term,
       fitAddon,
       wrapperDiv,
       ws: null,
-      kittyModeStack: [0],
+      reconnectAttempt: 0,
+      kittyKeyboard: new KittyKeyboardProtocol(!/^Win/.test(navigator.platform)),
       previewScanBuffer: "",
       pendingPreviewUrl: null,
       lastUserInputAt: 0,
@@ -515,8 +720,24 @@ export function Terminal({
       updateSession,
       cwd,
       onOpenFile,
+      inlineTracker: new InlineTerminalInput(),
+      onInlineInputChange: setInlineInput,
+      onPromptInputChange,
+      onUserInput,
     };
     cache.set(sessionId, entry);
+
+    const sendTerminalResponse = (data: string) => {
+      const current = cache.get(sessionId);
+      if (current?.ws?.readyState === WebSocket.OPEN) {
+        current.ws.send(JSON.stringify({ type: "terminalResponse", data }));
+      }
+    };
+    term.parser.registerOscHandler(52, (data) => handleOsc52Clipboard(
+      data,
+      useStore.getState().terminalOsc52ClipboardAccess,
+      sendTerminalResponse,
+    ));
 
     // Custom link provider — finds file paths on each visible line and makes
     // markdown ones clickable to open in an in-pane viewer.
@@ -569,22 +790,19 @@ export function Terminal({
     });
 
     const sendInput = createSendInput(sessionId);
+    const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 
     term.attachCustomKeyEventHandler((e) => {
+      if (entry.inlineKeyHandler?.(e)) return false;
+      const kittySequence = encodeKittyKeyboardEvent(e, entry.kittyKeyboard.flags, isMac);
+      if (kittySequence !== null) {
+        sendInput(kittySequence);
+        return false;
+      }
       if (e.type !== "keydown" || e.key !== "Enter") return true;
 
       if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
         sendInput("\x1b[200~\n\x1b[201~");
-        return false;
-      }
-      if (e.ctrlKey || e.altKey) {
-        const kittyActive = entry.kittyModeStack[entry.kittyModeStack.length - 1] > 0;
-        if (!kittyActive) return true;
-        let mod = 1;
-        if (e.shiftKey) mod += 1;
-        if (e.altKey) mod += 2;
-        if (e.ctrlKey) mod += 4;
-        sendInput(`\x1b[13;${mod}u`);
         return false;
       }
       return true;
@@ -666,9 +884,7 @@ export function Terminal({
     const insertion = tokens.join(" ") + " ";
 
     const entry = cache.get(sessionId);
-    if (entry?.ws?.readyState === WebSocket.OPEN) {
-      entry.ws.send(JSON.stringify({ type: "input", data: insertion }));
-    }
+    createSendInput(sessionId)(insertion);
     entry?.term.focus();
   };
 
@@ -697,6 +913,7 @@ export function Terminal({
 
         const saved = Array.isArray(body.saved) ? body.saved.length : 0;
         const skipped = Array.isArray(body.skipped) ? body.skipped.length : 0;
+        const injected = body.injected === true;
 
         if (saved === 0) {
           throw new Error(skipped > 0 ? "Image type was skipped" : "No image was saved");
@@ -705,9 +922,11 @@ export function Terminal({
         setClipboardUpload({
           phase: "done",
           message:
-            skipped > 0
-              ? `Attached ${saved}, skipped ${skipped}`
-              : `Attached ${saved} image${saved === 1 ? "" : "s"}`,
+            !injected
+              ? `Saved ${saved} image${saved === 1 ? "" : "s"}; terminal is offline`
+              : skipped > 0
+                ? `Attached ${saved}, skipped ${skipped}; path inserted`
+                : `Attached ${saved} image${saved === 1 ? "" : "s"}; path inserted`,
         });
         setTimeout(() => {
           setClipboardUpload((state) =>
@@ -734,17 +953,259 @@ export function Terminal({
   const handlePasteCapture = useCallback(
     (e: React.ClipboardEvent<HTMLDivElement>) => {
       const images = clipboardImageFiles(e.clipboardData);
-      if (images.length === 0) return;
+      if (images.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        void uploadClipboardImages(images);
+        return;
+      }
 
+      const rendererAdvertisesImage = Array.from(e.clipboardData.types)
+        .some((type) => CLIPBOARD_IMAGE_TYPES.has(type));
+      const text = e.clipboardData.getData("text/plain");
+      if (!window.electronAPI?.isElectron || (text && !rendererAdvertisesImage)) return;
+
+      // macOS screenshots can exist only in Electron's native clipboard as
+      // TIFF/PNG and arrive in Chromium without a File item. Prevent xterm
+      // from swallowing that paste while the main process materializes it.
       e.preventDefault();
       e.stopPropagation();
-      void uploadClipboardImages(images);
+      void nativeClipboardImageFile()
+        .then((image) => image ? uploadClipboardImages([image]) : undefined)
+        .catch((error) => {
+          setClipboardUpload({
+            phase: "error",
+            message: error instanceof Error ? error.message : "Clipboard image could not be read",
+          });
+          window.setTimeout(() => setClipboardUpload({ phase: "idle" }), 2_800);
+        });
     },
     [uploadClipboardImages],
   );
 
+  const inlineEligible = inlineInput.phase === "at_prompt" &&
+    inlineInput.certain && !inlineInput.alternateScreen;
+  const visibleInlineSuggestions = inlineSuggestions.filter((suggestion) =>
+    inlineSuggestionKinds.has(suggestion.kind),
+  );
+  const ghostSuggestion = dismissedInlineBuffer === inlineInput.buffer
+    ? undefined
+    : visibleInlineSuggestions.find((suggestion) =>
+        terminalSuggestionSuffix(inlineInput.buffer, suggestion) !== null,
+      );
+  const ghostSuffix = ghostSuggestion
+    ? terminalSuggestionSuffix(inlineInput.buffer, ghostSuggestion)
+    : null;
+  const synchronizedPreviewText = synchronizedPreview?.text || "";
+
+  useEffect(() => {
+    setInlineSuggestions([]);
+    setInlineLoading(false);
+    setInlineMenuOpen(false);
+    setInlineSelectedIndex(0);
+    setDismissedInlineBuffer(null);
+    const entry = cache.get(sessionId);
+    setInlineInput(entry ? entry.inlineTracker.snapshot() : { ...EMPTY_INLINE_INPUT });
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!inlineEligible || (!inlineInput.buffer && !inlineMenuOpen)) {
+      setInlineSuggestions([]);
+      setInlineLoading(false);
+      if (!inlineEligible) setInlineMenuOpen(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setInlineLoading(true);
+      try {
+        const params = new URLSearchParams({
+          query: inlineInput.buffer,
+          sessionId,
+          cwd: cwd || "",
+          limit: "12",
+        });
+        const response = await fetch(`/api/terminal/suggestions?${params}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || "Inline completions are unavailable");
+        const seen = new Set<string>();
+        const items = (Array.isArray(body.suggestions) ? body.suggestions as TerminalSuggestion[] : [])
+          .filter((suggestion) => inlineSuggestionKinds.has(suggestion.kind))
+          .filter((suggestion) => {
+            const completed = applyTerminalSuggestion(inlineInput.buffer, suggestion);
+            if (!completed.trim() || seen.has(completed)) return false;
+            seen.add(completed);
+            return true;
+          })
+          .slice(0, 8);
+        setInlineSuggestions(items);
+        setInlineSelectedIndex((current) => Math.min(current, Math.max(0, items.length - 1)));
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") setInlineSuggestions([]);
+      } finally {
+        if (!controller.signal.aborted) setInlineLoading(false);
+      }
+    }, 85);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [cwd, inlineEligible, inlineInput.buffer, inlineMenuOpen, sessionId]);
+
+  const updateInlineAnchor = useCallback(() => {
+    const root = containerRef.current;
+    const entry = cache.get(sessionId);
+    const screen = entry?.wrapperDiv.querySelector<HTMLElement>(".xterm-screen");
+    if (!root || !entry || !screen || entry.term.cols < 1 || entry.term.rows < 1) {
+      setInlineAnchor(null);
+      return;
+    }
+    const rootRect = root.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
+    const cellWidth = screenRect.width / entry.term.cols;
+    const cellHeight = screenRect.height / entry.term.rows;
+    const buffer = entry.term.buffer.active;
+    const left = Math.max(12, Math.min(
+      rootRect.width - 30,
+      screenRect.left - rootRect.left + buffer.cursorX * cellWidth,
+    ));
+    const top = Math.max(8, Math.min(
+      rootRect.height - 18,
+      screenRect.top - rootRect.top + buffer.cursorY * cellHeight,
+    ));
+    const menuWidth = Math.min(410, Math.max(0, rootRect.width - 24));
+    const menuLeft = Math.max(12, Math.min(left, rootRect.width - menuWidth - 12));
+    setInlineAnchor({ left, menuLeft, menuWidth, top, placeAbove: top > rootRect.height * 0.55 });
+  }, [sessionId]);
+
+  useEffect(() => {
+    if ((!inlineEligible || (!ghostSuffix && !inlineMenuOpen)) && !synchronizedPreviewText) {
+      setInlineAnchor(null);
+      return;
+    }
+    const frame = window.requestAnimationFrame(updateInlineAnchor);
+    const root = containerRef.current;
+    const observer = root ? new ResizeObserver(updateInlineAnchor) : null;
+    if (root && observer) observer.observe(root);
+    window.addEventListener("resize", updateInlineAnchor);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", updateInlineAnchor);
+    };
+  }, [ghostSuffix, inlineEligible, inlineInput.revision, inlineMenuOpen, synchronizedPreviewText, updateInlineAnchor]);
+
+  const acceptInlineSuggestion = useCallback((suggestion: TerminalSuggestion, partial = false) => {
+    const entry = cache.get(sessionId);
+    const tracked = entry?.inlineTracker.snapshot();
+    if (!entry || !tracked || tracked.phase !== "at_prompt" || !tracked.certain || tracked.alternateScreen) {
+      return;
+    }
+    const current = tracked.buffer;
+    const completed = applyTerminalSuggestion(current, suggestion);
+    const suffix = completed.startsWith(current) ? completed.slice(current.length) : null;
+    const insertion = partial && suffix
+      ? nextTerminalSuggestionComponent(suffix)
+      : suffix ?? `\x15${completed}`;
+    if (!insertion) return;
+    setInlineMenuOpen(false);
+    setDismissedInlineBuffer(null);
+    createSendInput(sessionId)(insertion);
+    window.setTimeout(() => cache.get(sessionId)?.term.focus(), 0);
+  }, [sessionId]);
+
+  useEffect(() => {
+    inlineUiRef.current = {
+      suggestions: visibleInlineSuggestions,
+      menuOpen: inlineMenuOpen,
+      selectedIndex: inlineSelectedIndex,
+      dismissedBuffer: dismissedInlineBuffer,
+    };
+  }, [dismissedInlineBuffer, inlineMenuOpen, inlineSelectedIndex, visibleInlineSuggestions]);
+
+  const handleInlineKey = useCallback((event: KeyboardEvent): boolean => {
+    if (event.type !== "keydown") return false;
+    const entry = cache.get(sessionId);
+    const tracked = entry?.inlineTracker.snapshot();
+    if (!entry || !tracked || tracked.phase !== "at_prompt" || !tracked.certain || tracked.alternateScreen) {
+      return false;
+    }
+    const ui = inlineUiRef.current;
+    const items = ui.suggestions;
+    const selected = items[Math.min(ui.selectedIndex, Math.max(0, items.length - 1))];
+    const prefixSuggestion = ui.dismissedBuffer === tracked.buffer
+      ? undefined
+      : items.find((suggestion) => terminalSuggestionSuffix(tracked.buffer, suggestion) !== null);
+
+    if (event.ctrlKey && !event.metaKey && !event.altKey && event.code === "Space") {
+      setInlineMenuOpen(true);
+      setInlineSelectedIndex(0);
+      setDismissedInlineBuffer(null);
+      return true;
+    }
+    if (event.key === "Escape" && (ui.menuOpen || prefixSuggestion)) {
+      setInlineMenuOpen(false);
+      setDismissedInlineBuffer(tracked.buffer);
+      return true;
+    }
+    if (ui.menuOpen) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (items.length) {
+          const delta = event.key === "ArrowDown" ? 1 : -1;
+          setInlineSelectedIndex((current) => (current + delta + items.length) % items.length);
+        }
+        return true;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (selected) acceptInlineSuggestion(selected);
+        return true;
+      }
+    }
+    if (!prefixSuggestion) return false;
+    if (event.key === "ArrowRight" && event.ctrlKey && !event.metaKey && !event.altKey) {
+      acceptInlineSuggestion(prefixSuggestion, true);
+      return true;
+    }
+    if (
+      (event.key === "ArrowRight" && !event.ctrlKey && !event.metaKey && !event.altKey) ||
+      (event.ctrlKey && !event.metaKey && !event.altKey && ["f", "e"].includes(event.key.toLowerCase()))
+    ) {
+      acceptInlineSuggestion(prefixSuggestion);
+      return true;
+    }
+    return false;
+  }, [acceptInlineSuggestion, sessionId]);
+
+  useEffect(() => {
+    const entry = cache.get(sessionId);
+    if (!entry) return;
+    entry.inlineKeyHandler = handleInlineKey;
+    entry.onInlineInputChange = setInlineInput;
+    entry.onPromptInputChange = onPromptInputChange;
+    entry.onUserInput = onUserInput;
+    entry.onCursorUpdate = updateInlineAnchor;
+    onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
+    return () => {
+      if (entry.inlineKeyHandler === handleInlineKey) entry.inlineKeyHandler = undefined;
+      if (entry.onInlineInputChange === setInlineInput) entry.onInlineInputChange = undefined;
+      if (entry.onPromptInputChange === onPromptInputChange) entry.onPromptInputChange = undefined;
+      if (entry.onUserInput === onUserInput) entry.onUserInput = undefined;
+      if (entry.onCursorUpdate === updateInlineAnchor) entry.onCursorUpdate = undefined;
+    };
+  }, [handleInlineKey, onPromptInputChange, onUserInput, sessionId, updateInlineAnchor]);
+
+  const handleInlineKeyCapture = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!handleInlineKey(event.nativeEvent)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [handleInlineKey]);
+
   return (
     <div
+      onKeyDownCapture={handleInlineKeyCapture}
       onPasteCapture={handlePasteCapture}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -752,21 +1213,134 @@ export function Terminal({
       className="relative w-full h-full"
       style={{
         minHeight: "200px",
-        backgroundColor: terminalTheme.surface,
+        backgroundColor: workbench ? terminalTheme.background : terminalTheme.surface,
       }}
     >
       <div
         ref={containerRef}
         className="w-full h-full"
         style={{
-          padding: "14px",
+          padding: workbench ? "16px 18px 20px" : "14px",
           backgroundColor: terminalTheme.background,
-          border: `1px solid ${terminalTheme.border}`,
-          boxShadow: `inset 0 1px 0 ${terminalTheme.foreground}0f`,
+          border: workbench ? "none" : `1px solid ${terminalTheme.border}`,
+          boxShadow: workbench ? "none" : `inset 0 1px 0 ${terminalTheme.foreground}0f`,
           minHeight: "200px",
           overflow: "hidden",
         }}
       />
+      {inlineEligible && inlineAnchor && synchronizedPreview && synchronizedPreviewText && (
+        <div
+          className="pointer-events-none absolute z-30 flex items-baseline overflow-hidden whitespace-pre"
+          style={{
+            left: inlineAnchor.left,
+            top: inlineAnchor.top,
+            maxWidth: "calc(100% - 24px)",
+            color: "oklch(78% 0.10 48)",
+            fontFamily: terminalFont.stack,
+            fontSize: clampedFontSize,
+            lineHeight: 1.42,
+          }}
+          role="status"
+          aria-label={`Synchronized command from ${synchronizedPreview.sourceName}: ${synchronizedPreviewText}`}
+        >
+          <span className="truncate">{synchronizedPreviewText}</span>
+          <span
+            className="ml-2 flex-shrink-0 rounded border px-1 py-0.5 text-[8px] leading-none"
+            style={{
+              borderColor: "oklch(42% 0.06 48)",
+              backgroundColor: "oklch(13% 0.015 48)",
+              color: "oklch(74% 0.08 48)",
+              fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+            }}
+          >
+            synced from {synchronizedPreview.sourceName}
+          </span>
+        </div>
+      )}
+      {inlineEligible && inlineAnchor && ghostSuffix && !inlineMenuOpen && (
+        <div
+          className="pointer-events-none absolute z-30 flex items-baseline whitespace-pre"
+          style={{
+            left: inlineAnchor.left,
+            top: inlineAnchor.top,
+            color: `color-mix(in oklch, ${terminalTheme.foreground} 34%, transparent)`,
+            fontFamily: terminalFont.stack,
+            fontSize: clampedFontSize,
+            lineHeight: 1.42,
+          }}
+          aria-hidden="true"
+        >
+          <span>{ghostSuffix}</span>
+          <span
+            className="ml-2 rounded border px-1 py-0.5 text-[8px] leading-none"
+            style={{
+              borderColor: terminalTheme.border,
+              backgroundColor: terminalTheme.surface,
+              color: `color-mix(in oklch, ${terminalTheme.foreground} 48%, transparent)`,
+              fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+            }}
+          >
+            → accept · ⌃→ word
+          </span>
+        </div>
+      )}
+      {inlineEligible && inlineAnchor && inlineMenuOpen && (
+        <div
+          className="absolute z-40 overflow-hidden rounded-md border shadow-2xl"
+          style={{
+            left: inlineAnchor.menuLeft,
+            top: inlineAnchor.placeAbove ? inlineAnchor.top - 7 : inlineAnchor.top + clampedFontSize * 1.7,
+            transform: inlineAnchor.placeAbove ? "translateY(-100%)" : undefined,
+            width: inlineAnchor.menuWidth,
+            borderColor: terminalTheme.border,
+            backgroundColor: terminalTheme.surface,
+          }}
+          role="listbox"
+          aria-label="Terminal completions"
+        >
+          <div className="flex h-7 items-center justify-between border-b px-2.5 text-[8px] uppercase tracking-[0.12em] text-zinc-600" style={{ borderColor: terminalTheme.border }}>
+            <span>Complete at prompt</span>
+            <span className="normal-case tracking-normal text-zinc-700">Ctrl Space</span>
+          </div>
+          <div className="max-h-56 overflow-y-auto py-1">
+            {inlineLoading && visibleInlineSuggestions.length === 0 ? (
+              <div className="px-3 py-3 text-[10px] text-zinc-600">Looking for completions…</div>
+            ) : visibleInlineSuggestions.length === 0 ? (
+              <div className="px-3 py-3 text-[10px] text-zinc-600">No matching commands, flags, paths, or history.</div>
+            ) : visibleInlineSuggestions.map((suggestion, index) => {
+              const active = index === inlineSelectedIndex;
+              const completed = applyTerminalSuggestion(inlineInput.buffer, suggestion);
+              return (
+                <button
+                  key={suggestion.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  tabIndex={-1}
+                  onMouseMove={() => setInlineSelectedIndex(index)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => acceptInlineSuggestion(suggestion)}
+                  className={`flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left transition-colors ${
+                    active ? "bg-[oklch(20%_0.018_48)]" : "hover:bg-[oklch(17%_0.007_260)]"
+                  }`}
+                >
+                  <span className={`min-w-0 flex-1 truncate font-mono text-[10px] ${active ? "text-zinc-100" : "text-zinc-300"}`}>
+                    {completed}
+                  </span>
+                  <span className="flex-shrink-0 text-[8px] text-zinc-600">
+                    {INLINE_KIND_LABELS[suggestion.kind] || suggestion.kind}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex h-7 items-center gap-3 border-t px-2.5 text-[8px] text-zinc-600" style={{ borderColor: terminalTheme.border }}>
+            <span>↑↓ select</span>
+            <span>↵ insert</span>
+            <span>Esc close</span>
+          </div>
+        </div>
+      )}
       {isDragOver && (
         <div
           className="pointer-events-none absolute inset-0 flex items-center justify-center"

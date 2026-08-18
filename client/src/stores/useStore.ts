@@ -10,6 +10,10 @@ import {
   type TerminalThemeId,
   type WorkspaceBackgroundId,
 } from "../theme/appearance";
+import {
+  deletePersistedCategories,
+  pruneEmptyTitleClusters,
+} from "../utils/canvasLayout";
 
 // localStorage keys for crash-resilient UI state
 const STORAGE_KEY = "openui-desktop-ui-state";
@@ -21,9 +25,28 @@ export interface Agent {
   description: string;
   color: string;
   icon: string;
+  profileId?: string;
+  profileVersion?: number;
+  profileConfig?: {
+    name: string;
+    description: string;
+    command: string;
+    initialPrompt?: string;
+    color: string;
+    icon: string;
+    model?: string;
+    systemPrompt?: string;
+    tools: string[];
+    mcpServers: Array<{ name: string; url?: string; command?: string }>;
+    skills: string[];
+    fallbackCommands: string[];
+    permissionPolicy: "ask" | "allow-edits" | "read-only";
+    metadata: Record<string, string>;
+  };
 }
 
 export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error" | "creating";
+export type TerminalOsc52ClipboardAccess = "deny" | "write_only" | "read_write";
 
 export interface CheckpointSummary {
   id: string;
@@ -80,6 +103,10 @@ export interface AgentSession {
   launchCheckpoint?: CheckpointSummary;
   // Current uncommitted changes in this session's repo
   changeSummary?: AgentChangeSummary;
+  agentProfileId?: string;
+  agentProfileVersion?: number;
+  agentPermissionPolicy?: "ask" | "allow-edits" | "read-only";
+  agentModel?: string;
 }
 
 export interface DeleteToast {
@@ -144,6 +171,10 @@ interface AppState {
   // Config
   launchCwd: string;
   setLaunchCwd: (cwd: string) => void;
+  lastPickedDirectory: string;
+  setLastPickedDirectory: (cwd: string) => void;
+  terminalOsc52ClipboardAccess: TerminalOsc52ClipboardAccess;
+  setTerminalOsc52ClipboardAccess: (access: TerminalOsc52ClipboardAccess) => void;
 
   // Agents
   agents: Agent[];
@@ -181,6 +212,8 @@ interface AppState {
   setCommandPaletteOpen: (open: boolean) => void;
   activityCenterOpen: boolean;
   setActivityCenterOpen: (open: boolean) => void;
+  agentProfilesOpen: boolean;
+  setAgentProfilesOpen: (open: boolean) => void;
   activityLastSeenAt: number;
 
   // Session List Panel
@@ -274,6 +307,10 @@ function loadPersistedUIState(): Partial<AppState> {
           ? parsed.viewMode
           : "canvas";
       return {
+        lastPickedDirectory:
+          typeof parsed.lastPickedDirectory === "string"
+            ? parsed.lastPickedDirectory.slice(0, 4096)
+            : "",
         sessionListOpen: parsed.sessionListOpen ?? true,
         collapsedSessionGroups: Array.isArray(parsed.collapsedSessionGroups)
           ? parsed.collapsedSessionGroups.slice(0, 100)
@@ -349,6 +386,10 @@ export const useStore = create<AppState>((set) => ({
   // Config
   launchCwd: "",
   setLaunchCwd: (cwd) => set({ launchCwd: cwd }),
+  lastPickedDirectory: (persisted.lastPickedDirectory as string) ?? "",
+  setLastPickedDirectory: (cwd) => set({ lastPickedDirectory: cwd }),
+  terminalOsc52ClipboardAccess: "deny",
+  setTerminalOsc52ClipboardAccess: (access) => set({ terminalOsc52ClipboardAccess: access }),
 
   // Agents
   agents: [],
@@ -380,7 +421,13 @@ export const useStore = create<AppState>((set) => ({
 
   // Canvas
   nodes: [],
-  setNodes: (nodes) => set({ nodes }),
+  setNodes: (nodes) => {
+    const pruned = pruneEmptyTitleClusters(nodes);
+    if (pruned.removedCategoryIds.length > 0) {
+      void deletePersistedCategories(pruned.removedCategoryIds);
+    }
+    set({ nodes: pruned.nodes });
+  },
   addNode: (node) => set((state) => ({ nodes: [...state.nodes, node] })),
   updateNode: (nodeId, updates) =>
     set((state) => ({
@@ -389,9 +436,15 @@ export const useStore = create<AppState>((set) => ({
       ),
     })),
   removeNode: (nodeId) =>
-    set((state) => ({
-      nodes: state.nodes.filter((n) => n.id !== nodeId),
-    })),
+    set((state) => {
+      const pruned = pruneEmptyTitleClusters(
+        state.nodes.filter((node) => node.id !== nodeId),
+      );
+      if (pruned.removedCategoryIds.length > 0) {
+        void deletePersistedCategories(pruned.removedCategoryIds);
+      }
+      return { nodes: pruned.nodes };
+    }),
 
   // UI State
   selectedNodeId: null,
@@ -406,6 +459,8 @@ export const useStore = create<AppState>((set) => ({
   setNewSessionForNodeId: (nodeId) => set({ newSessionForNodeId: nodeId }),
   newSessionInitialPrompt: "",
   setNewSessionInitialPrompt: (prompt) => set({ newSessionInitialPrompt: prompt }),
+  agentProfilesOpen: false,
+  setAgentProfilesOpen: (open) => set({ agentProfilesOpen: open }),
   todosPanelOpen: false,
   setTodosPanelOpen: (open) => set({ todosPanelOpen: open }),
   commandPaletteOpen: false,
@@ -605,6 +660,7 @@ useStore.subscribe((state) => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
+        lastPickedDirectory: state.lastPickedDirectory,
         sessionListOpen: state.sessionListOpen,
         collapsedSessionGroups: state.collapsedSessionGroups,
         viewMode: state.viewMode,

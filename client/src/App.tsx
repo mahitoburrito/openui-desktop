@@ -23,6 +23,7 @@ import { MarkdownView } from "./components/MarkdownView";
 import { DiffView } from "./components/DiffView";
 import { BrowserView } from "./components/BrowserView";
 import { NewSessionModal } from "./components/NewSessionModal";
+import { AgentProfileLibrary } from "./components/AgentProfileLibrary";
 import { Header } from "./components/Header";
 import { CanvasControls } from "./components/CanvasControls";
 import { UndoDeleteToast } from "./components/UndoDeleteToast";
@@ -117,6 +118,10 @@ function restoreServerSessionToCanvas(sessionData: any) {
     worktreePaths: sessionData.worktreePaths,
     launchCheckpoint: sessionData.launchCheckpoint,
     changeSummary: sessionData.changeSummary,
+    agentProfileId: sessionData.agentProfileId,
+    agentProfileVersion: sessionData.agentProfileVersion,
+    agentPermissionPolicy: sessionData.agentPermissionPolicy,
+    agentModel: sessionData.agentModel,
   };
 
   addSession(sessionData.nodeId, restoredSession);
@@ -146,6 +151,7 @@ function AppContent() {
     setNodes: setStoreNodes,
     setAgents,
     setLaunchCwd,
+    setTerminalOsc52ClipboardAccess,
     setSelectedNodeId,
     setSidebarOpen,
     updateSession,
@@ -162,6 +168,8 @@ function AppContent() {
     browserPanelOpen,
     browserPanelWidth,
     workspaceBackground,
+    agentProfilesOpen,
+    setAgentProfilesOpen,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -179,6 +187,12 @@ function AppContent() {
   // Record session status changes for the quiet header activity bell.
   useDesktopNotifications();
 
+  const refreshAgents = useCallback(async () => {
+    const response = await fetch("/api/agents");
+    if (!response.ok) throw new Error("Failed to refresh agent profiles");
+    setAgents(await response.json());
+  }, [setAgents]);
+
   // Sync nodes with store
   useEffect(() => {
     setStoreNodes(nodes);
@@ -194,14 +208,22 @@ function AppContent() {
   useEffect(() => {
     fetch("/api/config")
       .then((res) => res.json())
-      .then((config) => setLaunchCwd(config.launchCwd))
+      .then((config) => {
+        setLaunchCwd(config.launchCwd);
+        setTerminalOsc52ClipboardAccess(
+          config.terminalOsc52ClipboardAccess === "write_only" ||
+            config.terminalOsc52ClipboardAccess === "read_write"
+            ? config.terminalOsc52ClipboardAccess
+            : "deny",
+        );
+      })
       .catch(console.error);
 
     fetch("/api/agents")
       .then((res) => res.json())
       .then((agents) => setAgents(agents))
       .catch(console.error);
-  }, [setAgents, setLaunchCwd]);
+  }, [setAgents, setLaunchCwd, setTerminalOsc52ClipboardAccess]);
 
   // Poll for status updates every second to catch any missed WebSocket messages
   useEffect(() => {
@@ -567,21 +589,22 @@ function AppContent() {
         "--workspace-border": workspace.border,
       } as CSSProperties}
     >
-      <Header />
+      {viewMode !== "focus" && <Header />}
 
       <div className="flex-1 relative min-h-0">
         <div
           className="absolute inset-y-0 left-0 min-w-0 transition-[right] duration-300"
           style={{ right: browserDockOpen ? browserPanelWidth : 0 }}
         >
-          {/* Session List Panel (left sidebar) */}
-          <SessionListPanel />
+          <div className="contents" aria-hidden={viewMode === "focus"}>
+            {/* Session List Panel (left sidebar) */}
+            <SessionListPanel />
 
-          {/* Canvas area — shifts right when session list is open */}
-          <div
-            className="absolute inset-0 transition-all duration-300"
-            style={{ left: sessionListOpen ? 280 : 0, background: workspace.canvas }}
-          >
+            {/* Canvas area — shifts right when session list is open */}
+            <div
+              className="absolute inset-0 transition-all duration-300"
+              style={{ left: sessionListOpen ? 280 : 0, background: workspace.canvas }}
+            >
             <ReactFlow
               nodes={nodes}
               edges={[]}
@@ -632,6 +655,7 @@ function AppContent() {
                 </div>
               </div>
             )}
+            </div>
           </div>
 
           {/* Focus Mode overlay */}
@@ -661,6 +685,23 @@ function AppContent() {
         existingSession={newSessionForNodeId ? sessions.get(newSessionForNodeId) : undefined}
         existingNodeId={newSessionForNodeId || undefined}
       />
+
+      {agentProfilesOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+            onClick={() => setAgentProfilesOpen(false)}
+          />
+          <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+            <div className="pointer-events-auto">
+              <AgentProfileLibrary
+                onClose={() => setAgentProfilesOpen(false)}
+                onProfilesChanged={refreshAgents}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       <UndoDeleteToast />
       <AgentActivityCenter />

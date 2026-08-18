@@ -7,6 +7,8 @@ import { autoUpdater } from "electron-updater";
 import { initPRBE, cleanupPRBE } from "./prbe";
 import { destroyBrowserView, registerBrowserViewIpc } from "./browserView";
 import { startMacAutoUpdater, installPendingUpdateOnQuit } from "./macUpdater";
+import { safeWebNavigationUrl } from "./externalNavigation";
+import { destroyClipboardIpc, registerClipboardIpc } from "./clipboard";
 
 // Load built-in default config (bundled API keys for production)
 function loadDefaultConfig() {
@@ -53,6 +55,11 @@ const autoUpdateEnabled =
   (isReleaseChannelBuild() || process.env.OPENUI_ENABLE_AUTO_UPDATE === "true");
 
 function createWindow() {
+  const appUrl = isDev
+    ? `http://localhost:${process.env.VITE_PORT || 5173}`
+    : `http://localhost:${serverPort}`;
+  const appOrigin = new URL(appUrl).origin;
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -69,21 +76,34 @@ function createWindow() {
     },
   });
 
-  // Open external links in default browser
+  // Renderer and terminal output are untrusted at this privileged boundary.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    const target = safeWebNavigationUrl(url);
+    if (target) {
+      void shell.openExternal(target).catch((error) => {
+        console.error("[electron] Failed to open external URL:", error);
+      });
+    }
     return { action: "deny" };
   });
+  const preventUnsafeAppNavigation = (event: { preventDefault(): void }, url: string) => {
+    const target = safeWebNavigationUrl(url);
+    if (!target || new URL(target).origin !== appOrigin) {
+      event.preventDefault();
+    }
+  };
+  mainWindow.webContents.on("will-navigate", preventUnsafeAppNavigation);
+  mainWindow.webContents.on("will-redirect", preventUnsafeAppNavigation);
   registerBrowserViewIpc(mainWindow);
+  registerClipboardIpc();
 
   if (isDev) {
     // In dev mode, load from Vite dev server
-    const vitePort = process.env.VITE_PORT || 5173;
-    mainWindow.loadURL(`http://localhost:${vitePort}`);
+    mainWindow.loadURL(appUrl);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     // In production, load from the embedded server
-    mainWindow.loadURL(`http://localhost:${serverPort}`);
+    mainWindow.loadURL(appUrl);
   }
 
   mainWindow.on("close", (e) => {
@@ -181,6 +201,7 @@ app.on("window-all-closed", () => {
 
 app.on("will-quit", () => {
   destroyBrowserView();
+  destroyClipboardIpc();
   cleanupPRBE();
   installPendingUpdateOnQuit();
   process.emit("SIGINT" as any);

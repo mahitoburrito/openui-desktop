@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { createServer, IncomingMessage } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -13,16 +12,55 @@ import {
   restoreSessions,
   scheduleSessionTitleGeneration,
   setServerPort,
+  getTerminalSnapshot,
+  noteTerminalInput,
+  writeTerminalData,
 } from "./services/sessionManager";
-import { saveState } from "./services/persistence";
+import { saveState, terminalReplayText } from "./services/persistence";
+import {
+  parseTerminalClientMessage,
+  sendTerminalMessage,
+  TerminalClientMessageError,
+  TerminalInputRateLimiter,
+  TERMINAL_WS_MAX_PAYLOAD_BYTES,
+} from "./services/terminalTransport";
+import { startTerminalControl } from "./services/terminalControl";
 
 const PREFERRED_PORT = Number(process.env.PORT) || 6968;
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
+let boundPort = PREFERRED_PORT;
+
+function loopbackHost(value: string | undefined, port: number): boolean {
+  if (!value) return false;
+  return value === `localhost:${port}` || value === `127.0.0.1:${port}`;
+}
+
+function trustedBrowserOrigin(value: string | undefined, port: number): boolean {
+  if (!value) return true;
+  try {
+    const origin = new URL(value);
+    if (origin.protocol !== "http:" && origin.protocol !== "https:") return false;
+    if (origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1") return false;
+    const originPort = Number(origin.port || (origin.protocol === "https:" ? 443 : 80));
+    const vitePort = Number(process.env.VITE_PORT || 5173);
+    return originPort === port || originPort === vitePort;
+  } catch {
+    return false;
+  }
+}
 
 // Hono app for HTTP routes
 const app = new Hono();
-app.use("*", cors());
+app.use("*", async (c, next) => {
+  if (!loopbackHost(c.req.header("host"), boundPort)) {
+    return c.json({ error: "Invalid local Host header" }, 403);
+  }
+  if (!trustedBrowserOrigin(c.req.header("origin"), boundPort)) {
+    return c.json({ error: "Untrusted browser origin" }, 403);
+  }
+  await next();
+});
 app.route("/api", apiRoutes);
 app.route("/api/prbe", prbeRoutes);
 
@@ -65,6 +103,7 @@ function tryListen(app: Hono, port: number): Promise<{ server: any; port: number
     const server = serve({
       fetch: app.fetch,
       port,
+      hostname: "127.0.0.1",
     }, (info) => {
       resolve({ server, port: info.port });
     });
@@ -108,19 +147,52 @@ export async function startServer(): Promise<number> {
   }
 
   setServerPort(actualPort);
+  boundPort = actualPort;
+  try {
+    const control = await startTerminalControl();
+    if (control) log(`[control] Listening on ${control.record.socketPath}`);
+  } catch (error) {
+    if (!QUIET) console.warn("[control] Local control unavailable:", error);
+  }
   log(`[server] Running on http://localhost:${actualPort}`);
   log(`[server] Launch directory: ${process.env.LAUNCH_CWD || process.cwd()}`);
 
   return new Promise((resolve) => {
     // Attach WebSocket server to the same HTTP server
     const httpServer = (server as any).server || server;
-    const wss = new WebSocketServer({ server: httpServer });
+    const wss = new WebSocketServer({
+      server: httpServer,
+      maxPayload: TERMINAL_WS_MAX_PAYLOAD_BYTES,
+      perMessageDeflate: false,
+    });
+    const responsiveClients = new WeakSet<WebSocket>();
+    const heartbeat = setInterval(() => {
+      for (const client of wss.clients) {
+        if (!responsiveClients.has(client)) {
+          client.terminate();
+          continue;
+        }
+        responsiveClients.delete(client);
+        try { client.ping(); } catch { client.terminate(); }
+      }
+    }, 30_000);
+    heartbeat.unref();
+    wss.once("close", () => clearInterval(heartbeat));
 
     wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       const parsedUrl = parseUrl(req.url || "", true);
-      const sessionId = parsedUrl.query.sessionId as string;
+      const sessionId = typeof parsedUrl.query.sessionId === "string" ? parsedUrl.query.sessionId : "";
 
-      if (!sessionId) {
+      if (!loopbackHost(req.headers.host, actualPort) || !trustedBrowserOrigin(req.headers.origin, actualPort)) {
+        ws.close(1008, "Untrusted local terminal client");
+        return;
+      }
+
+      if (parsedUrl.pathname !== "/ws") {
+        ws.close(1008, "Invalid terminal path");
+        return;
+      }
+      if (!sessionId || sessionId.length > 512 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(sessionId)) {
         ws.close(1008, "Session ID required");
         return;
       }
@@ -133,32 +205,60 @@ export async function startServer(): Promise<number> {
 
       log(`[ws] Connected to ${sessionId}`);
       session.clients.add(ws);
+      responsiveClients.add(ws);
+      ws.on("pong", () => responsiveClients.add(ws));
+      const inputRateLimiter = new TerminalInputRateLimiter();
+      let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+      const appendTitleInput = (value: string) => {
+        session.firstInputBuffer = `${session.firstInputBuffer || ""}${value}`.slice(-12_000);
+      };
 
-      // Send buffered output or restoration message
-      if (session.outputBuffer.length > 0 && !session.isRestored && session.pty) {
-        const history = session.outputBuffer.join("");
-        ws.send(JSON.stringify({ type: "output", data: history }));
-      } else if (session.isRestored || !session.pty) {
-        ws.send(JSON.stringify({
+      // Rebuild scrollback as inert text. Persisted terminal controls are never
+      // replayed into a new renderer, which prevents clipboard/title escape
+      // sequences from being re-executed after reconnect or restoration.
+      if (session.outputBuffer.length > 0) {
+        const replay = terminalReplayText(session.outputBuffer, Boolean(session.outputBufferTruncated));
+        if (replay.data) sendTerminalMessage(ws, { type: "output", data: replay.data });
+      }
+      if (session.isRestored || !session.pty) {
+        sendTerminalMessage(ws, {
           type: "output",
-          data: "\x1b[38;5;245mSession was disconnected.\r\nClick \"Spawn Fresh\" to start a new session.\x1b[0m\r\n"
-        }));
+          data: "\r\n\x1b[38;5;245mSaved scrollback restored. The process is disconnected.\r\nClick \"Spawn Fresh\" to start it again.\x1b[0m\r\n"
+        });
       }
 
-      ws.send(JSON.stringify({
+      sendTerminalMessage(ws, {
         type: "status",
         status: session.status,
         isRestored: session.isRestored,
-      }));
+      });
 
-      ws.on("message", (message: Buffer) => {
+      const terminalSnapshot = getTerminalSnapshot(sessionId, false);
+      if (terminalSnapshot) {
+        sendTerminalMessage(ws, { type: "terminalState", ...terminalSnapshot });
+      }
+
+      ws.on("message", (message, isBinary) => {
         try {
-          const msg = JSON.parse(message.toString());
+          const msg = parseTerminalClientMessage(message, isBinary);
           switch (msg.type) {
             case "input":
+              if (!inputRateLimiter.consume(msg.bytes)) {
+                ws.close(1008, "Terminal input rate exceeded");
+                break;
+              }
               if (session.pty) {
-                session.pty.write(msg.data);
-                session.lastInputTime = Date.now();
+                if (!writeTerminalData(sessionId, msg.data, {
+                  kind: "user",
+                  proxySafe: true,
+                  beforeWrite: () => {
+                    noteTerminalInput(sessionId, msg.data);
+                    session.lastInputTime = Date.now();
+                  },
+                })) {
+                  ws.close(1013, "Terminal input queue is full");
+                  break;
+                }
 
                 // Keep auto-generated titles fresh from submitted terminal prompts.
                 // Claude's UserPromptSubmit hook is better structured; this is the
@@ -168,7 +268,7 @@ export async function startServer(): Promise<number> {
                 }
                 if (msg.data.includes("\r") || msg.data.includes("\n")) {
                   const remaining = msg.data.split(/[\r\n]/)[0];
-                  session.firstInputBuffer += remaining;
+                  appendTitleInput(remaining);
                   const query = session.firstInputBuffer.trim();
                   if (query.length > 0) {
                     scheduleSessionTitleGeneration(sessionId, query);
@@ -178,26 +278,52 @@ export async function startServer(): Promise<number> {
                   if (msg.data === "\x7f" || msg.data === "\b") {
                     session.firstInputBuffer = session.firstInputBuffer.slice(0, -1);
                   } else if (msg.data.length === 1 && msg.data.charCodeAt(0) >= 32) {
-                    session.firstInputBuffer += msg.data;
+                    appendTitleInput(msg.data);
                   } else if (msg.data.length > 1 && !msg.data.startsWith("\x1b")) {
-                    session.firstInputBuffer += msg.data;
+                    appendTitleInput(msg.data);
                   }
                 }
               }
               break;
-            case "resize":
-              if (session.pty) {
-                session.pty.resize(msg.cols, msg.rows);
+            case "terminalResponse":
+              if (!inputRateLimiter.consume(msg.bytes)) {
+                ws.close(1008, "Terminal input rate exceeded");
+                break;
               }
+              if (session.pty && !writeTerminalData(sessionId, msg.data, {
+                kind: "terminal-response",
+                proxySafe: true,
+              })) {
+                ws.close(1013, "Terminal input queue is full");
+              }
+              break;
+            case "resize":
+              session.terminalCols = msg.cols;
+              session.terminalRows = msg.rows;
+              if (resizeTimer) clearTimeout(resizeTimer);
+              resizeTimer = setTimeout(() => {
+                resizeTimer = undefined;
+                if (session.pty) session.pty.resize(session.terminalCols, session.terminalRows);
+              }, 16);
               break;
           }
         } catch (e) {
-          // Probe Agent Error Log Trigger
-          if (!QUIET) console.error("[PRBE_ERROR_vbFKwR] Error processing message:", e);
+          if (e instanceof TerminalClientMessageError) {
+            ws.close(e.closeCode, e.message);
+          } else {
+            // Probe Agent Error Log Trigger
+            if (!QUIET) console.error("[PRBE_ERROR_vbFKwR] Error processing message:", e);
+            ws.close(1011, "Terminal transport failed");
+          }
         }
       });
 
+      ws.on("error", (error) => {
+        if (!QUIET) console.warn(`[ws] Terminal connection error for ${sessionId}:`, error.message);
+      });
+
       ws.on("close", () => {
+        if (resizeTimer) clearTimeout(resizeTimer);
         session.clients.delete(ws);
         log(`[ws] Disconnected from ${sessionId}`);
       });

@@ -1,4 +1,5 @@
 import { BrowserWindow, WebContentsView, ipcMain, shell } from "electron";
+import { normalizeWebNavigationInput, safeWebNavigationUrl } from "./externalNavigation";
 
 interface BrowserBounds {
   x: number;
@@ -22,16 +23,6 @@ const CHANNELS = [
   "browser:hide",
   "browser:close",
 ];
-
-function normalizeUrl(input: string): string {
-  const url = input.trim();
-  if (!url) return "";
-  if (/^https?:\/\//i.test(url)) return url;
-  if (/^localhost(:\d+)?/i.test(url) || /^\d+\.\d+\.\d+\.\d+/.test(url)) {
-    return `http://${url}`;
-  }
-  return `https://${url}`;
-}
 
 function emitState() {
   if (!host || host.isDestroyed() || !view) return;
@@ -58,13 +49,25 @@ function ensureView(): WebContentsView {
 
   if (host) host.contentView.addChildView(view);
   const wc = view.webContents;
-  wc.on("did-navigate", emitState);
+  wc.on("did-navigate", (_event, url) => {
+    currentUrl = safeWebNavigationUrl(url) || "";
+    emitState();
+  });
   wc.on("did-navigate-in-page", emitState);
   wc.on("did-start-loading", emitState);
   wc.on("did-stop-loading", emitState);
   wc.on("page-title-updated", emitState);
+  const preventUnsafeNavigation = (event: { preventDefault(): void }, url: string) => {
+    if (!safeWebNavigationUrl(url)) event.preventDefault();
+  };
+  wc.on("will-navigate", preventUnsafeNavigation);
+  wc.on("will-redirect", preventUnsafeNavigation);
   wc.setWindowOpenHandler(({ url }) => {
-    wc.loadURL(url).catch(() => shell.openExternal(url));
+    const target = safeWebNavigationUrl(url);
+    if (target) {
+      currentUrl = target;
+      void wc.loadURL(target).catch(() => shell.openExternal(target).catch(() => undefined));
+    }
     return { action: "deny" };
   });
 
@@ -95,8 +98,8 @@ export function registerBrowserViewIpc(window: BrowserWindow) {
   host = window;
   removeExistingHandlers();
 
-  ipcMain.handle("browser:open", async (_event, url: string) => {
-    const target = normalizeUrl(url || currentUrl);
+  ipcMain.handle("browser:open", async (_event, url: unknown) => {
+    const target = normalizeWebNavigationInput(url);
     if (!target) return { ok: false };
     const browserView = ensureView();
     browserView.setVisible(true);
@@ -115,8 +118,8 @@ export function registerBrowserViewIpc(window: BrowserWindow) {
     return { ok: true };
   });
 
-  ipcMain.handle("browser:navigate", async (_event, url: string) => {
-    const target = normalizeUrl(url);
+  ipcMain.handle("browser:navigate", async (_event, url: unknown) => {
+    const target = normalizeWebNavigationInput(url);
     if (!target) return { ok: false };
     const browserView = ensureView();
     browserView.setVisible(true);

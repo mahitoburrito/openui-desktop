@@ -1,14 +1,56 @@
-import { exec as execCb } from "child_process";
-import { promisify } from "util";
 import * as pty from "node-pty";
-import { existsSync, mkdirSync, readdirSync } from "fs";
-import { join, basename } from "path";
-import { homedir } from "os";
-import type { Session, DetectedRepo } from "../types";
-import { loadBuffer, loadState, saveState } from "./persistence";
+import {
+  accessSync,
+  chmodSync,
+  constants as fsConstants,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  realpathSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
+import { join, basename, delimiter, isAbsolute, resolve } from "path";
+import { homedir, tmpdir } from "os";
+import { createHash, randomBytes } from "crypto";
+import type {
+  Session,
+  DetectedRepo,
+  TerminalCommandBlock,
+  TerminalLifecycleSnapshot,
+  TerminalShellCapabilities,
+  TerminalShellCompletionEntry,
+  TerminalShellEnvironment,
+} from "../types";
+import {
+  deletePersistedSession,
+  loadBuffer,
+  loadState,
+  loadTerminalBlocks,
+  saveState,
+  saveTerminalBlocks,
+} from "./persistence";
 import { generateSessionTitle } from "./titleGenerator";
-
-const execAsync = promisify(execCb);
+import { TerminalLifecycle } from "./terminalLifecycle";
+import { terminalFind, type TerminalFindBlockIndexEntry } from "./terminalFind";
+import { sendTerminalMessage } from "./terminalTransport";
+import {
+  decorateTerminalPtyWrite,
+  TerminalPtyWriteCoordinator,
+  type TerminalPtyWriteOptions,
+} from "./terminalPtyWrites";
+import {
+  terminalCommandQueue,
+  TerminalCommandQueueError,
+  type TerminalCommandQueueSnapshot,
+  type TerminalQueuedCommand,
+} from "./terminalCommandQueue";
+import { execGit } from "./gitRuntime";
+import { terminalRemoteAssetVersion, terminalRemoteManager } from "./terminalRemote";
+import { terminalWorkspace, TerminalWorkspaceError } from "./terminalWorkspace";
 
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
@@ -16,6 +58,95 @@ const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 
 export const DEFAULT_PTY_COLS = 80;
 export const DEFAULT_PTY_ROWS = 24;
+
+const POSIX_FALLBACK_SHELLS = ["/bin/zsh", "/bin/bash", "/bin/fish", "/bin/sh"] as const;
+
+function executableFile(pathOrCommand: string, pathValue: string): string | null {
+  if (!pathOrCommand) return null;
+  if (!isAbsolute(pathOrCommand)) return executableOnPath(pathOrCommand, pathValue);
+  try {
+    accessSync(pathOrCommand, fsConstants.X_OK);
+    const stat = lstatSync(pathOrCommand);
+    return stat.isFile() || stat.isSymbolicLink() ? pathOrCommand : null;
+  } catch {
+    return null;
+  }
+}
+
+function loginShellArgs(shell: string): string[] {
+  return basename(shell).toLowerCase() === "sh" ? ["-l"] : ["--login"];
+}
+
+export function resolvePosixShellLaunch(
+  preferredShell: string | undefined,
+  pathValue: string,
+  fallbackShells: readonly string[] = POSIX_FALLBACK_SHELLS,
+): { shell: string; args: string[] } | null {
+  const preferred = preferredShell ? executableFile(preferredShell, pathValue) : null;
+  if (preferred) return { shell: preferred, args: loginShellArgs(preferred) };
+  for (const candidate of fallbackShells) {
+    const resolved = executableFile(candidate, pathValue);
+    if (resolved) return { shell: resolved, args: loginShellArgs(resolved) };
+  }
+  return null;
+}
+
+export function getDefaultShellLaunch(): { shell: string; args: string[] } {
+  if (process.platform === "win32") {
+    return { shell: "powershell.exe", args: ["-NoLogo"] };
+  }
+  const launch = resolvePosixShellLaunch(process.env.SHELL, process.env.PATH || "");
+  if (!launch) {
+    throw new Error(
+      `No executable login shell was found (checked SHELL, ${POSIX_FALLBACK_SHELLS.join(", ")})`,
+    );
+  }
+  return launch;
+}
+
+export function getPtyEnvironment(
+  sessionId: string,
+  profile?: {
+    id?: string;
+    version?: number;
+    permissionPolicy?: string;
+    allowedTools?: string[];
+    manifestPath?: string;
+    model?: string;
+  },
+): Record<string, string> {
+  // NO_COLOR makes agent CLIs monochrome even though xterm supports full ANSI.
+  const { NO_COLOR: _noColor, ...rest } = process.env;
+  const shimEnvironment = prepareShellShimEnvironment(sessionId, rest as Record<string, string | undefined>);
+  return {
+    ...rest,
+    ...shimEnvironment,
+    TERM: "xterm-256color",
+    TERM_PROGRAM: "OpenUI",
+    TERM_PROGRAM_VERSION: process.env.npm_package_version || "dev",
+    COLORTERM: "truecolor",
+    FORCE_COLOR: "1",
+    OPENUI_SESSION_ID: sessionId,
+    OPENUI_PORT: String(serverPort),
+    ...(profile?.id ? { OPENUI_AGENT_PROFILE_ID: profile.id } : {}),
+    ...(profile?.version ? { OPENUI_AGENT_PROFILE_VERSION: String(profile.version) } : {}),
+    ...(profile?.permissionPolicy ? { OPENUI_PERMISSION_POLICY: profile.permissionPolicy } : {}),
+    ...(profile?.allowedTools?.length ? { OPENUI_ALLOWED_TOOLS: profile.allowedTools.join(",") } : {}),
+    ...(profile?.manifestPath ? { OPENUI_AGENT_PROFILE_PATH: profile.manifestPath } : {}),
+    ...(profile?.model ? { OPENUI_AGENT_MODEL: profile.model } : {}),
+  } as Record<string, string>;
+}
+
+export function getSessionPtyEnvironment(sessionId: string, session: Session): Record<string, string> {
+  return getPtyEnvironment(sessionId, {
+    id: session.agentProfileId,
+    version: session.agentProfileVersion,
+    permissionPolicy: session.agentPermissionPolicy,
+    allowedTools: session.agentAllowedTools,
+    manifestPath: session.agentRuntimeManifestPath,
+    model: session.agentModel,
+  });
+}
 
 // Get the OpenUI plugin directory path
 function getPluginDir(): string | null {
@@ -51,7 +182,8 @@ function getPluginDir(): string | null {
 
 // Inject --plugin-dir flag for Claude commands if plugin is available
 export function injectPluginDir(command: string, agentId: string): string {
-  if (agentId !== "claude") return command;
+  const commandName = command.trim().split(/\s+/)[0];
+  if (agentId !== "claude" && commandName !== "claude") return command;
 
   const pluginDir = getPluginDir();
   if (!pluginDir) return command;
@@ -72,7 +204,7 @@ export function injectPluginDir(command: string, agentId: string): string {
 // Get git branch for a directory
 async function getGitBranch(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd });
+    const { stdout } = await execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
     return stdout.trim();
   } catch {
     return null;
@@ -82,7 +214,7 @@ async function getGitBranch(cwd: string): Promise<string | null> {
 // Get git root directory
 async function getGitRoot(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync("git rev-parse --show-toplevel", { cwd });
+    const { stdout } = await execGit(["rev-parse", "--show-toplevel"], { cwd });
     return stdout.trim();
   } catch {
     return null;
@@ -92,7 +224,7 @@ async function getGitRoot(cwd: string): Promise<string | null> {
 // Get the main worktree (mother repo) path
 async function getMainWorktree(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync("git worktree list --porcelain", { cwd });
+    const { stdout } = await execGit(["worktree", "list", "--porcelain"], { cwd });
     const match = stdout.match(/^worktree (.+)$/m);
     if (match) {
       return match[1];
@@ -101,6 +233,16 @@ async function getMainWorktree(cwd: string): Promise<string | null> {
     // Not a git repo
   }
   return null;
+}
+
+async function validGitBranchName(cwd: string, branchName: string): Promise<boolean> {
+  if (!branchName || branchName.length > 255 || /[\0\r\n]/.test(branchName)) return false;
+  try {
+    await execGit(["check-ref-format", "--branch", branchName], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Create a git worktree for a branch
@@ -115,6 +257,12 @@ export async function createWorktree(params: {
   if (!gitRoot) {
     return { success: false, error: "Not a git repository" };
   }
+  if (
+    !(await validGitBranchName(gitRoot, branchName)) ||
+    !(await validGitBranchName(gitRoot, baseBranch))
+  ) {
+    return { success: false, error: "Invalid Git branch name" };
+  }
 
   const repoName = basename(gitRoot);
   const worktreesDir = join(gitRoot, "..", `${repoName}-worktrees`);
@@ -128,7 +276,7 @@ export async function createWorktree(params: {
 
   if (existsSync(worktreePath)) {
     try {
-      const { stdout } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: worktreePath });
+      const { stdout } = await execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath });
       const currentBranch = stdout.trim();
       if (currentBranch === branchName) {
         return { success: true, worktreePath };
@@ -140,7 +288,7 @@ export async function createWorktree(params: {
   }
 
   try {
-    await execAsync("git fetch origin", { cwd: gitRoot });
+    await execGit(["fetch", "origin"], { cwd: gitRoot });
   } catch {
     // Ignore fetch errors
   }
@@ -148,16 +296,16 @@ export async function createWorktree(params: {
   try {
     // Try local branch first
     try {
-      await execAsync(`git rev-parse --verify ${branchName}`, { cwd: gitRoot });
-      await execAsync(`git worktree add "${worktreePath}" ${branchName}`, { cwd: gitRoot });
+      await execGit(["rev-parse", "--verify", `refs/heads/${branchName}`], { cwd: gitRoot });
+      await execGit(["worktree", "add", worktreePath, branchName], { cwd: gitRoot });
     } catch {
       // Try remote branch
       try {
-        await execAsync(`git rev-parse --verify origin/${branchName}`, { cwd: gitRoot });
-        await execAsync(`git worktree add --track -b ${branchName} "${worktreePath}" origin/${branchName}`, { cwd: gitRoot });
+        await execGit(["rev-parse", "--verify", `refs/remotes/origin/${branchName}`], { cwd: gitRoot });
+        await execGit(["worktree", "add", "--track", "-b", branchName, worktreePath, `origin/${branchName}`], { cwd: gitRoot });
       } catch {
         // Create new branch from base
-        await execAsync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, { cwd: gitRoot });
+        await execGit(["worktree", "add", "-b", branchName, worktreePath, `origin/${baseBranch}`], { cwd: gitRoot });
       }
     }
 
@@ -172,7 +320,7 @@ export async function createWorktree(params: {
 // Preserve working state by stashing uncommitted changes
 async function preserveWorkingState(gitRoot: string): Promise<{ method: 'stash' | 'commit' | 'clean'; stashRef?: string }> {
   try {
-    const { stdout } = await execAsync("git status --porcelain", { cwd: gitRoot });
+    const { stdout } = await execGit(["status", "--porcelain"], { cwd: gitRoot });
     const statusOutput = stdout.trim();
 
     if (!statusOutput) {
@@ -181,13 +329,13 @@ async function preserveWorkingState(gitRoot: string): Promise<{ method: 'stash' 
 
     const stashMsg = `openui-preserve-${Date.now()}`;
     try {
-      await execAsync(`git stash push -m "${stashMsg}" --include-untracked`, { cwd: gitRoot });
+      await execGit(["stash", "push", "-m", stashMsg, "--include-untracked"], { cwd: gitRoot });
       log(`[worktree] Stashed changes in ${gitRoot}: ${stashMsg}`);
       return { method: 'stash', stashRef: stashMsg };
     } catch {
       try {
-        await execAsync('git add -A', { cwd: gitRoot });
-        await execAsync('git commit -am "openui: preserve WIP [skip ci]"', { cwd: gitRoot });
+        await execGit(["add", "-A"], { cwd: gitRoot });
+        await execGit(["commit", "-am", "openui: preserve WIP [skip ci]"], { cwd: gitRoot });
         log(`[worktree] Auto-committed changes in ${gitRoot}`);
         return { method: 'commit' };
       } catch {
@@ -221,13 +369,13 @@ export async function scanReposInDirectory(dirPath: string): Promise<DetectedRep
 
       let dirty = false;
       try {
-        const { stdout } = await execAsync("git status --porcelain", { cwd: entryPath });
+        const { stdout } = await execGit(["status", "--porcelain"], { cwd: entryPath });
         dirty = stdout.trim().length > 0;
       } catch {}
 
       let defaultBranch = "main";
       try {
-        const { stdout } = await execAsync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: entryPath });
+        const { stdout } = await execGit(["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd: entryPath });
         defaultBranch = stdout.trim().replace("refs/remotes/origin/", "");
       } catch {}
 
@@ -289,12 +437,1271 @@ export async function createMultiRepoWorktrees(params: {
   return { worktreePaths, stashRefs, errors };
 }
 
-const MAX_BUFFER_SIZE = 5000;
+const MAX_BUFFER_CHUNKS = 5000;
+const MAX_OUTPUT_BUFFER_CHARS = 2_000_000;
 const TITLE_PROMPT_HISTORY_LIMIT = 8;
 const TITLE_UPDATE_DEBOUNCE_MS = 1200;
+const INITIAL_MULTILINE_READY_TIMEOUT_MS = 10_000;
+const INITIAL_MULTILINE_READY_POLL_MS = 25;
 
 export const sessions = new Map<string, Session>();
+const terminalLifecycles = new Map<string, TerminalLifecycle>();
+const terminalPtyWriters = new Map<string, { pty: pty.IPty; writer: TerminalPtyWriteCoordinator }>();
 const titleGenerationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function replaceTerminalPtyWriter(sessionId: string, session: Session, ptyProcess: pty.IPty) {
+  terminalPtyWriters.get(sessionId)?.writer.dispose();
+  terminalPtyWriters.set(sessionId, {
+    pty: ptyProcess,
+    writer: new TerminalPtyWriteCoordinator(
+      ptyProcess,
+      () => sessions.get(sessionId) === session && session.pty === ptyProcess,
+    ),
+  });
+}
+
+function disposeTerminalPtyWriter(sessionId: string, ptyProcess?: pty.IPty) {
+  const current = terminalPtyWriters.get(sessionId);
+  if (!current || (ptyProcess && current.pty !== ptyProcess)) return;
+  current.writer.dispose();
+  terminalPtyWriters.delete(sessionId);
+}
+
+function activeCommandUsesProxyPty(sessionId: string, session: Session): boolean {
+  const snapshot = terminalLifecycleFor(sessionId, session).snapshot(false);
+  const active = snapshot.activeBlockId
+    ? snapshot.blocks.find((block) => block.id === snapshot.activeBlockId)
+    : undefined;
+  return /^(?:sudo\s+)?(?:ssh|mosh|docker\s+exec|podman\s+exec|kubectl\s+exec)\b/i.test(
+    active?.command.trim() || "",
+  );
+}
+
+export function writeTerminalData(
+  sessionId: string,
+  data: string,
+  options: TerminalPtyWriteOptions & {
+    proxySafe?: boolean;
+    bracketedPaste?: boolean;
+    clearLine?: boolean;
+    submit?: boolean;
+  } = {},
+): boolean {
+  const session = sessions.get(sessionId);
+  const current = terminalPtyWriters.get(sessionId);
+  if (!session?.pty || !current || current.pty !== session.pty) return false;
+  const {
+    proxySafe,
+    bracketedPaste,
+    clearLine,
+    submit,
+    ...writeOptions
+  } = options;
+  const payload = decorateTerminalPtyWrite(data, {
+    bracketedPaste: Boolean(
+      bracketedPaste && terminalLifecycleFor(sessionId, session).isBracketedPasteEnabled()
+    ),
+    clearLine,
+    submit,
+  });
+  const proxyDelay = proxySafe && Buffer.byteLength(payload, "utf8") > 4_096 &&
+    activeCommandUsesProxyPty(sessionId, session)
+    ? 50
+    : undefined;
+  const accepted = current.writer.enqueue(payload, {
+    ...writeOptions,
+    interChunkDelayMs: writeOptions.interChunkDelayMs ?? proxyDelay,
+  });
+  if (!accepted) logError(`[terminal-write] Rejected ${writeOptions.kind || "user"} write for ${sessionId}`);
+  return accepted;
+}
+
+export function getTerminalWriteQueueState(sessionId: string): { bytes: number; writes: number } {
+  const writer = terminalPtyWriters.get(sessionId)?.writer;
+  return { bytes: writer?.pendingBytes || 0, writes: writer?.pendingWrites || 0 };
+}
+
+function appendOutputBuffer(session: Session, data: string) {
+  if (!data) return;
+  if (!Number.isFinite(session.outputBufferChars)) {
+    session.outputBufferChars = session.outputBuffer.reduce((total, chunk) => total + chunk.length, 0);
+  }
+  session.outputBuffer.push(data);
+  session.outputBufferChars += data.length;
+
+  while (session.outputBuffer.length > MAX_BUFFER_CHUNKS) {
+    const removed = session.outputBuffer.shift();
+    if (removed) session.outputBufferChars -= removed.length;
+    session.outputBufferTruncated = true;
+  }
+  while (session.outputBufferChars > MAX_OUTPUT_BUFFER_CHARS && session.outputBuffer.length > 0) {
+    const overflow = session.outputBufferChars - MAX_OUTPUT_BUFFER_CHARS;
+    const first = session.outputBuffer[0];
+    if (first.length > overflow) {
+      session.outputBuffer[0] = first.slice(overflow);
+      session.outputBufferChars -= overflow;
+    } else {
+      session.outputBuffer.shift();
+      session.outputBufferChars -= first.length;
+    }
+    session.outputBufferTruncated = true;
+  }
+}
+
+function terminalLifecycleFor(sessionId: string, session: Session): TerminalLifecycle {
+  let lifecycle = terminalLifecycles.get(sessionId);
+  if (!lifecycle) {
+    lifecycle = new TerminalLifecycle(
+      sessionId,
+      session.terminalBlocks,
+      session.cwd,
+    );
+    terminalLifecycles.set(sessionId, lifecycle);
+  }
+  return lifecycle;
+}
+
+function terminalBlockSummary(snapshot: TerminalLifecycleSnapshot) {
+  return {
+    ...snapshot,
+    blocks: snapshot.blocks.map(({ output: _output, ...block }) => block),
+  };
+}
+
+function broadcastTerminalState(sessionId: string, session: Session) {
+  const lifecycle = terminalLifecycleFor(sessionId, session);
+  const message = {
+    type: "terminalState",
+    ...terminalBlockSummary(lifecycle.snapshot(false)),
+  };
+  for (const client of session.clients) sendTerminalMessage(client, message);
+}
+
+function broadcastAgentStatus(session: Session, status: Session["status"]) {
+  for (const client of session.clients) {
+    sendTerminalMessage(client, {
+      type: "status",
+      status,
+      isRestored: session.isRestored,
+    });
+  }
+}
+
+export function getTerminalSnapshot(
+  sessionId: string,
+  includeOutput = false,
+): TerminalLifecycleSnapshot | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  return terminalLifecycleFor(sessionId, session).snapshot(includeOutput);
+}
+
+export function getTerminalRootWorkingDirectory(sessionId: string): string | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  return terminalLifecycleFor(sessionId, session).rootWorkingDirectory();
+}
+
+export type TerminalSplitWorkingDirectorySource =
+  | "explicit"
+  | "latest"
+  | "local-root"
+  | "stored"
+  | "home";
+
+export function resolveTerminalSplitWorkingDirectory(
+  sessionId: string,
+  requested?: unknown,
+): { cwd: string; source: TerminalSplitWorkingDirectorySource } {
+  const existingDirectory = (value: unknown): string | undefined => {
+    if (typeof value !== "string" || !isAbsolute(value) || !existsSync(value)) return undefined;
+    try {
+      if (!lstatSync(value).isDirectory()) return undefined;
+      return realpathSync(value);
+    } catch {
+      return undefined;
+    }
+  };
+  if (requested !== undefined) {
+    const cwd = existingDirectory(requested);
+    if (!cwd) {
+      throw new TerminalWorkspaceError("Split panes require an existing absolute cwd");
+    }
+    return { cwd, source: "explicit" };
+  }
+  const session = sessions.get(sessionId);
+  if (!session || session.pendingDelete) {
+    throw new TerminalWorkspaceError("Source session was not found", 404);
+  }
+  const snapshot = getTerminalSnapshot(sessionId, false);
+  const remote = terminalRemoteManager.snapshot(sessionId);
+  if (remote?.target && snapshot && snapshot.shellDepth > 0) {
+    const localRoot = getTerminalRootWorkingDirectory(sessionId);
+    const cwd = existingDirectory(localRoot);
+    if (cwd) return { cwd, source: "local-root" };
+  } else if (snapshot) {
+    const cwd = existingDirectory(snapshot.currentCwd);
+    if (cwd) return { cwd, source: "latest" };
+  }
+  const stored = existingDirectory(session.cwd);
+  if (stored) return { cwd: stored, source: "stored" };
+  return { cwd: homedir(), source: "home" };
+}
+
+export function getTerminalShellCompletions(sessionId: string): TerminalShellCompletionEntry[] | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  return terminalLifecycleFor(sessionId, session).getShellCompletions();
+}
+
+export function getTerminalShellCapabilities(sessionId: string): TerminalShellCapabilities | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  return terminalLifecycleFor(sessionId, session).getShellCapabilities();
+}
+
+export function getTerminalShellEnvironment(sessionId: string): TerminalShellEnvironment | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  const environment = terminalLifecycleFor(sessionId, session).getShellEnvironment();
+  const shimDirectory = shellShimDirectories.get(sessionId);
+  if (environment.PATH === undefined || !shimDirectory) return environment;
+
+  const identity = (value: string) => {
+    const normalized = isAbsolute(value) ? resolve(value) : value;
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  const shimIdentity = identity(shimDirectory);
+  return {
+    ...environment,
+    PATH: environment.PATH
+      .split(delimiter)
+      .filter((entry) => identity(entry) !== shimIdentity)
+      .join(delimiter),
+  };
+}
+
+export function listTerminalFindBlocks(sessionId: string): TerminalFindBlockIndexEntry[] | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  return terminalLifecycleFor(sessionId, session).snapshot(false).blocks.map((block) => ({
+    id: block.id,
+    sequence: block.sequence,
+  }));
+}
+
+export function readTerminalFindBlock(sessionId: string, blockId: string): TerminalCommandBlock | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  const lifecycle = terminalLifecycleFor(sessionId, session);
+  const block = lifecycle.getBlock(blockId);
+  if (!block) return null;
+  return { ...block, output: lifecycle.sanitizeForSearch(block.output) };
+}
+
+export function resetTerminalLifecycle(sessionId: string, cwd: string) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  terminalCommandQueue.clear(sessionId);
+  session.cwd = cwd;
+  terminalLifecycleFor(sessionId, session).resetForRestart(cwd);
+  terminalFind.refreshSession(sessionId);
+}
+
+function terminalCommandQueueSession(sessionId: string): Session {
+  const session = sessions.get(sessionId);
+  if (!session || session.pendingDelete) {
+    throw new TerminalCommandQueueError("Session not found", 404);
+  }
+  if (!session.pty) {
+    throw new TerminalCommandQueueError("Session is disconnected", 409);
+  }
+  return session;
+}
+
+function shouldDeferQueuedCommandForAgentFallback(
+  session: Session,
+  lifecycle: TerminalLifecycle,
+): boolean {
+  const fallbackCommands = session.agentFallbackCommands || [];
+  const fallback = fallbackCommands[session.agentFallbackIndex || 0];
+  if (!fallback || !session.agentAttemptBlockId || !session.agentAttemptStartedAt) return false;
+  const attempt = lifecycle.getBlock(session.agentAttemptBlockId);
+  return Boolean(
+    attempt?.status === "failed" && session.lastInputTime <= session.agentAttemptStartedAt,
+  );
+}
+
+function maybeDrainTerminalCommandQueue(
+  sessionId: string,
+  session: Session,
+  ptyProcess: pty.IPty,
+  lifecycle: TerminalLifecycle,
+): boolean {
+  if (
+    session.pty !== ptyProcess ||
+    !lifecycle.canAcceptCommand() ||
+    terminalPtyWriters.get(sessionId)?.writer.pendingWrites ||
+    shouldDeferQueuedCommandForAgentFallback(session, lifecycle)
+  ) return false;
+
+  const item = terminalCommandQueue.beginDispatch(sessionId);
+  if (!item) return false;
+  const accepted = startTrackedCommand(sessionId, session, ptyProcess, item.command, {
+    kind: "queued-command",
+    onStarted: (block) => {
+      if (!terminalCommandQueue.markStarted(sessionId, item.id, block.id)) {
+        throw new Error("Queued command dispatch lost its in-flight owner");
+      }
+    },
+    onError: () => {
+      // A write that started may already have reached the shell. Never replay it
+      // automatically; the next prompt will conservatively recover its block.
+      terminalCommandQueue.abandonDispatch(sessionId, item.id);
+    },
+  });
+  if (!accepted) terminalCommandQueue.rollbackDispatch(sessionId, item.id);
+  return accepted;
+}
+
+function reconcileTerminalCommandQueue(
+  sessionId: string,
+  session: Session,
+  ptyProcess: pty.IPty,
+  lifecycle: TerminalLifecycle,
+) {
+  const inFlight = terminalCommandQueue.snapshot(sessionId).inFlight;
+  if (inFlight?.blockId) {
+    const block = lifecycle.getBlock(inFlight.blockId);
+    if (block && block.status !== "running") {
+      terminalCommandQueue.completeBlock(sessionId, block.id);
+    }
+  }
+  maybeDrainTerminalCommandQueue(sessionId, session, ptyProcess, lifecycle);
+}
+
+export function getTerminalCommandQueue(sessionId: string): TerminalCommandQueueSnapshot {
+  terminalCommandQueueSession(sessionId);
+  return terminalCommandQueue.snapshot(sessionId);
+}
+
+export function enqueueTerminalCommand(
+  sessionId: string,
+  command: unknown,
+): {
+  item: TerminalQueuedCommand;
+  state: "queued" | "running";
+  queue: TerminalCommandQueueSnapshot;
+} {
+  const session = terminalCommandQueueSession(sessionId);
+  const item = terminalCommandQueue.enqueue(sessionId, command);
+  maybeDrainTerminalCommandQueue(
+    sessionId,
+    session,
+    session.pty!,
+    terminalLifecycleFor(sessionId, session),
+  );
+  const queue = terminalCommandQueue.snapshot(sessionId);
+  return {
+    item,
+    state: queue.inFlight?.id === item.id ? "running" : "queued",
+    queue,
+  };
+}
+
+export function editTerminalQueuedCommand(
+  sessionId: string,
+  commandId: string,
+  command: unknown,
+): TerminalCommandQueueSnapshot {
+  terminalCommandQueueSession(sessionId);
+  terminalCommandQueue.edit(sessionId, commandId, command);
+  return terminalCommandQueue.snapshot(sessionId);
+}
+
+export function reorderTerminalQueuedCommand(
+  sessionId: string,
+  commandId: string,
+  beforeId?: string | null,
+): TerminalCommandQueueSnapshot {
+  terminalCommandQueueSession(sessionId);
+  terminalCommandQueue.reorder(sessionId, commandId, beforeId);
+  return terminalCommandQueue.snapshot(sessionId);
+}
+
+export function removeTerminalQueuedCommand(
+  sessionId: string,
+  commandId: string,
+): TerminalCommandQueueSnapshot {
+  terminalCommandQueueSession(sessionId);
+  terminalCommandQueue.remove(sessionId, commandId);
+  return terminalCommandQueue.snapshot(sessionId);
+}
+
+export function clearPendingTerminalCommands(sessionId: string): TerminalCommandQueueSnapshot {
+  terminalCommandQueueSession(sessionId);
+  terminalCommandQueue.clearPending(sessionId);
+  return terminalCommandQueue.snapshot(sessionId);
+}
+
+export function discardTerminalCommandQueue(sessionId: string): number {
+  return terminalCommandQueue.clear(sessionId);
+}
+
+export function noteTerminalInput(sessionId: string, data: string) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const lifecycle = terminalLifecycleFor(sessionId, session);
+  const block = lifecycle.noteInput(data);
+  if (block) {
+    terminalFind.invalidateBlock(sessionId, block.id);
+    broadcastTerminalState(sessionId, session);
+  }
+}
+
+export function writeTerminalBlockCommand(
+  sessionId: string,
+  blockId: string,
+  mode: "insert" | "execute" | "queue",
+): { ok: true } | { ok: false; error: string; status: number } {
+  const session = sessions.get(sessionId);
+  if (!session) return { ok: false, error: "Session not found", status: 404 };
+  if (!session.pty) return { ok: false, error: "Session is disconnected", status: 409 };
+
+  const lifecycle = terminalLifecycleFor(sessionId, session);
+  const block = lifecycle.getBlock(blockId);
+  if (!block) return { ok: false, error: "Terminal block not found", status: 404 };
+  const replayCommand = lifecycle.commandForReplay(blockId);
+  if (!replayCommand) {
+    return {
+      ok: false,
+      error: "Sensitive command cannot be replayed after its secret was discarded",
+      status: 409,
+    };
+  }
+  if (mode === "queue") {
+    if (block.sensitive) {
+      return { ok: false, error: "Sensitive commands cannot be stored in the command queue", status: 409 };
+    }
+    try {
+      enqueueTerminalCommand(sessionId, replayCommand);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof TerminalCommandQueueError) {
+        return { ok: false, error: error.message, status: error.status };
+      }
+      throw error;
+    }
+  }
+  if (!lifecycle.canAcceptCommand()) {
+    return { ok: false, error: "Terminal is busy; wait for the shell prompt", status: 409 };
+  }
+
+  if (mode === "execute") {
+    if (!startTrackedCommand(sessionId, session, session.pty, replayCommand, {
+      frameRedrawsInPlace: Boolean(block.frameRedrawsInPlace),
+      kind: "replay",
+    })) {
+      return { ok: false, error: "Terminal input queue is full", status: 409 };
+    }
+  } else {
+    if (!writeTerminalData(sessionId, replayCommand, {
+      kind: "replay",
+      proxySafe: true,
+      bracketedPaste: true,
+      beforeWrite: () => lifecycle.noteInput(replayCommand),
+    })) {
+      return { ok: false, error: "Terminal input queue is full", status: 409 };
+    }
+  }
+  return { ok: true };
+}
+
+export function updateTerminalBlock(
+  sessionId: string,
+  blockId: string,
+  updates: { bookmarked?: boolean; note?: string },
+): { ok: true; block: ReturnType<TerminalLifecycle["getBlock"]> } | { ok: false; error: string; status: number } {
+  const session = sessions.get(sessionId);
+  if (!session) return { ok: false, error: "Session not found", status: 404 };
+  const block = terminalLifecycleFor(sessionId, session).getBlock(blockId);
+  if (!block) return { ok: false, error: "Terminal block not found", status: 404 };
+  if (updates.bookmarked !== undefined) block.bookmarked = updates.bookmarked;
+  if (updates.note !== undefined) {
+    block.note = updates.note.trim().slice(0, 2000) || undefined;
+    terminalFind.invalidateBlock(sessionId, block.id);
+  }
+  broadcastTerminalState(sessionId, session);
+  return { ok: true, block };
+}
+
+export function clearTerminalHistory(options: {
+  sessionId?: string;
+  before?: number;
+  includeBookmarked?: boolean;
+}): { removed: number; sessionsChanged: number; preservedRunning: number; preservedBookmarked: number } {
+  const entries = options.sessionId
+    ? (() => {
+        const session = sessions.get(options.sessionId!);
+        return session ? [[options.sessionId!, session] as const] : [];
+      })()
+    : [...sessions.entries()];
+  let removed = 0;
+  let sessionsChanged = 0;
+  let preservedRunning = 0;
+  let preservedBookmarked = 0;
+
+  for (const [sessionId, session] of entries) {
+    const lifecycle = terminalLifecycleFor(sessionId, session);
+    const beforeBlocks = lifecycle.snapshot(false).blocks;
+    preservedRunning += beforeBlocks.filter((block) => block.status === "running").length;
+    if (!options.includeBookmarked) {
+      preservedBookmarked += beforeBlocks.filter((block) => block.bookmarked).length;
+    }
+    const sessionRemoved = lifecycle.clearHistory(options);
+    if (sessionRemoved === 0) continue;
+    removed += sessionRemoved;
+    sessionsChanged++;
+    saveTerminalBlocks(sessionId, session.terminalBlocks);
+    terminalFind.refreshSession(sessionId);
+    broadcastTerminalState(sessionId, session);
+  }
+
+  return { removed, sessionsChanged, preservedRunning, preservedBookmarked };
+}
+
+function maybeStartAgentFallback(
+  sessionId: string,
+  session: Session,
+  ptyProcess: pty.IPty,
+  lifecycle: TerminalLifecycle,
+) {
+  const fallbackCommands = session.agentFallbackCommands || [];
+  if (fallbackCommands.length === 0 || lifecycle.snapshot(false).phase !== "at_prompt") return;
+  if (!session.agentAttemptBlockId || !session.agentAttemptStartedAt) return;
+  const attempt = lifecycle.getBlock(session.agentAttemptBlockId);
+  if (!attempt || attempt.status !== "failed") return;
+  if (session.lastInputTime > session.agentAttemptStartedAt) return;
+
+  const fallbackIndex = session.agentFallbackIndex || 0;
+  const fallback = fallbackCommands[fallbackIndex];
+  if (!fallback) return;
+  session.agentFallbackIndex = fallbackIndex + 1;
+  const previousCommand = session.agentAttemptCommand || attempt.command;
+  const finalFallback = injectPluginDir(
+    fallback,
+    fallback.trim().split(/\s+/)[0] === "claude" ? "claude" : session.agentId,
+  );
+
+  for (const client of session.clients) {
+    sendTerminalMessage(client, {
+      type: "agentFallback",
+      fromCommand: previousCommand,
+      toCommand: finalFallback,
+      attempt: session.agentFallbackIndex,
+      exitCode: attempt.exitCode,
+    });
+  }
+
+  setTimeout(() => {
+    if (session.pty !== ptyProcess || !lifecycle.canAcceptCommand()) return;
+    startTrackedCommand(sessionId, session, ptyProcess, finalFallback);
+  }, 80);
+}
+
+export function attachSessionPty(
+  sessionId: string,
+  session: Session,
+  ptyProcess: pty.IPty,
+  label = "PTY",
+) {
+  const lifecycle = terminalLifecycleFor(sessionId, session);
+  replaceTerminalPtyWriter(sessionId, session, ptyProcess);
+
+  ptyProcess.onExit(({ exitCode, signal }) => {
+    // A late exit from an old PTY must not disconnect a replacement process.
+    if (session.pty !== ptyProcess) return;
+    log(`[session] ${label} exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
+    session.status = "disconnected";
+    session.pty = null;
+    terminalCommandQueue.clear(sessionId);
+    disposeTerminalPtyWriter(sessionId, ptyProcess);
+    const changedBlockIds = lifecycle.terminate(exitCode, signal);
+    cleanupShellShimEnvironment(sessionId);
+    for (const blockId of changedBlockIds) terminalFind.invalidateBlock(sessionId, blockId);
+    broadcastTerminalState(sessionId, session);
+
+    for (const client of session.clients) sendTerminalMessage(client, { type: "exit", exitCode, signal });
+  });
+
+  ptyProcess.onData((rawData: string) => {
+    if (session.pty !== ptyProcess) return;
+    const result = lifecycle.feed(rawData);
+    for (const payload of result.remoteControlPayloads) {
+      terminalRemoteManager.handleControlPayload(sessionId, payload);
+    }
+    const data = result.data;
+    for (const blockId of result.changedBlockIds) terminalFind.invalidateBlock(sessionId, blockId);
+
+    if (data) {
+      appendOutputBuffer(session, lifecycle.sanitizeForPersistence(result.persistenceData));
+      session.lastOutputTime = Date.now();
+      session.recentOutputSize += data.length;
+
+      if (session.status === "idle" && !session.pluginReportedStatus) {
+        session.status = "running";
+        broadcastAgentStatus(session, "running");
+      }
+
+      for (const client of session.clients) sendTerminalMessage(client, { type: "output", data });
+    }
+
+    if (result.stateChanged) {
+      const currentCwd = lifecycle.snapshot(false).currentCwd;
+      if (currentCwd) session.cwd = currentCwd;
+      broadcastTerminalState(sessionId, session);
+      maybeStartAgentFallback(sessionId, session, ptyProcess, lifecycle);
+      reconcileTerminalCommandQueue(sessionId, session, ptyProcess, lifecycle);
+    }
+  });
+}
+
+function getShellIntegrationPath(shell: string): string | null {
+  const shellName = basename(shell).toLowerCase();
+  const filename = shellName.includes("zsh")
+    ? "openui.zsh"
+    : shellName.includes("fish")
+      ? "openui.fish"
+      : shellName.includes("bash")
+        ? "openui.bash"
+        : shellName.includes("pwsh") || shellName.includes("powershell")
+          ? "openui.ps1"
+          : null;
+  if (!filename) return null;
+
+  const candidates: string[] = [];
+  try {
+    candidates.push(join(process.resourcesPath, "shell-integration", filename));
+    candidates.push(join(process.resourcesPath, "resources", "shell-integration", filename));
+  } catch {
+    // process.resourcesPath is Electron-only.
+  }
+  candidates.push(join(process.cwd(), "resources", "shell-integration", filename));
+
+  let dir = __dirname;
+  for (let i = 0; i < 7; i++) {
+    candidates.push(join(dir, "resources", "shell-integration", filename));
+    dir = join(dir, "..");
+  }
+  return candidates.find((candidate) => existsSync(candidate)) || null;
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+const shellShimDirectories = new Map<string, string>();
+const sshControlDirectories = new Map<string, string>();
+
+function getTerminalResourceRoot(): string | null {
+  const candidates: string[] = [];
+  if (typeof process.resourcesPath === "string" && process.resourcesPath) {
+    candidates.push(process.resourcesPath);
+    candidates.push(join(process.resourcesPath, "resources"));
+  }
+  candidates.push(join(process.cwd(), "resources"));
+  let directory = __dirname;
+  for (let index = 0; index < 7; index++) {
+    candidates.push(join(directory, "resources"));
+    directory = join(directory, "..");
+  }
+  return candidates.find((candidate) =>
+    existsSync(join(candidate, "remote-terminal", "openui_ssh_wrapper.cjs")) &&
+    existsSync(join(candidate, "remote-terminal", "openui_container_wrapper.cjs")) &&
+    existsSync(join(candidate, "remote-terminal", "openui_environment_wrapper.cjs")) &&
+    existsSync(join(candidate, "remote-terminal", "openui_remote_server.py")) &&
+    existsSync(join(candidate, "remote-terminal", "openui_remote_shell.py")) &&
+    existsSync(join(candidate, "shell-integration", "openui.zsh")) &&
+    existsSync(join(candidate, "shell-integration", "openui.bash")) &&
+    existsSync(join(candidate, "shell-integration", "openui.fish")),
+  ) || null;
+}
+
+function executableOnPath(name: string, pathValue: string): string | null {
+  for (const directory of pathValue.split(delimiter)) {
+    if (!directory) continue;
+    const candidate = join(directory, name);
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      const stat = lstatSync(candidate);
+      if (stat.isFile() || stat.isSymbolicLink()) return candidate;
+    } catch {
+      // Continue through PATH.
+    }
+  }
+  return null;
+}
+
+export function getSessionShellLaunch(session: Session): { shell: string; args: string[] } {
+  const persisted = session.shellLaunch;
+  if (!persisted?.shell || !Array.isArray(persisted.args)) return getDefaultShellLaunch();
+  try {
+    if (isAbsolute(persisted.shell)) {
+      accessSync(persisted.shell, fsConstants.X_OK);
+      const stat = lstatSync(persisted.shell);
+      if (stat.isFile() || stat.isSymbolicLink()) {
+        return { shell: persisted.shell, args: [...persisted.args] };
+      }
+    } else {
+      const resolvedShell = executableOnPath(persisted.shell, process.env.PATH || "");
+      if (resolvedShell) return { shell: resolvedShell, args: [...persisted.args] };
+    }
+  } catch {
+    // A removed or inaccessible persisted shell falls back safely.
+  }
+  return getDefaultShellLaunch();
+}
+
+function ensurePrivateDirectory(path: string): boolean {
+  try {
+    if (existsSync(path)) {
+      const stat = lstatSync(path);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    } else {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    }
+    chmodSync(path, 0o700);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writePrivateRuntimeFile(path: string, content: string, executable = false) {
+  writeFileSync(path, content.endsWith("\n") ? content : `${content}\n`, {
+    encoding: "utf8",
+    mode: executable ? 0o700 : 0o600,
+  });
+  chmodSync(path, executable ? 0o700 : 0o600);
+}
+
+const SUBSHELL_CONFIG_VERSION = 1;
+const MAX_SUBSHELL_CONFIG_BYTES = 64 * 1024;
+const MAX_SUBSHELL_PATTERNS = 64;
+const MAX_SUBSHELL_PATTERN_TOKENS = 32;
+const MAX_SUBSHELL_PATTERN_TOKEN_BYTES = 256;
+const SUBSHELL_TOOL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
+const RESERVED_SUBSHELL_TOOLS = new Set([
+  "bash", "zsh", "fish", "pwsh", "powershell", "docker", "podman", "kubectl", "ssh",
+]);
+
+type SubshellArgvPattern = {
+  argv: string[];
+  match: "exact" | "prefix";
+};
+
+type SubshellPolicyByTool = Map<string, {
+  added: Array<{ args: string[]; match: "exact" | "prefix" }>;
+  denied: Array<{ args: string[]; match: "exact" | "prefix" }>;
+}>;
+
+function validSubshellPattern(value: unknown): SubshellArgvPattern | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.argv) || record.argv.length < 1 ||
+      record.argv.length > MAX_SUBSHELL_PATTERN_TOKENS) return null;
+  if (record.match !== "exact" && record.match !== "prefix") return null;
+  const argv = record.argv;
+  if (!argv.every((token) => typeof token === "string" && !token.includes("\0") &&
+      Buffer.byteLength(token, "utf8") <= MAX_SUBSHELL_PATTERN_TOKEN_BYTES)) return null;
+  if (!SUBSHELL_TOOL_PATTERN.test(argv[0])) return null;
+  if (argv.slice(1).some((token) => token.length === 0 || (token.includes("*") && token !== "*"))) return null;
+  return { argv: [...argv], match: record.match };
+}
+
+/**
+ * Loads bounded, declarative argv patterns from ~/.openui-desktop/terminal-subshells.json.
+ * A literal `*` matches one argv token; no shell source or backtracking regex is accepted.
+ */
+function loadSubshellPolicies(home: string): SubshellPolicyByTool {
+  const policies: SubshellPolicyByTool = new Map();
+  const path = join(home, ".openui-desktop", "terminal-subshells.json");
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_SUBSHELL_CONFIG_BYTES ||
+        (info.mode & 0o022) !== 0 ||
+        (typeof process.getuid === "function" && info.uid !== process.getuid())) return policies;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (!parsed || parsed.version !== SUBSHELL_CONFIG_VERSION) return policies;
+    const addedRaw = Array.isArray(parsed.addedSubshellCommands) ? parsed.addedSubshellCommands : [];
+    const deniedRaw = Array.isArray(parsed.subshellCommandsDenylist) ? parsed.subshellCommandsDenylist : [];
+    if (addedRaw.length + deniedRaw.length > MAX_SUBSHELL_PATTERNS) return policies;
+    const add = (raw: unknown, field: "added" | "denied") => {
+      const pattern = validSubshellPattern(raw);
+      if (!pattern || RESERVED_SUBSHELL_TOOLS.has(pattern.argv[0])) return;
+      const tool = pattern.argv[0];
+      const policy = policies.get(tool) || { added: [], denied: [] };
+      policy[field].push({ args: pattern.argv.slice(1), match: pattern.match });
+      policies.set(tool, policy);
+    };
+    addedRaw.forEach((pattern) => add(pattern, "added"));
+    deniedRaw.forEach((pattern) => add(pattern, "denied"));
+  } catch {
+    // Missing, malformed, unsafe, and unsupported config files fail closed.
+  }
+  return policies;
+}
+
+/**
+ * Creates process-private PATH shims for ordinary interactive child shells.
+ * The shims never edit user startup files and dispatch command/script/no-rc
+ * invocations to the original executable unchanged.
+ */
+export function prepareShellShimEnvironment(
+  sessionId: string,
+  baseEnvironment: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  if (process.platform === "win32") return {};
+  if (shellShimDirectories.has(sessionId) || sshControlDirectories.has(sessionId)) {
+    cleanupShellShimEnvironment(sessionId);
+  }
+
+  const home = baseEnvironment.HOME || homedir();
+  const openuiHome = join(home, ".openui-desktop");
+  const runtimeRoot = join(openuiHome, "runtime-shell-shims");
+  if (!ensurePrivateDirectory(openuiHome) || !ensurePrivateDirectory(runtimeRoot)) return {};
+
+  const safeId = createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
+  const shimDirectory = join(runtimeRoot, safeId);
+  try {
+    if (existsSync(shimDirectory)) {
+      const stat = lstatSync(shimDirectory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return {};
+      rmSync(shimDirectory, { recursive: true, force: true });
+    }
+    mkdirSync(shimDirectory, { recursive: true, mode: 0o700 });
+    chmodSync(shimDirectory, 0o700);
+  } catch {
+    return {};
+  }
+
+  const originalPath = baseEnvironment.PATH || process.env.PATH || "/usr/local/bin:/usr/bin:/bin";
+  const subshellPolicies = loadSubshellPolicies(home);
+  let created = 0;
+
+  const zsh = executableOnPath("zsh", originalPath);
+  const zshIntegration = zsh ? getShellIntegrationPath(zsh) : null;
+  if (zsh && zshIntegration) {
+    const zshDotDirectory = join(shimDirectory, "zsh-dotfiles");
+    mkdirSync(zshDotDirectory, { recursive: true, mode: 0o700 });
+    chmodSync(zshDotDirectory, 0o700);
+    const rawUserZdotdir = baseEnvironment.ZDOTDIR || home;
+    const userZdotdir = isAbsolute(rawUserZdotdir)
+      ? rawUserZdotdir
+      : resolve(home, rawUserZdotdir);
+    const sourceUserFile = (filename: string) => {
+      const file = join(userZdotdir, filename);
+      return `[[ -r ${quotePosix(file)} ]] && source ${quotePosix(file)}`;
+    };
+    writePrivateRuntimeFile(join(zshDotDirectory, ".zshenv"), [
+      sourceUserFile(".zshenv"),
+      `export ZDOTDIR=${quotePosix(zshDotDirectory)}`,
+    ].join("\n"));
+    writePrivateRuntimeFile(join(zshDotDirectory, ".zprofile"), sourceUserFile(".zprofile"));
+    writePrivateRuntimeFile(join(zshDotDirectory, ".zshrc"), [
+      sourceUserFile(".zshrc"),
+      `source ${quotePosix(zshIntegration)}`,
+    ].join("\n"));
+    writePrivateRuntimeFile(join(zshDotDirectory, ".zlogin"), sourceUserFile(".zlogin"));
+    writePrivateRuntimeFile(join(zshDotDirectory, ".zlogout"), sourceUserFile(".zlogout"));
+    writePrivateRuntimeFile(join(shimDirectory, "zsh"), [
+      "#!/bin/sh",
+      "interactive=0",
+      '[ "$#" -eq 0 ] && interactive=1',
+      'for arg in "$@"; do',
+      '  case "$arg" in',
+      `    -c|-[^-]*c*|--no-rcs|-f|-[^-]*f*) exec ${quotePosix(zsh)} "$@" ;;`,
+      "    -i|-[^-]*i*) interactive=1 ;;",
+      "  esac",
+      "done",
+      `[ "$interactive" -eq 1 ] || exec ${quotePosix(zsh)} "$@"`,
+      `export ZDOTDIR=${quotePosix(zshDotDirectory)}`,
+      `exec ${quotePosix(zsh)} "$@"`,
+    ].join("\n"), true);
+    created++;
+  }
+
+  const bash = executableOnPath("bash", originalPath);
+  const bashIntegration = bash ? getShellIntegrationPath(bash) : null;
+  if (bash && bashIntegration) {
+    const bashRc = join(shimDirectory, "bashrc");
+    const userBashRc = join(home, ".bashrc");
+    writePrivateRuntimeFile(bashRc, [
+      `[[ -r ${quotePosix(userBashRc)} ]] && source ${quotePosix(userBashRc)}`,
+      `source ${quotePosix(bashIntegration)}`,
+    ].join("\n"));
+    writePrivateRuntimeFile(join(shimDirectory, "bash"), [
+      "#!/bin/sh",
+      "interactive=0",
+      '[ "$#" -eq 0 ] && interactive=1',
+      'for arg in "$@"; do',
+      '  case "$arg" in',
+      `    -c|-[^-]*c*|--norc|--rcfile) exec ${quotePosix(bash)} "$@" ;;`,
+      "    -i|-[^-]*i*) interactive=1 ;;",
+      "  esac",
+      "done",
+      `[ "$interactive" -eq 1 ] || exec ${quotePosix(bash)} "$@"`,
+      `exec ${quotePosix(bash)} --rcfile ${quotePosix(bashRc)} "$@"`,
+    ].join("\n"), true);
+    created++;
+  }
+
+  const fish = executableOnPath("fish", originalPath);
+  const fishIntegration = fish ? getShellIntegrationPath(fish) : null;
+  if (fish && fishIntegration) {
+    writePrivateRuntimeFile(join(shimDirectory, "fish"), [
+      "#!/bin/sh",
+      "interactive=0",
+      '[ "$#" -eq 0 ] && interactive=1',
+      'for arg in "$@"; do',
+      '  case "$arg" in',
+      `    -c|--command|--command=*|-N|--no-config) exec ${quotePosix(fish)} "$@" ;;`,
+      "    -i|--interactive) interactive=1 ;;",
+      "  esac",
+      "done",
+      `[ "$interactive" -eq 1 ] || exec ${quotePosix(fish)} "$@"`,
+      `exec ${quotePosix(fish)} --init-command ${quotePosix(`source ${quotePosix(fishIntegration)}`)} "$@"`,
+    ].join("\n"), true);
+    created++;
+  }
+
+  for (const executableName of ["pwsh", "powershell"]) {
+    const executable = executableOnPath(executableName, originalPath);
+    const integration = executable ? getShellIntegrationPath(executable) : null;
+    if (!executable || !integration) continue;
+    const initCommand = `. ${quotePowerShell(integration)}`;
+    writePrivateRuntimeFile(join(shimDirectory, executableName), [
+      "#!/bin/sh",
+      "interactive=1",
+      'for arg in "$@"; do',
+      '  lower=$(printf "%s" "$arg" | tr "[:upper:]" "[:lower:]")',
+      '  case "$lower" in',
+      `    -c|-command|-commandwithargs|-e|-encodedcommand|-f|-file|-noninteractive|-h|-help|-'?'|-v|-version) exec ${quotePosix(executable)} "$@" ;;`,
+      "    -*) ;;",
+      `    *) exec ${quotePosix(executable)} "$@" ;;`,
+      "  esac",
+      "done",
+      `exec ${quotePosix(executable)} "$@" -NoExit -Command ${quotePosix(initCommand)}`,
+    ].join("\n"), true);
+    created++;
+  }
+
+  const resourceRoot = getTerminalResourceRoot();
+  const containerWrapper = resourceRoot
+    ? join(resourceRoot, "remote-terminal", "openui_container_wrapper.cjs")
+    : null;
+  if (containerWrapper && isAbsolute(process.execPath)) {
+    for (const tool of ["docker", "podman", "kubectl"]) {
+      const executable = executableOnPath(tool, originalPath);
+      if (!executable) continue;
+      writePrivateRuntimeFile(join(shimDirectory, tool), [
+        "#!/bin/sh",
+        [
+          `OPENUI_CONTAINER_REAL_EXECUTABLE=${quotePosix(executable)}`,
+          `OPENUI_CONTAINER_TOOL=${quotePosix(tool)}`,
+          `OPENUI_CONTAINER_ASSET_DIR=${quotePosix(resourceRoot!)}`,
+          "ELECTRON_RUN_AS_NODE=1",
+          `exec ${quotePosix(process.execPath)} ${quotePosix(containerWrapper)} \"$@\"`,
+        ].join(" "),
+      ].join("\n"), true);
+      created++;
+    }
+  }
+
+  const environmentWrapper = resourceRoot
+    ? join(resourceRoot, "remote-terminal", "openui_environment_wrapper.cjs")
+    : null;
+  if (environmentWrapper && isAbsolute(process.execPath)) {
+    const builtInTools = ["poetry", "pipenv", "aws-vault", "flox"];
+    const customTools = [...subshellPolicies.entries()]
+      .filter(([, policy]) => policy.added.length > 0)
+      .map(([tool]) => tool);
+    for (const tool of [...new Set([...builtInTools, ...customTools])]) {
+      const executable = executableOnPath(tool, originalPath);
+      if (!executable) continue;
+      const policy = subshellPolicies.get(tool) || { added: [], denied: [] };
+      const policyPath = join(shimDirectory, `subshell-policy-${tool}.json`);
+      writePrivateRuntimeFile(policyPath, JSON.stringify({
+        version: SUBSHELL_CONFIG_VERSION,
+        tool,
+        added: policy.added,
+        denied: policy.denied,
+      }));
+      writePrivateRuntimeFile(join(shimDirectory, tool), [
+        "#!/bin/sh",
+        [
+          `OPENUI_SUBSHELL_REAL_EXECUTABLE=${quotePosix(executable)}`,
+          `OPENUI_SUBSHELL_TOOL=${quotePosix(tool)}`,
+          `OPENUI_SUBSHELL_POLICY_FILE=${quotePosix(policyPath)}`,
+          "ELECTRON_RUN_AS_NODE=1",
+          `exec ${quotePosix(process.execPath)} ${quotePosix(environmentWrapper)} "$@"`,
+        ].join(" "),
+      ].join("\n"), true);
+      created++;
+    }
+  }
+
+  const realSsh = executableOnPath("ssh", originalPath);
+  const remoteAssetVersion = resourceRoot ? terminalRemoteAssetVersion(resourceRoot) : null;
+  let remoteEnvironment: Record<string, string> = {};
+  if (realSsh && resourceRoot && remoteAssetVersion && isAbsolute(process.execPath)) {
+    try {
+      const controlDirectory = mkdtempSync(join(tmpdir(), `openui-ssh-${safeId.slice(0, 8)}-`));
+      chmodSync(controlDirectory, 0o700);
+      const token = randomBytes(32).toString("hex");
+      const wrapper = join(resourceRoot, "remote-terminal", "openui_ssh_wrapper.cjs");
+      writePrivateRuntimeFile(join(shimDirectory, "ssh"), [
+        "#!/bin/sh",
+        `ELECTRON_RUN_AS_NODE=1 exec ${quotePosix(process.execPath)} ${quotePosix(wrapper)} "$@"`,
+      ].join("\n"), true);
+      sshControlDirectories.set(sessionId, controlDirectory);
+      terminalRemoteManager.registerRuntime(sessionId, {
+        token,
+        controlDirectory,
+        sshExecutable: realSsh,
+        assetVersion: remoteAssetVersion,
+      });
+      remoteEnvironment = {
+        OPENUI_REMOTE_CONTROL_TOKEN: token,
+        OPENUI_SSH_CONTROL_DIR: controlDirectory,
+        OPENUI_SSH_REAL_EXECUTABLE: realSsh,
+        OPENUI_SSH_WRAPPER: wrapper,
+        OPENUI_REMOTE_ASSET_DIR: resourceRoot,
+        OPENUI_NODE_RUNTIME: process.execPath,
+      };
+      created++;
+    } catch {
+      terminalRemoteManager.deregister(sessionId);
+      const controlDirectory = sshControlDirectories.get(sessionId);
+      sshControlDirectories.delete(sessionId);
+      if (controlDirectory) rmSync(controlDirectory, { recursive: true, force: true });
+    }
+  }
+
+  if (!created) {
+    rmSync(shimDirectory, { recursive: true, force: true });
+    return {};
+  }
+  shellShimDirectories.set(sessionId, shimDirectory);
+  return {
+    OPENUI_ORIGINAL_PATH: originalPath,
+    OPENUI_SHELL_SHIM_DIR: shimDirectory,
+    PATH: `${shimDirectory}${delimiter}${originalPath}`,
+    ...remoteEnvironment,
+  };
+}
+
+export function cleanupShellShimEnvironment(sessionId: string) {
+  const directory = shellShimDirectories.get(sessionId);
+  shellShimDirectories.delete(sessionId);
+  const controlDirectory = sshControlDirectories.get(sessionId);
+  sshControlDirectories.delete(sessionId);
+  terminalRemoteManager.deregister(sessionId);
+  if (controlDirectory) {
+    try {
+      const stat = lstatSync(controlDirectory);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        rmSync(controlDirectory, { recursive: true, force: true });
+      }
+    } catch {
+      // Runtime cleanup is best effort.
+    }
+  }
+  if (!directory) return;
+  try {
+    const stat = lstatSync(directory);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  } catch {
+    // Runtime cleanup is best effort.
+  }
+}
+
+export function installShellIntegration(
+  sessionId: string,
+  session: Session,
+  ptyProcess: pty.IPty,
+  shell: string,
+) {
+  if (session.pty !== ptyProcess) return false;
+  const integrationPath = getShellIntegrationPath(shell);
+  if (!integrationPath) return false;
+  const shellName = basename(shell).toLowerCase();
+  const command = shellName.includes("pwsh") || shellName.includes("powershell")
+    ? `. ${quotePowerShell(integrationPath)}`
+    : `source ${quotePosix(integrationPath)}`;
+  return writeTerminalData(sessionId, command, {
+    kind: "bootstrap",
+    bracketedPaste: true,
+    submit: true,
+  });
+}
+
+export function startTrackedCommand(
+  sessionId: string,
+  session: Session,
+  ptyProcess: pty.IPty,
+  command: string,
+  options: {
+    clearLine?: boolean;
+    frameRedrawsInPlace?: boolean;
+    kind?: TerminalPtyWriteOptions["kind"];
+    onStarted?: (block: TerminalCommandBlock) => void;
+    onError?: (error: unknown) => void;
+  } = {},
+): boolean {
+  if (session.pty !== ptyProcess) return false;
+  const lifecycle = terminalLifecycleFor(sessionId, session);
+  return writeTerminalData(sessionId, command, {
+    kind: options.kind || "command",
+    bracketedPaste: true,
+    clearLine: options.clearLine,
+    submit: true,
+    beforeWrite: () => {
+      if (session.pty !== ptyProcess) throw new Error("PTY was replaced before command write");
+      const block = lifecycle.startCommand(
+        command,
+        "inferred",
+        options.frameRedrawsInPlace ?? session.terminalFrameRedrawsInPlace,
+      );
+      options.onStarted?.(block);
+      terminalFind.invalidateBlock(sessionId, block.id);
+      if (options.kind !== "queued-command" && session.agentFallbackCommands?.length) {
+        session.agentAttemptCommand = command;
+        session.agentAttemptBlockId = block.id;
+        session.agentAttemptStartedAt = Date.now();
+      }
+      broadcastTerminalState(sessionId, session);
+    },
+    onError: (error) => {
+      logError(`[terminal-write] Command write failed for ${sessionId}:`, error);
+      options.onError?.(error);
+    },
+  });
+}
+
+export const TERMINAL_SYNCHRONIZED_INPUT_MAX_TARGETS = 32;
+export const TERMINAL_SYNCHRONIZED_INPUT_MAX_COMMAND_CHARS = 4_096;
+
+export interface TerminalSynchronizedInputSkip {
+  sessionId: string;
+  reason: "missing" | "disconnected" | "busy" | "alternate-screen" | "write-pending" | "write-rejected";
+}
+
+export function dispatchSynchronizedTerminalCommand(
+  sourceSessionId: string,
+  targetSessionIds: string[],
+  rawCommand: unknown,
+): {
+  sourceSessionId: string;
+  command: string;
+  dispatchedSessionIds: string[];
+  skipped: TerminalSynchronizedInputSkip[];
+} {
+  if (typeof rawCommand !== "string" || !rawCommand.trim()) {
+    throw new TerminalCommandQueueError("Synchronized command is required");
+  }
+  if (rawCommand.length > TERMINAL_SYNCHRONIZED_INPUT_MAX_COMMAND_CHARS) {
+    throw new TerminalCommandQueueError(
+      `Synchronized command exceeds ${TERMINAL_SYNCHRONIZED_INPUT_MAX_COMMAND_CHARS} characters`,
+    );
+  }
+  if (rawCommand.includes("\0") || /[\r\n]/.test(rawCommand)) {
+    throw new TerminalCommandQueueError("Synchronized command must be a single line without NUL bytes");
+  }
+  if (typeof sourceSessionId !== "string" || !sourceSessionId.trim()) {
+    throw new TerminalCommandQueueError("Synchronized input source is required");
+  }
+  if (!Array.isArray(targetSessionIds)) {
+    throw new TerminalCommandQueueError("Synchronized input targets are required");
+  }
+
+  const uniqueTargets = [...new Set(targetSessionIds.filter((value): value is string =>
+    typeof value === "string" && Boolean(value.trim())
+  ))];
+  if (!uniqueTargets.includes(sourceSessionId)) uniqueTargets.unshift(sourceSessionId);
+  if (uniqueTargets.length > TERMINAL_SYNCHRONIZED_INPUT_MAX_TARGETS) {
+    throw new TerminalCommandQueueError(
+      `Synchronized input may target at most ${TERMINAL_SYNCHRONIZED_INPUT_MAX_TARGETS} sessions`,
+    );
+  }
+
+  const skipped: TerminalSynchronizedInputSkip[] = [];
+  const ready: Array<{ sessionId: string; session: Session }> = [];
+  for (const sessionId of uniqueTargets) {
+    const session = sessions.get(sessionId);
+    if (!session || session.pendingDelete) {
+      skipped.push({ sessionId, reason: "missing" });
+      continue;
+    }
+    if (!session.pty) {
+      skipped.push({ sessionId, reason: "disconnected" });
+      continue;
+    }
+    const lifecycle = terminalLifecycleFor(sessionId, session);
+    const snapshot = lifecycle.snapshot(false);
+    if (snapshot.alternateScreen) {
+      skipped.push({ sessionId, reason: "alternate-screen" });
+      continue;
+    }
+    if (snapshot.phase !== "at_prompt" || !lifecycle.canAcceptCommand()) {
+      skipped.push({ sessionId, reason: "busy" });
+      continue;
+    }
+    if (terminalPtyWriters.get(sessionId)?.writer.pendingWrites) {
+      skipped.push({ sessionId, reason: "write-pending" });
+      continue;
+    }
+    ready.push({ sessionId, session });
+  }
+
+  if (!ready.some((entry) => entry.sessionId === sourceSessionId)) {
+    const sourceReason = skipped.find((entry) => entry.sessionId === sourceSessionId)?.reason || "busy";
+    throw new TerminalCommandQueueError(`Synchronized input source is not ready (${sourceReason})`, 409);
+  }
+
+  const dispatchedSessionIds: string[] = [];
+  const ordered = [
+    ready.find((entry) => entry.sessionId === sourceSessionId)!,
+    ...ready.filter((entry) => entry.sessionId !== sourceSessionId),
+  ];
+  for (const { sessionId, session } of ordered) {
+    const accepted = startTrackedCommand(sessionId, session, session.pty!, rawCommand, {
+      clearLine: true,
+      kind: "automation",
+    });
+    if (!accepted) {
+      skipped.push({ sessionId, reason: "write-rejected" });
+      if (sessionId === sourceSessionId) {
+        throw new TerminalCommandQueueError("Synchronized input source rejected the command", 409);
+      }
+      continue;
+    }
+    dispatchedSessionIds.push(sessionId);
+  }
+
+  return {
+    sourceSessionId,
+    command: rawCommand,
+    dispatchedSessionIds,
+    skipped,
+  };
+}
 
 // Actual port the server is listening on — set by setServerPort() after bind
 let serverPort: number = 6968;
@@ -306,9 +1713,7 @@ function broadcastSessionName(sessionId: string, name: string) {
   if (!session) return;
 
   for (const client of session.clients) {
-    if (client.readyState === 1) {
-      client.send(JSON.stringify({ type: "nameGenerated", name }));
-    }
+    sendTerminalMessage(client, { type: "nameGenerated", name });
   }
 }
 
@@ -389,6 +1794,14 @@ export async function createSession(params: {
   autoCareful?: boolean;
   multiRepoMode?: 'current' | 'main';
   additionalRepos?: { name: string; path: string; defaultBranch?: string }[];
+  agentProfileId?: string;
+  agentProfileVersion?: number;
+  agentPermissionPolicy?: Session["agentPermissionPolicy"];
+  agentAllowedTools?: string[];
+  agentRuntimeManifestPath?: string;
+  agentModel?: string;
+  agentFallbackCommands?: string[];
+  registerWorkspace?: boolean;
   beforeStart?: (cwd: string) => Promise<void>;
 }): Promise<{ session: Session; cwd: string; gitBranch?: string }> {
   const {
@@ -411,6 +1824,14 @@ export async function createSession(params: {
     autoCareful,
     multiRepoMode,
     additionalRepos,
+    agentProfileId,
+    agentProfileVersion,
+    agentPermissionPolicy,
+    agentAllowedTools,
+    agentRuntimeManifestPath,
+    agentModel,
+    agentFallbackCommands,
+    registerWorkspace = true,
     beforeStart,
   } = params;
 
@@ -475,29 +1896,21 @@ export async function createSession(params: {
   }
 
   // Use the user's default shell and spawn as login shell to source their profile
-  const shell = process.platform === "win32"
-    ? "powershell.exe"
-    : process.env.SHELL || "/bin/zsh";
+  const { shell, args: shellArgs } = getDefaultShellLaunch();
 
   let ptyProcess: pty.IPty;
   try {
-    ptyProcess = pty.spawn(shell, ["--login"], {
+    ptyProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cwd: workingDir,
-      env: (() => {
-        // Inherit the parent env, but strip NO_COLOR (which makes Claude Code
-        // and other CLIs render their UI monochrome) and force color on. The
-        // xterm renderer has a full ANSI theme, so color is always supported here.
-        const { NO_COLOR, ...rest } = process.env;
-        return {
-          ...rest,
-          TERM: "xterm-256color",
-          COLORTERM: "truecolor",
-          FORCE_COLOR: "1",
-          OPENUI_SESSION_ID: sessionId,
-          OPENUI_PORT: String(serverPort),
-        };
-      })() as Record<string, string>,
+      env: getPtyEnvironment(sessionId, {
+        id: agentProfileId,
+        version: agentProfileVersion,
+        permissionPolicy: agentPermissionPolicy,
+        allowedTools: agentAllowedTools,
+        manifestPath: agentRuntimeManifestPath,
+        model: agentModel,
+      }),
       cols: DEFAULT_PTY_COLS,
       rows: DEFAULT_PTY_ROWS,
     });
@@ -523,6 +1936,12 @@ export async function createSession(params: {
     createdAt: new Date().toISOString(),
     clients: new Set(),
     outputBuffer: [],
+    outputBufferChars: 0,
+    outputBufferTruncated: false,
+    shellLaunch: { shell, args: [...shellArgs] },
+    terminalCols: DEFAULT_PTY_COLS,
+    terminalRows: DEFAULT_PTY_ROWS,
+    terminalFrameRedrawsInPlace: agentId !== "shell" && agentId !== "test",
     status: "idle",
     lastOutputTime: now,
     lastInputTime: 0,
@@ -534,9 +1953,28 @@ export async function createSession(params: {
     ticketId,
     ticketTitle,
     ticketUrl,
+    terminalBlocks: [],
+    agentProfileId,
+    agentProfileVersion,
+    agentPermissionPolicy,
+    agentAllowedTools,
+    agentRuntimeManifestPath,
+    agentModel,
+    agentPermissionEvents: [],
+    agentFallbackCommands,
+    agentFallbackIndex: 0,
   };
 
   sessions.set(sessionId, session);
+  try {
+    if (registerWorkspace) terminalWorkspace.addTab(sessionId, { title: customName || agentName });
+  } catch (error) {
+    sessions.delete(sessionId);
+    ptyProcess.kill();
+    cleanupShellShimEnvironment(sessionId);
+    throw error;
+  }
+  attachSessionPty(sessionId, session, ptyProcess);
 
   // Output decay + stale status watchdog
   const resetInterval = setInterval(() => {
@@ -566,87 +2004,72 @@ export async function createSession(params: {
         session.status = "idle";
         session.currentTool = undefined;
         for (const client of session.clients) {
-          if (client.readyState === 1) {
-            client.send(JSON.stringify({
-              type: "status",
-              status: "idle",
-              isRestored: session.isRestored,
-            }));
-          }
+          sendTerminalMessage(client, {
+            type: "status",
+            status: "idle",
+            isRestored: session.isRestored,
+          });
         }
       }
     }
   }, 500);
 
-  // PTY exit handler — detect when Claude goes offline
-  ptyProcess.onExit(({ exitCode, signal }) => {
-    log(`[session] PTY exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
-    session.status = "disconnected";
-    session.pty = null;
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "exit", exitCode, signal }));
-      }
-    }
-  });
-
-  // PTY output handler
-  ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    if (session.outputBuffer.length > MAX_BUFFER_SIZE) {
-      session.outputBuffer.shift();
-    }
-
-    session.lastOutputTime = Date.now();
-    session.recentOutputSize += data.length;
-
-    // Auto-detect running status from PTY output
-    // Works when plugin hasn't reported yet OR when plugin has gone silent
-    if (session.status === "idle" && !session.pluginReportedStatus) {
-      session.status = "running";
-      for (const client of session.clients) {
-        if (client.readyState === 1) {
-          client.send(JSON.stringify({
-            type: "status",
-            status: "running",
-            isRestored: session.isRestored,
-          }));
-        }
-      }
-    }
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "output", data }));
-      }
-    }
-  });
-
   // Run the command
   const finalCommand = injectPluginDir(command, agentId);
-  log(`[pty-write] Writing command: ${finalCommand}`);
+  const isClaudeCommand = finalCommand.trim().split(/\s+/)[0] === "claude";
+  const ownsCurrentPty = () =>
+    sessions.get(sessionId) === session && session.pty === ptyProcess;
+  if (finalCommand) log(`[pty-write] Writing command: ${finalCommand}`);
   setTimeout(() => {
-    ptyProcess.write(`${finalCommand}\r`);
+    if (ownsCurrentPty()) installShellIntegration(sessionId, session, ptyProcess, shell);
+  }, 150);
+  const initialCommandDispatchStartedAt = Date.now();
+  const dispatchInitialCommand = () => {
+    if (!finalCommand || !ownsCurrentPty()) return;
+    const needsBracketedPaste = /[\r\n]/.test(finalCommand);
+    const lifecycle = terminalLifecycleFor(sessionId, session);
+    if (
+      needsBracketedPaste &&
+      !lifecycle.isBracketedPasteEnabled() &&
+      Date.now() - initialCommandDispatchStartedAt < INITIAL_MULTILINE_READY_TIMEOUT_MS
+    ) {
+      // Shell startup and integration sourcing complete asynchronously. A
+      // fixed startup delay can race a slower shell and turn one multiline
+      // launch command into several independent submissions. Wait for the
+      // shell's advertised bracketed-paste mode before writing it atomically.
+      setTimeout(dispatchInitialCommand, INITIAL_MULTILINE_READY_POLL_MS);
+      return;
+    }
+    if (!startTrackedCommand(sessionId, session, ptyProcess, finalCommand)) return;
 
     // Enable /careful for Claude Code sessions on startup (if enabled in settings)
-    if (agentId === "claude" && autoCareful !== false) {
+    if (isClaudeCommand && autoCareful !== false) {
       setTimeout(() => {
-        ptyProcess.write("/careful\r");
+        if (!ownsCurrentPty()) return;
+        writeTerminalData(sessionId, "/careful", {
+          kind: "automation",
+          bracketedPaste: true,
+          submit: true,
+        });
       }, 2000);
     }
 
-    let promptDelay = agentId === "claude" ? 4000 : 1200;
+    let promptDelay = isClaudeCommand ? 4000 : 1200;
 
     if (ticketUrl) {
       setTimeout(() => {
+        if (!ownsCurrentPty()) return;
         const defaultTemplate = "Here is the ticket for this session: {{url}}\n\nPlease use the Linear MCP tool or fetch the URL to read the full ticket details before starting work.";
         const template = ticketPromptTemplate || defaultTemplate;
         const ticketPrompt = template
           .replace(/\{\{url\}\}/g, ticketUrl)
           .replace(/\{\{id\}\}/g, ticketId || "")
           .replace(/\{\{title\}\}/g, ticketTitle || "");
-        ptyProcess.write(ticketPrompt + "\r");
+        writeTerminalData(sessionId, ticketPrompt, {
+          kind: "automation",
+          bracketedPaste: true,
+          submit: true,
+        });
       }, promptDelay);
       promptDelay += 1800;
     }
@@ -654,11 +2077,16 @@ export async function createSession(params: {
     // If multi-repo worktrees were created, inject context
     if (worktreePaths && Object.keys(worktreePaths).length > 1) {
       setTimeout(() => {
+        if (!ownsCurrentPty()) return;
         const repoLines = Object.entries(worktreePaths!)
           .map(([name, path]) => `- ${name}: ${path}`)
           .join("\n");
         const contextPrompt = `This session has worktrees across multiple repos:\n${repoLines}\n\nAll repos are on branch: ${branchName}\nCoordinate changes across all repos as needed.`;
-        ptyProcess.write(contextPrompt + "\r");
+        writeTerminalData(sessionId, contextPrompt, {
+          kind: "automation",
+          bracketedPaste: true,
+          submit: true,
+        });
       }, promptDelay);
       promptDelay += 1800;
     }
@@ -666,10 +2094,16 @@ export async function createSession(params: {
     const starterPrompt = initialPrompt?.trim();
     if (starterPrompt) {
       setTimeout(() => {
-        ptyProcess.write(`${starterPrompt.slice(0, 12000)}\r`);
+        if (!ownsCurrentPty()) return;
+        writeTerminalData(sessionId, starterPrompt.slice(0, 12000), {
+          kind: "automation",
+          bracketedPaste: true,
+          submit: true,
+        });
       }, promptDelay);
     }
-  }, 300);
+  };
+  setTimeout(dispatchInitialCommand, 450);
 
   log(`[session] Created ${sessionId} for ${agentName}${ticketId ? ` (ticket: ${ticketId})` : ""}`);
   return { session, cwd: workingDir, gitBranch: gitBranch || undefined };
@@ -679,10 +2113,23 @@ export function deleteSession(sessionId: string) {
   const session = sessions.get(sessionId);
   if (!session) return false;
 
-  if (session.pty) session.pty.kill();
-  if (session.stateTrackerPty) session.stateTrackerPty.kill();
+  terminalWorkspace.removeSession(sessionId);
+
+  const activePty = session.pty;
+  const stateTrackerPty = session.stateTrackerPty;
+  session.pty = null;
+  session.stateTrackerPty = null;
+  terminalLifecycles.get(sessionId)?.terminate(undefined);
+  terminalCommandQueue.clear(sessionId);
+  if (activePty) activePty.kill();
+  if (stateTrackerPty) stateTrackerPty.kill();
 
   sessions.delete(sessionId);
+  terminalLifecycles.delete(sessionId);
+  terminalFind.cancelSession(sessionId);
+  disposeTerminalPtyWriter(sessionId);
+  cleanupShellShimEnvironment(sessionId);
+  deletePersistedSession(sessionId);
   log(`[session] Killed ${sessionId}`);
   return true;
 }
@@ -706,7 +2153,14 @@ export async function restoreSessions() {
       gitBranch: gitBranch || undefined,
       createdAt: node.createdAt,
       clients: new Set(),
-      outputBuffer: buffer,
+      outputBuffer: buffer.chunks,
+      outputBufferChars: buffer.chunks.reduce((total, chunk) => total + chunk.length, 0),
+      outputBufferTruncated: buffer.truncated,
+      shellLaunch: node.shellLaunch,
+      terminalCols: node.terminalCols || DEFAULT_PTY_COLS,
+      terminalRows: node.terminalRows || DEFAULT_PTY_ROWS,
+      terminalFrameRedrawsInPlace: node.terminalFrameRedrawsInPlace ??
+        (node.agentId !== "shell" && node.agentId !== "test"),
       status: "disconnected",
       lastOutputTime: 0,
       lastInputTime: 0,
@@ -720,9 +2174,18 @@ export async function restoreSessions() {
       isRestored: true,
       worktreePaths: node.worktreePaths,
       launchCheckpoint: node.launchCheckpoint,
+      terminalBlocks: loadTerminalBlocks(node.sessionId),
+      agentProfileId: node.agentProfileId,
+      agentProfileVersion: node.agentProfileVersion,
+      agentPermissionPolicy: node.agentPermissionPolicy,
+      agentAllowedTools: node.agentAllowedTools,
+      agentRuntimeManifestPath: node.agentRuntimeManifestPath,
+      agentModel: node.agentModel,
+      agentPermissionEvents: node.agentPermissionEvents,
     };
 
     sessions.set(node.sessionId, session);
     log(`[restore] Restored ${node.sessionId} (${node.agentName}) branch: ${gitBranch || "none"}`);
   }
+  terminalWorkspace.reconcile(sessions.keys(), { addMissing: true });
 }

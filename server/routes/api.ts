@@ -1,26 +1,51 @@
 import { Hono } from "hono";
 import * as pty from "node-pty";
-import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from "fs";
-import { dirname, join, relative, resolve } from "path";
+import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSync, renameSync, rmSync } from "fs";
+import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { homedir, tmpdir } from "os";
-import { exec as execCb, execFile as execFileCb, spawn } from "child_process";
+import { exec as execCb, spawn } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execCb);
-const execGitAsync = promisify(execFileCb);
-import type { Agent, AgentChangeSummary, CheckpointSummary } from "../types";
+import type { Agent, AgentChangeSummary, AgentProfileConfig, CheckpointSummary, TerminalCommandBlock } from "../types";
 import {
   sessions,
   createSession,
   deleteSession,
   injectPluginDir,
   scanReposInDirectory,
-  getServerPort,
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
   scheduleSessionTitleGeneration,
+  getSessionShellLaunch,
+  getSessionPtyEnvironment,
+  attachSessionPty,
+  installShellIntegration,
+  startTrackedCommand,
+  getTerminalSnapshot,
+  resolveTerminalSplitWorkingDirectory,
+  getTerminalShellCapabilities,
+  getTerminalShellCompletions,
+  getTerminalShellEnvironment,
+  resetTerminalLifecycle,
+  writeTerminalBlockCommand,
+  updateTerminalBlock,
+  clearTerminalHistory,
+  listTerminalFindBlocks,
+  readTerminalFindBlock,
+  writeTerminalData,
+  noteTerminalInput,
+  getTerminalCommandQueue,
+  dispatchSynchronizedTerminalCommand,
+  enqueueTerminalCommand,
+  editTerminalQueuedCommand,
+  reorderTerminalQueuedCommand,
+  removeTerminalQueuedCommand,
+  clearPendingTerminalCommands,
+  discardTerminalCommandQueue,
 } from "../services/sessionManager";
-import { loadState, saveState, savePositions, getDataDir } from "../services/persistence";
+import { TerminalCommandQueueError } from "../services/terminalCommandQueue";
+import { loadState, savePersistedState, saveState, savePositions, getDataDir } from "../services/persistence";
 import {
   loadConfig,
   saveConfig,
@@ -44,9 +69,98 @@ import {
   type TitleSortGroup,
   type TitleSortInput,
 } from "../services/titleGenerator";
+import {
+  terminalAutomation,
+  TerminalAutomationError,
+} from "../services/terminalAutomation";
+import { getTerminalSuggestionsAsync } from "../services/terminalSuggestions";
+import { terminalFind, TerminalFindError } from "../services/terminalFind";
+import { sendTerminalMessage } from "../services/terminalTransport";
+import {
+  createTerminalBlockShare,
+  createTerminalSessionShare,
+  terminalOutputToPlainText,
+  type TerminalShareFormat,
+  type TerminalShareOptions,
+  type TerminalShareOutputMode,
+  type TerminalSharePayload,
+  type TerminalShareSession,
+} from "../services/terminalSharing";
+import { agentProfiles, AgentProfileError } from "../services/agentProfiles";
+import { redactTerminalText } from "../services/terminalRedaction";
+import {
+  adaptAgentProfileCommand,
+  buildAgentProfileRuntimePrompt,
+  evaluateAgentProfileToolPermission,
+  profileRuntimeManifest,
+} from "../services/agentProfileRuntime";
+import { readPackageScriptManifest } from "../services/terminalManifests";
+import { execGit, execGitWithInput } from "../services/gitRuntime";
+import { terminalRemoteManager } from "../services/terminalRemote";
+import { terminalWorkspace, TerminalWorkspaceError } from "../services/terminalWorkspace";
+import { terminalFiles, TerminalFilesError } from "../services/terminalFiles";
+import { codeWorkspace, CodeWorkspaceError } from "../services/codeWorkspace";
+import { terminalGit, TerminalGitError } from "../services/terminalGit";
+import { terminalOsc52ClipboardAccess } from "../services/terminalOutputPolicy";
 
 function getLaunchCwd(): string {
   return process.env.LAUNCH_CWD || homedir();
+}
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+const SENSITIVE_TERMINAL_SHARE_CONFIRMATION = "share-sensitive-terminal-data";
+
+function terminalShareOptions(c: any): TerminalShareOptions {
+  const rawFormat = textValue(c.req.query("format")) || "markdown";
+  const rawOutputMode = textValue(c.req.query("outputMode")) || "plain";
+  if (!(["markdown", "text", "json"] as string[]).includes(rawFormat)) {
+    throw new Error("format must be markdown, text, or json");
+  }
+  if (!(["plain", "ansi"] as string[]).includes(rawOutputMode)) {
+    throw new Error("outputMode must be plain or ansi");
+  }
+  return {
+    format: rawFormat as TerminalShareFormat,
+    outputMode: rawOutputMode as TerminalShareOutputMode,
+    includeOutput: c.req.query("includeOutput") !== "false",
+  };
+}
+
+function terminalShareSession(sessionId: string, session: any): TerminalShareSession {
+  return {
+    sessionId,
+    nodeId: session.nodeId,
+    name: session.customName || session.agentName,
+    agentName: session.agentName,
+    cwd: session.cwd,
+    createdAt: session.createdAt,
+  };
+}
+
+function terminalShareResponse(c: any, payload: TerminalSharePayload) {
+  c.header("Cache-Control", "no-store");
+  c.header("X-Content-Type-Options", "nosniff");
+  if (c.req.query("download") === "true") {
+    c.header("Content-Type", payload.contentType);
+    c.header("Content-Disposition", `attachment; filename="${payload.filename}"`);
+    return c.body(payload.content);
+  }
+  return c.json(payload);
+}
+
+function selectedTerminalShareBlocks(c: any, blocks: TerminalCommandBlock[]): TerminalCommandBlock[] {
+  const raw = textValue(c.req.query("blockIds"));
+  if (!raw) return blocks;
+  const ids = [...new Set(raw.split(",").map((value) => value.trim()).filter(Boolean))];
+  if (ids.length === 0 || ids.length > 250 || ids.some((id) => id.length > 256)) {
+    throw new Error("blockIds must contain 1 to 250 valid block identifiers");
+  }
+  const requested = new Set(ids);
+  const selected = blocks.filter((block) => requested.has(block.id));
+  if (selected.length !== requested.size) throw new Error("One or more selected terminal blocks were not found");
+  return selected;
 }
 const QUIET = !!process.env.OPENUI_QUIET;
 const log = QUIET ? (..._args: any[]) => {} : console.log.bind(console);
@@ -96,6 +210,209 @@ function buildTitlePrompt(initialPrompt: unknown): string | undefined {
   const starterPrompt =
     typeof initialPrompt === "string" ? initialPrompt.trim().slice(0, AGENT_RULES_MAX_CHARS) : "";
   return starterPrompt || undefined;
+}
+
+function writePrivateFile(path: string, content: string) {
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, content, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+function writeAgentProfileRuntimeFiles(
+  sessionId: string,
+  profileId: string,
+  profileVersion: number,
+  config: AgentProfileConfig,
+): { manifestPath: string; promptPath?: string; mcpConfigPath?: string; runtimePrompt?: string } {
+  const directory = join(getDataDir(), "runtime-profiles");
+  mkdirSync(directory, { recursive: true });
+  const manifestPath = join(directory, `${sessionId}.json`);
+  writePrivateFile(
+    manifestPath,
+    JSON.stringify(profileRuntimeManifest(profileId, profileVersion, config), null, 2),
+  );
+
+  const runtimePrompt = buildAgentProfileRuntimePrompt(profileId, profileVersion, config);
+  let promptPath: string | undefined;
+  if (runtimePrompt) {
+    promptPath = join(directory, `${sessionId}.prompt.md`);
+    writePrivateFile(promptPath, runtimePrompt);
+  }
+
+  let mcpConfigPath: string | undefined;
+  if (config.mcpServers.length) {
+    mcpConfigPath = join(directory, `${sessionId}.mcp.json`);
+    const mcpServers = Object.fromEntries(config.mcpServers.map((server) => [
+      server.name,
+      server.url
+        ? { type: "http", url: server.url }
+        : process.platform === "win32"
+          ? { type: "stdio", command: "powershell.exe", args: ["-NoLogo", "-Command", server.command] }
+          : { type: "stdio", command: "/bin/sh", args: ["-lc", server.command] },
+    ]));
+    writePrivateFile(mcpConfigPath, JSON.stringify({ mcpServers }, null, 2));
+  }
+  return { manifestPath, promptPath, mcpConfigPath, runtimePrompt };
+}
+
+function newSessionId(): string {
+  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+async function startSessionFromApiInput(
+  input: any,
+  options: { persist?: boolean; sessionId?: string; nodeId?: string; workspace?: "tab" | "defer" } = {},
+) {
+  let agentId = typeof input?.agentId === "string" ? input.agentId.trim() : "";
+  let agentName = typeof input?.agentName === "string" ? input.agentName.trim() : "";
+  let command = typeof input?.command === "string" ? input.command.trim() : "";
+  let customColor = input.customColor;
+  let combinedInitialPrompt = input.initialPrompt;
+  let agentProfileId: string | undefined;
+  let agentProfileVersion: number | undefined;
+  let profileIcon: string | undefined;
+  let agentFallbackCommands: string[] | undefined;
+  let resolvedProfileConfig: AgentProfileConfig | undefined;
+  let agentRuntimeManifestPath: string | undefined;
+  const profileReference = input?.agentProfile && typeof input.agentProfile === "object"
+    ? { id: textValue(input.agentProfile.id), version: Number.isSafeInteger(input.agentProfile.version) ? input.agentProfile.version : undefined }
+    : input?.agentProfileId
+      ? { id: textValue(input.agentProfileId), version: Number.isSafeInteger(input.agentProfileVersion) ? input.agentProfileVersion : undefined }
+      : agentId.startsWith("profile:")
+        ? { id: agentId.slice("profile:".length), version: undefined }
+      : null;
+  if (profileReference?.id) {
+    const resolved = agentProfiles.resolve(profileReference);
+    const config = resolved.version.config;
+    agentProfileId = resolved.profile.id;
+    agentProfileVersion = resolved.version.version;
+    resolvedProfileConfig = config;
+    agentId = `profile:${resolved.profile.id}`;
+    agentName = config.name;
+    command = config.command;
+    customColor = customColor || config.color;
+    profileIcon = config.icon;
+    agentFallbackCommands = config.fallbackCommands;
+    combinedInitialPrompt = [config.initialPrompt, input.initialPrompt].filter(Boolean).join("\n\n") || undefined;
+  }
+  if (!agentId || !agentName || (!command && agentId !== "shell")) {
+    throw new Error("agentId, agentName, and command are required unless agentId is shell");
+  }
+
+  const sessionId = options.sessionId || newSessionId();
+  const nodeId = options.nodeId || input.nodeId || `node-${sessionId}`;
+  if (resolvedProfileConfig && agentProfileId && agentProfileVersion) {
+    const runtime = writeAgentProfileRuntimeFiles(
+      sessionId,
+      agentProfileId,
+      agentProfileVersion,
+      resolvedProfileConfig,
+    );
+    agentRuntimeManifestPath = runtime.manifestPath;
+    const adaptedCommand = adaptAgentProfileCommand(command, resolvedProfileConfig, runtime);
+    command = adaptedCommand;
+  }
+  const workingDir = input.cwd || getLaunchCwd();
+  const starterTitlePrompt = buildTitlePrompt(input.initialPrompt);
+  const linearConfig = loadConfig();
+  let launchCheckpoint: CheckpointSummary | undefined;
+
+  const result = await createSession({
+    sessionId,
+    agentId,
+    agentName,
+    command,
+    cwd: workingDir,
+    nodeId,
+    customName: input.customName,
+    customColor,
+    ticketId: input.ticketId,
+    ticketTitle: input.ticketTitle,
+    ticketUrl: input.ticketUrl,
+    branchName: input.branchName,
+    baseBranch: input.baseBranch,
+    createWorktreeFlag: input.createWorktree,
+    ticketPromptTemplate: linearConfig.ticketPromptTemplate,
+    initialPrompt: buildInitialPrompt(combinedInitialPrompt),
+    autoCareful: linearConfig.autoCareful,
+    multiRepoMode: input.multiRepoMode,
+    additionalRepos: input.additionalRepos,
+    agentProfileId,
+    agentProfileVersion,
+    agentPermissionPolicy: resolvedProfileConfig?.permissionPolicy,
+    agentAllowedTools: resolvedProfileConfig?.tools,
+    agentRuntimeManifestPath,
+    agentModel: resolvedProfileConfig?.model,
+    agentFallbackCommands,
+    registerWorkspace: options.workspace !== "defer",
+    beforeStart: async (finalCwd) => {
+      try {
+        const root = await gitRoot(finalCwd).catch(() => null);
+        if (!root) return;
+        const checkpoint = await createGitCheckpoint(
+          root,
+          `Before ${input.customName || agentName} session`,
+          { source: "session-launch", sessionId, nodeId },
+        );
+        launchCheckpoint = summarizeCheckpoint(checkpoint);
+      } catch (checkpointError: any) {
+        logError(`[PRBE_ERROR_launchCheckpoint] [api] launch checkpoint failed (session=${sessionId}): ${checkpointError.message}`);
+      }
+    },
+  });
+
+  if (launchCheckpoint) result.session.launchCheckpoint = launchCheckpoint;
+  if (profileIcon) result.session.icon = profileIcon;
+  if (input.position && Number.isFinite(Number(input.position.x)) && Number.isFinite(Number(input.position.y))) {
+    result.session.position = { x: Number(input.position.x), y: Number(input.position.y) };
+  }
+  if (options.persist !== false) saveState(sessions);
+  if (starterTitlePrompt) scheduleSessionTitleGeneration(sessionId, starterTitlePrompt);
+  return {
+    sessionId,
+    nodeId,
+    cwd: result.cwd,
+    gitBranch: result.gitBranch,
+    launchCheckpoint,
+  };
+}
+
+function terminalAutomationFailure(error: unknown): { message: string; status: 400 | 404 | 409 | 500 } {
+  if (error instanceof TerminalAutomationError) {
+    const status = error.status === 404 || error.status === 409 ? error.status : 400;
+    return { message: error.message, status };
+  }
+  return {
+    message: error instanceof Error ? error.message : "Terminal automation failed",
+    status: 500,
+  };
+}
+
+function terminalWorkspaceFailure(error: unknown): { message: string; status: 400 | 404 | 409 | 500 } {
+  if (error instanceof TerminalWorkspaceError) {
+    const status = error.status === 404 || error.status === 409 ? error.status : 400;
+    return { message: error.message, status };
+  }
+  return {
+    message: error instanceof Error ? error.message : "Terminal workspace operation failed",
+    status: 500,
+  };
+}
+
+function expectedWorkspaceRevision(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new TerminalWorkspaceError("expectedRevision must be a nonnegative integer");
+  }
+  return value;
+}
+
+function collectTerminalWorkspaceSessionIds(node: any, output: string[] = []): string[] {
+  if (node?.type === "pane" && typeof node.sessionId === "string") output.push(node.sessionId);
+  else if (node?.type === "split" && Array.isArray(node.children)) {
+    for (const child of node.children) collectTerminalWorkspaceSessionIds(child, output);
+  }
+  return output;
 }
 
 const SORT_STATUS_PRIORITY: Record<string, number> = {
@@ -428,7 +745,11 @@ function validateTitleSortGroups(
 }
 
 apiRoutes.get("/config", (c) => {
-  return c.json({ launchCwd: getLaunchCwd(), dataDir: getDataDir() });
+  return c.json({
+    launchCwd: getLaunchCwd(),
+    dataDir: getDataDir(),
+    terminalOsc52ClipboardAccess: terminalOsc52ClipboardAccess(),
+  });
 });
 
 apiRoutes.get("/agent-rules", (c) => {
@@ -521,72 +842,6 @@ function expandPath(p: string): string {
 // IDE-style task discovery for package scripts. Discovery reads package metadata
 // only; scripts are run later through the normal terminal/session path.
 
-type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
-
-const PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
-const PACKAGE_SCRIPT_PRIORITY = [
-  "dev",
-  "start",
-  "build",
-  "test",
-  "lint",
-  "typecheck",
-  "check",
-  "format",
-  "preview",
-];
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function packageManagerForRoot(root: string): PackageManager {
-  if (existsSync(join(root, "pnpm-lock.yaml"))) return "pnpm";
-  if (existsSync(join(root, "yarn.lock"))) return "yarn";
-  if (existsSync(join(root, "bun.lockb")) || existsSync(join(root, "bun.lock"))) return "bun";
-  return "npm";
-}
-
-function packageScriptCommand(manager: PackageManager, scriptName: string): string {
-  const script = shellQuote(scriptName);
-  if (manager === "npm") return `npm run ${script}`;
-  if (manager === "pnpm") return `pnpm run ${script}`;
-  if (manager === "yarn") return `yarn run ${script}`;
-  return `bun run ${script}`;
-}
-
-function describePackageScript(scriptName: string): string {
-  const lower = scriptName.toLowerCase();
-  if (lower === "dev" || lower.includes("dev")) return "Start the development workflow";
-  if (lower === "start") return "Start the project";
-  if (lower.includes("build")) return "Build the project";
-  if (lower.includes("test")) return "Run tests";
-  if (lower.includes("lint")) return "Run lint checks";
-  if (lower.includes("type")) return "Run type checking";
-  if (lower.includes("format")) return "Format or verify formatting";
-  if (lower.includes("preview")) return "Preview the built app";
-  return "Run package script";
-}
-
-function findPackageRoot(startPath: string): string | null {
-  let current = expandPath(startPath || getLaunchCwd());
-  if (!existsSync(current)) return null;
-
-  const stat = statSync(current);
-  if (!stat.isDirectory()) current = dirname(current);
-
-  for (let depth = 0; depth < 8; depth++) {
-    const packageJsonPath = join(current, "package.json");
-    if (existsSync(packageJsonPath)) return current;
-
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-
-  return null;
-}
-
 apiRoutes.get("/tasks/scripts", (c) => {
   const queryPath = c.req.query("path") || getLaunchCwd();
   const requestedPath = expandPath(queryPath);
@@ -595,50 +850,14 @@ apiRoutes.get("/tasks/scripts", (c) => {
     return c.json({ error: "Path not found", root: requestedPath, scripts: [] }, 404);
   }
 
-  const root = findPackageRoot(requestedPath);
-  if (!root) {
-    return c.json({ root: requestedPath, packageJsonPath: null, packageManager: "npm", scripts: [] });
-  }
-
-  const packageJsonPath = join(root, "package.json");
-  const packageStat = statSync(packageJsonPath);
-  if (!packageStat.isFile()) {
-    return c.json({ error: "package.json is not a file", root, packageJsonPath, scripts: [] }, 400);
-  }
-  if (packageStat.size > PACKAGE_JSON_MAX_BYTES) {
-    return c.json({ error: "package.json is too large", root, packageJsonPath, scripts: [] }, 400);
-  }
-
   try {
-    const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-    const scriptsObject = parsed && typeof parsed.scripts === "object" && !Array.isArray(parsed.scripts)
-      ? parsed.scripts
-      : {};
-    const packageManager = packageManagerForRoot(root);
-    const scripts = Object.entries(scriptsObject)
-      .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string")
-      .map(([name, command]) => ({
-        name,
-        command,
-        runCommand: packageScriptCommand(packageManager, name),
-        description: describePackageScript(name),
-      }))
-      .sort((a, b) => {
-        const aPriority = PACKAGE_SCRIPT_PRIORITY.indexOf(a.name);
-        const bPriority = PACKAGE_SCRIPT_PRIORITY.indexOf(b.name);
-        const aRank = aPriority === -1 ? PACKAGE_SCRIPT_PRIORITY.length : aPriority;
-        const bRank = bPriority === -1 ? PACKAGE_SCRIPT_PRIORITY.length : bPriority;
-        return aRank === bRank ? a.name.localeCompare(b.name) : aRank - bRank;
-      });
-
-    return c.json({
-      root,
-      packageJsonPath,
-      packageManager,
-      scripts,
-    });
+    const manifest = readPackageScriptManifest(requestedPath);
+    if (!manifest) {
+      return c.json({ root: requestedPath, packageJsonPath: null, packageManager: "npm", scripts: [] });
+    }
+    return c.json(manifest);
   } catch (e: any) {
-    return c.json({ error: e.message || "Failed to parse package.json", root, packageJsonPath, scripts: [] }, 400);
+    return c.json({ error: e.message || "Failed to parse package.json", root: requestedPath, scripts: [] }, 400);
   }
 });
 
@@ -737,58 +956,212 @@ apiRoutes.get("/files/read", (c) => {
   }
 });
 
+// Session-scoped file context uses the same contract for local and
+// instrumented SSH shells. A remote session never falls through to the local
+// filesystem while its command channel is unavailable.
+apiRoutes.post("/sessions/:sessionId/files/read", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    const result = await terminalFiles.readSessionFiles(sessionId, session, {
+      files: body.files,
+      maxFileBytes: body.maxFileBytes,
+      maxBatchBytes: body.maxBatchBytes,
+      includeBinary: body.includeBinary === true,
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    if (error instanceof TerminalFilesError) return c.json({ error: error.message }, error.status as any);
+    return c.json({ error: error?.message || "File read failed" }, 500);
+  }
+});
+
+apiRoutes.get("/sessions/:sessionId/files/tree", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  try {
+    const result = await codeWorkspace.listSessionFiles(sessionId, session);
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    if (error instanceof CodeWorkspaceError) return c.json({ error: error.message }, error.status as any);
+    return c.json({ error: error?.message || "Workspace file list failed" }, 500);
+  }
+});
+
+apiRoutes.put("/sessions/:sessionId/files/write", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    const result = await codeWorkspace.writeSessionFile(sessionId, session, {
+      path: body.path,
+      content: body.content,
+      expectedModified: body.expectedModified,
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    if (error instanceof CodeWorkspaceError) return c.json({ error: error.message }, error.status as any);
+    return c.json({ error: error?.message || "File save failed" }, 500);
+  }
+});
+
+apiRoutes.post("/sessions/:sessionId/files/apply-patch", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    const result = await terminalFiles.applySessionPatch(sessionId, session, {
+      patch: body.patch,
+      validateOnly: body.validateOnly,
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    if (error instanceof TerminalFilesError) return c.json({ error: error.message }, error.status as any);
+    return c.json({ error: error?.message || "Patch application failed" }, 500);
+  }
+});
+
+function sessionGitEnvironment(sessionId: string): NodeJS.ProcessEnv {
+  const shellEnvironment = getTerminalShellEnvironment(sessionId) || {};
+  return terminalRemoteManager.isConnected(sessionId)
+    ? { ...shellEnvironment }
+    : { ...process.env, ...shellEnvironment };
+}
+
+function terminalGitErrorResponse(c: any, error: any, fallback: string) {
+  if (error instanceof TerminalGitError) {
+    return c.json({ error: error.message, code: error.code, details: error.details }, error.status as any);
+  }
+  return c.json({ error: error?.message || fallback, code: "internal" }, 500);
+}
+
+apiRoutes.get("/sessions/:sessionId/git/status", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  try {
+    const result = await terminalGit.statusSession(sessionId, session, sessionGitEnvironment(sessionId));
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "Git status failed");
+  }
+});
+
+apiRoutes.get("/sessions/:sessionId/git/diff", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  try {
+    const result = await terminalGit.diffSession(sessionId, session, {
+      file: c.req.query("file"),
+      untracked: c.req.query("untracked") === "1",
+    }, sessionGitEnvironment(sessionId));
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "Git diff failed");
+  }
+});
+
+apiRoutes.post("/sessions/:sessionId/git/discard", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(await terminalGit.discardSession(sessionId, session, {
+      scope: body.scope,
+      file: body.file,
+      hunkIndex: body.hunkIndex,
+    }, sessionGitEnvironment(sessionId)));
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "Git discard failed");
+  }
+});
+
+apiRoutes.post("/sessions/:sessionId/git/commit", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(await terminalGit.commitSession(sessionId, session, {
+      message: body.message,
+      includeUnstaged: body.includeUnstaged,
+      branch: body.branch,
+      mode: body.mode,
+    }, sessionGitEnvironment(sessionId)));
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "Git commit failed");
+  }
+});
+
+apiRoutes.post("/sessions/:sessionId/git/push", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(await terminalGit.pushSession(
+      sessionId,
+      session,
+      { branch: body.branch },
+      sessionGitEnvironment(sessionId),
+    ));
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "Git push failed");
+  }
+});
+
+apiRoutes.get("/sessions/:sessionId/git/pr", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  try {
+    const result = await terminalGit.viewPrSession(sessionId, session, sessionGitEnvironment(sessionId));
+    c.header("Cache-Control", "no-store");
+    return c.json(result);
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "GitHub PR lookup failed");
+  }
+});
+
+apiRoutes.post("/sessions/:sessionId/git/pr", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(await terminalGit.createPrSession(
+      sessionId,
+      session,
+      { branch: body.branch },
+      sessionGitEnvironment(sessionId),
+    ));
+  } catch (error: any) {
+    return terminalGitErrorResponse(c, error, "GitHub PR creation failed");
+  }
+});
+
 // ============ Git Diff ============
 // Reviewing what an agent just wrote: `git diff` on a repo, per-file.
 
 const GIT_MAX_BUFFER = 20 * 1024 * 1024; // 20MB — handles large diffs
 
-function execGitWithInput(root: string, args: string[], input: string): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn("git", args, { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const rejectOnce = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      child.kill("SIGTERM");
-      rejectPromise(error);
-    };
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-      if (stdout.length > GIT_MAX_BUFFER) {
-        rejectOnce(new Error("git output exceeded the maximum buffer"));
-      }
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.length > GIT_MAX_BUFFER) {
-        rejectOnce(new Error("git error output exceeded the maximum buffer"));
-      }
-    });
-
-    child.on("error", rejectOnce);
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      if (code === 0) {
-        resolvePromise({ stdout, stderr });
-        return;
-      }
-      rejectPromise(new Error(stderr.trim() || `git ${args.join(" ")} failed with exit code ${code}`));
-    });
-
-    child.stdin.end(input);
-  });
-}
-
 // Resolve the git repo root for a path. Returns null if not in a repo.
 async function gitRoot(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync("git rev-parse --show-toplevel", { cwd });
+    const { stdout } = await execGit(["rev-parse", "--show-toplevel"], { cwd });
     return stdout.trim();
   } catch {
     return null;
@@ -808,7 +1181,7 @@ function resolveGitFile(root: string, file: string): { absPath: string; relPath:
 
 async function gitHasHead(root: string): Promise<boolean> {
   try {
-    await execGitAsync("git", ["rev-parse", "--verify", "HEAD"], { cwd: root });
+    await execGit(["rev-parse", "--verify", "HEAD"], { cwd: root });
     return true;
   } catch {
     return false;
@@ -817,7 +1190,7 @@ async function gitHasHead(root: string): Promise<boolean> {
 
 async function gitFileExistsInHead(root: string, relPath: string): Promise<boolean> {
   try {
-    await execGitAsync("git", ["cat-file", "-e", `HEAD:${relPath}`], { cwd: root });
+    await execGit(["cat-file", "-e", `HEAD:${relPath}`], { cwd: root });
     return true;
   } catch {
     return false;
@@ -826,7 +1199,7 @@ async function gitFileExistsInHead(root: string, relPath: string): Promise<boole
 
 async function discardGitFile(root: string, file: string): Promise<void> {
   const { absPath, relPath } = resolveGitFile(root, file);
-  const { stdout } = await execGitAsync("git", ["status", "--porcelain", "--", relPath], {
+  const { stdout } = await execGit(["status", "--porcelain", "--", relPath], {
     cwd: root,
     maxBuffer: GIT_MAX_BUFFER,
   });
@@ -841,14 +1214,14 @@ async function discardGitFile(root: string, file: string): Promise<void> {
   const existsInHead = hasHead && (await gitFileExistsInHead(root, relPath));
 
   if (existsInHead) {
-    await execGitAsync("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", relPath], {
+    await execGit(["restore", "--source=HEAD", "--staged", "--worktree", "--", relPath], {
       cwd: root,
       maxBuffer: GIT_MAX_BUFFER,
     });
     return;
   }
 
-  await execGitAsync("git", ["reset", "HEAD", "--", relPath], {
+  await execGit(["reset", "HEAD", "--", relPath], {
     cwd: root,
     maxBuffer: GIT_MAX_BUFFER,
   }).catch(() => undefined);
@@ -889,7 +1262,7 @@ function extractHunkPatch(diff: string, hunkIndex: number): string | null {
 
 async function discardGitHunk(root: string, file: string, hunkIndex: number): Promise<void> {
   const { relPath } = resolveGitFile(root, file);
-  const { stdout: statusOut } = await execGitAsync("git", ["status", "--porcelain", "--", relPath], {
+  const { stdout: statusOut } = await execGit(["status", "--porcelain", "--", relPath], {
     cwd: root,
     maxBuffer: GIT_MAX_BUFFER,
   });
@@ -898,8 +1271,7 @@ async function discardGitHunk(root: string, file: string, hunkIndex: number): Pr
     throw new Error("Rejecting individual hunks is only available for tracked files");
   }
 
-  const { stdout: diff } = await execGitAsync(
-    "git",
+  const { stdout: diff } = await execGit(
     ["diff", "--no-color", "HEAD", "--", relPath],
     { cwd: root, maxBuffer: GIT_MAX_BUFFER },
   );
@@ -908,8 +1280,14 @@ async function discardGitHunk(root: string, file: string, hunkIndex: number): Pr
     throw new Error("Hunk not found");
   }
 
-  await execGitWithInput(root, ["apply", "--reverse", "--cached", "--whitespace=nowarn"], patch).catch(() => undefined);
-  await execGitWithInput(root, ["apply", "--reverse", "--whitespace=nowarn"], patch);
+  await execGitWithInput(["apply", "--reverse", "--cached", "--whitespace=nowarn"], patch, {
+    cwd: root,
+    maxBuffer: GIT_MAX_BUFFER,
+  }).catch(() => undefined);
+  await execGitWithInput(["apply", "--reverse", "--whitespace=nowarn"], patch, {
+    cwd: root,
+    maxBuffer: GIT_MAX_BUFFER,
+  });
 }
 
 interface GitChangedFile {
@@ -923,7 +1301,7 @@ interface GitChangedFile {
 
 async function getGitChangedFiles(root: string): Promise<GitChangedFile[]> {
   // `git status --porcelain` gives us status letters incl. untracked (??).
-  const { stdout: statusOut } = await execGitAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
+  const { stdout: statusOut } = await execGit(["status", "--porcelain", "--untracked-files=all"], {
     cwd: root,
     maxBuffer: GIT_MAX_BUFFER,
   });
@@ -932,7 +1310,7 @@ async function getGitChangedFiles(root: string): Promise<GitChangedFile[]> {
   // (Falls back gracefully on a repo with no commits.)
   const numstat: Record<string, { added: number; removed: number }> = {};
   try {
-    const { stdout } = await execGitAsync("git", ["diff", "--numstat", "HEAD"], {
+    const { stdout } = await execGit(["diff", "--numstat", "HEAD"], {
       cwd: root,
       maxBuffer: GIT_MAX_BUFFER,
     });
@@ -1149,7 +1527,7 @@ async function restoreGitCheckpoint(root: string, checkpointId: string): Promise
 
   for (const file of checkpoint.files) {
     const { absPath, relPath } = resolveGitFile(root, file.path);
-    await execGitAsync("git", ["reset", "HEAD", "--", relPath], {
+    await execGit(["reset", "HEAD", "--", relPath], {
       cwd: root,
       maxBuffer: GIT_MAX_BUFFER,
     }).catch(() => undefined);
@@ -1270,7 +1648,7 @@ apiRoutes.get("/diff/files", async (c) => {
     // Current branch (best-effort).
     let branch = "";
     try {
-      const r = await execFileAsync("git rev-parse --abbrev-ref HEAD", { cwd: root });
+      const r = await execGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: root });
       branch = r.stdout.trim();
     } catch {
       // detached HEAD or empty repo
@@ -1327,8 +1705,7 @@ apiRoutes.get("/diff/file", async (c) => {
     let diff: string;
     if (untracked) {
       // New file — diff against the empty tree so the whole file shows as added.
-      const r = await execGitAsync(
-        "git",
+      const r = await execGit(
         ["diff", "--no-color", "--no-index", "--", "/dev/null", file],
         { cwd: root, maxBuffer: GIT_MAX_BUFFER },
       ).catch((err: any) => {
@@ -1338,8 +1715,7 @@ apiRoutes.get("/diff/file", async (c) => {
       });
       diff = r.stdout;
     } else {
-      const r = await execGitAsync(
-        "git",
+      const r = await execGit(
         ["diff", "--no-color", "HEAD", "--", file],
         { cwd: root, maxBuffer: GIT_MAX_BUFFER },
       );
@@ -1374,12 +1750,12 @@ apiRoutes.post("/diff/discard", async (c) => {
     if (scope === "all") {
       const hasHead = await gitHasHead(root);
       if (hasHead) {
-        await execGitAsync("git", ["reset", "--hard", "HEAD"], {
+        await execGit(["reset", "--hard", "HEAD"], {
           cwd: root,
           maxBuffer: GIT_MAX_BUFFER,
         });
       }
-      await execGitAsync("git", ["clean", "-fd"], {
+      await execGit(["clean", "-fd"], {
         cwd: root,
         maxBuffer: GIT_MAX_BUFFER,
       });
@@ -1443,7 +1819,85 @@ apiRoutes.get("/agents", (c) => {
       icon: "codex",
     },
   ];
+  for (const profile of agentProfiles.list(false)) {
+    const version = profile.versions.find((item) => item.version === profile.latestVersion);
+    if (!version) continue;
+    agents.push({
+      id: `profile:${profile.id}`,
+      name: version.config.name,
+      command: version.config.command,
+      description: version.config.description,
+      color: version.config.color,
+      icon: version.config.icon,
+      profileId: profile.id,
+      profileVersion: version.version,
+      profileConfig: version.config,
+    });
+  }
   return c.json(agents);
+});
+
+apiRoutes.get("/agent-profiles", (c) => {
+  return c.json({ profiles: agentProfiles.list(c.req.query("includeArchived") === "true") });
+});
+
+apiRoutes.post("/agent-profiles", async (c) => {
+  try {
+    return c.json({ profile: agentProfiles.create(await c.req.json()) }, 201);
+  } catch (error) {
+    const status = error instanceof AgentProfileError ? error.status : 500;
+    const message = error instanceof Error ? error.message : "Failed to create agent profile";
+    return c.json({ error: message }, (status === 409 ? 409 : 400));
+  }
+});
+
+apiRoutes.get("/agent-profiles/:profileId", (c) => {
+  try {
+    return c.json({ profile: agentProfiles.get(c.req.param("profileId")) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Agent profile not found";
+    return c.json({ error: message }, 404);
+  }
+});
+
+apiRoutes.post("/agent-profiles/:profileId/versions", async (c) => {
+  try {
+    return c.json({ profile: agentProfiles.update(c.req.param("profileId"), await c.req.json()) });
+  } catch (error) {
+    const status = error instanceof AgentProfileError ? error.status : 500;
+    const message = error instanceof Error ? error.message : "Failed to update agent profile";
+    return c.json({ error: message }, (status === 404 ? 404 : status === 409 ? 409 : 400));
+  }
+});
+
+apiRoutes.post("/agent-profiles/:profileId/versions/:version/promote", async (c) => {
+  try {
+    const version = Number(c.req.param("version"));
+    if (!Number.isSafeInteger(version) || version < 1) {
+      return c.json({ error: "Version must be a positive integer" }, 400);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    return c.json({
+      profile: agentProfiles.promote(c.req.param("profileId"), version, body.changeNote),
+    });
+  } catch (error) {
+    const status = error instanceof AgentProfileError ? error.status : 500;
+    const message = error instanceof Error ? error.message : "Failed to promote agent profile version";
+    return c.json({ error: message }, (status === 404 ? 404 : status === 409 ? 409 : 400));
+  }
+});
+
+apiRoutes.post("/agent-profiles/:profileId/archive", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    return c.json({
+      profile: agentProfiles.archive(c.req.param("profileId"), body.confirmPermanent === true),
+    });
+  } catch (error) {
+    const status = error instanceof AgentProfileError ? error.status : 500;
+    const message = error instanceof Error ? error.message : "Failed to archive agent profile";
+    return c.json({ error: message }, (status === 404 ? 404 : 409));
+  }
 });
 
 apiRoutes.get("/sessions", (c) => {
@@ -1466,6 +1920,12 @@ apiRoutes.get("/sessions", (c) => {
     ticketTitle: session.ticketTitle,
     worktreePaths: session.worktreePaths,
     launchCheckpoint: session.launchCheckpoint,
+    agentProfileId: session.agentProfileId,
+    agentProfileVersion: session.agentProfileVersion,
+    agentPermissionPolicy: session.agentPermissionPolicy,
+    agentModel: session.agentModel,
+    terminalCols: session.terminalCols,
+    terminalRows: session.terminalRows,
   }));
   return c.json(sessionList);
 });
@@ -1567,6 +2027,978 @@ apiRoutes.get("/sessions/:sessionId/status", (c) => {
   return c.json({ status: session.status, isRestored: session.isRestored });
 });
 
+apiRoutes.get("/terminal/suggestions", async (c) => {
+  const query = c.req.query("query") || "";
+  const requestedSessionId = c.req.query("sessionId") || "";
+  const contextSession = requestedSessionId ? sessions.get(requestedSessionId) : undefined;
+  const cwd = c.req.query("cwd") || contextSession?.cwd || getLaunchCwd();
+  const rawLimit = Number(c.req.query("limit") || 30);
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 30;
+  const sessionEntries = Array.from(sessions.entries());
+  const contextSnapshot = contextSession
+    ? getTerminalSnapshot(requestedSessionId, false)
+    : null;
+  const shellEnvironment = contextSession
+    ? getTerminalShellEnvironment(requestedSessionId) || {}
+    : undefined;
+  const remoteConnected = Boolean(contextSession && terminalRemoteManager.isConnected(requestedSessionId));
+  const suggestionEnvironment = remoteConnected
+    ? { ...(shellEnvironment || {}) }
+    : shellEnvironment
+      ? { ...process.env, ...shellEnvironment }
+      : undefined;
+  const remotePathCommands = remoteConnected
+    ? await terminalRemoteManager.pathCommands(
+        requestedSessionId,
+        suggestionEnvironment?.PATH || "",
+        cwd,
+      ) || []
+    : undefined;
+  const blocks = sessionEntries.flatMap(([sessionId, session]) => {
+    const snapshot = getTerminalSnapshot(sessionId, false);
+    if (!snapshot) return [];
+    return snapshot.blocks.map((block) => ({
+      sessionId,
+      sessionName: session.customName || session.agentName,
+      block,
+    }));
+  });
+  return c.json(await getTerminalSuggestionsAsync({
+    query,
+    cwd,
+    workflows: terminalAutomation.listWorkflows(),
+    sessions: sessionEntries,
+    blocks,
+    limit,
+    shell: contextSnapshot?.shellIntegration || contextSession?.shellLaunch?.shell || process.env.SHELL,
+    environment: suggestionEnvironment,
+    shellCompletions: contextSession
+      ? getTerminalShellCompletions(requestedSessionId) || []
+      : [],
+    shellCapabilities: contextSession
+      ? getTerminalShellCapabilities(requestedSessionId) || {}
+      : undefined,
+    resourceRunner: remoteConnected
+      ? terminalRemoteManager.resourceRunner(requestedSessionId)
+      : undefined,
+    argumentResolver: remoteConnected
+      ? (input) => terminalRemoteManager.argumentValues(requestedSessionId, input)
+      : undefined,
+    pathCommands: remotePathCommands,
+    disableLocalFilesystem: remoteConnected,
+  }));
+});
+
+apiRoutes.post("/terminal/find", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const sessionId = textValue(body.sessionId);
+  if (!sessionId || !sessions.has(sessionId)) return c.json({ error: "Session not found" }, 404);
+  try {
+    const search = terminalFind.start({
+      sessionId,
+      clientId: body.clientId,
+      query: body.query,
+      regex: body.regex === true,
+      caseSensitive: body.caseSensitive === true,
+      fields: body.fields,
+      order: body.order,
+      blockIds: body.blockIds,
+      hiddenOutputLineRanges: body.hiddenOutputLineRanges,
+      limit: body.limit,
+      listBlocks: () => listTerminalFindBlocks(sessionId) || [],
+      readBlock: (blockId) => readTerminalFindBlock(sessionId, blockId),
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json({ search }, 202);
+  } catch (error: any) {
+    if (error instanceof TerminalFindError) return c.json({ error: error.message }, error.status);
+    return c.json({ error: error?.message || "Terminal search failed" }, 500);
+  }
+});
+
+apiRoutes.patch("/terminal/find/:searchId/visibility", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    const search = terminalFind.updateHiddenOutputLineRanges(
+      c.req.param("searchId"),
+      body.hiddenOutputLineRanges,
+    );
+    if (!search) return c.json({ error: "Terminal search not found" }, 404);
+    c.header("Cache-Control", "no-store");
+    return c.json({ search }, search.status === "scanning" ? 202 : 200);
+  } catch (error: any) {
+    if (error instanceof TerminalFindError) return c.json({ error: error.message }, error.status);
+    return c.json({ error: error?.message || "Terminal search visibility update failed" }, 500);
+  }
+});
+
+apiRoutes.get("/terminal/find/:searchId", async (c) => {
+  const searchId = c.req.param("searchId");
+  const rawAfterVersion = Number(c.req.query("afterVersion") || -1);
+  const afterVersion = Number.isFinite(rawAfterVersion) ? Math.max(-1, Math.floor(rawAfterVersion)) : -1;
+  const rawWaitMs = Number(c.req.query("waitMs") || 0);
+  const waitMs = Number.isFinite(rawWaitMs) ? Math.max(0, Math.min(25_000, Math.floor(rawWaitMs))) : 0;
+  const search = await terminalFind.waitForUpdate(searchId, afterVersion, waitMs);
+  if (!search) return c.json({ error: "Terminal search not found" }, 404);
+  c.header("Cache-Control", "no-store");
+  return c.json({ search });
+});
+
+apiRoutes.delete("/terminal/find/:searchId", (c) => {
+  const search = terminalFind.cancel(c.req.param("searchId"));
+  if (!search) return c.json({ error: "Terminal search not found" }, 404);
+  c.header("Cache-Control", "no-store");
+  return c.json({ search });
+});
+
+apiRoutes.get("/terminal/history", (c) => {
+  const query = (c.req.query("query") || "").trim().toLowerCase();
+  const status = (c.req.query("status") || "").trim();
+  const cwd = (c.req.query("cwd") || "").trim().toLowerCase();
+  const bookmarkedOnly = c.req.query("bookmarked") === "true";
+  const searchOutput = c.req.query("searchOutput") === "true";
+  const requestedLimit = Number(c.req.query("limit") || 100);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(250, Math.floor(requestedLimit)))
+    : 100;
+
+  const history = Array.from(sessions.entries()).flatMap(([sessionId, session]) => {
+    if (session.pendingDelete) return [];
+    const snapshot = getTerminalSnapshot(sessionId, searchOutput);
+    if (!snapshot) return [];
+    return snapshot.blocks.flatMap((block) => {
+      if (status && block.status !== status) return [];
+      if (cwd && !block.cwd.toLowerCase().includes(cwd)) return [];
+      if (bookmarkedOnly && !block.bookmarked) return [];
+      if (query) {
+        const searchable = [
+          block.command,
+          block.cwd,
+          block.note || "",
+          session.customName || "",
+          session.agentName,
+          searchOutput ? block.output : "",
+        ].join("\n").toLowerCase();
+        if (!searchable.includes(query)) return [];
+      }
+      const { output: _output, ...summary } = block;
+      return [{
+        ...summary,
+        sessionId,
+        nodeId: session.nodeId,
+        sessionName: session.customName || session.agentName,
+        agentName: session.agentName,
+      }];
+    });
+  }).sort((a, b) => (b.completedAt || b.startedAt) - (a.completedAt || a.startedAt));
+
+  return c.json({ history: history.slice(0, limit), total: history.length });
+});
+
+apiRoutes.get("/terminal/history/export", (c) => {
+  const requestedSessionId = textValue(c.req.query("sessionId"));
+  if (requestedSessionId && !sessions.has(requestedSessionId)) {
+    return c.json({ error: "Session not found" }, 404);
+  }
+  const includeOutput = c.req.query("includeOutput") === "true";
+  const format = c.req.query("format") === "ndjson" ? "ndjson" : "json";
+  const exportedAt = Date.now();
+  const exportedSessions = [...sessions.entries()].flatMap(([sessionId, session]) => {
+    if (session.pendingDelete || (requestedSessionId && sessionId !== requestedSessionId)) return [];
+    const snapshot = getTerminalSnapshot(sessionId, includeOutput);
+    if (!snapshot) return [];
+    return [{
+      sessionId,
+      nodeId: session.nodeId,
+      name: session.customName || session.agentName,
+      agentName: session.agentName,
+      cwd: session.cwd,
+      createdAt: session.createdAt,
+      lifecycle: {
+        phase: snapshot.phase,
+        currentCwd: snapshot.currentCwd,
+        shellIntegration: snapshot.shellIntegration,
+        shellEpochId: snapshot.shellEpochId,
+        shellDepth: snapshot.shellDepth,
+        alternateScreen: snapshot.alternateScreen,
+        bracketedPasteEnabled: snapshot.bracketedPasteEnabled,
+        terminalModes: snapshot.terminalModes,
+      },
+      blocks: snapshot.blocks,
+    }];
+  });
+
+  c.header(
+    "Content-Disposition",
+    `attachment; filename="openui-terminal-history-${new Date(exportedAt).toISOString().slice(0, 10)}.${format === "ndjson" ? "ndjson" : "json"}"`,
+  );
+  c.header("Cache-Control", "no-store");
+  if (format === "ndjson") {
+    c.header("Content-Type", "application/x-ndjson; charset=utf-8");
+    const lines = exportedSessions.flatMap((session) => session.blocks.map((block) => JSON.stringify({
+      version: 1,
+      exportedAt,
+      session: {
+        sessionId: session.sessionId,
+        nodeId: session.nodeId,
+        name: session.name,
+        agentName: session.agentName,
+        cwd: session.cwd,
+        createdAt: session.createdAt,
+      },
+      block,
+    })));
+    return c.body(lines.length ? `${lines.join("\n")}\n` : "");
+  }
+  return c.json({ version: 1, exportedAt, includeOutput, sessions: exportedSessions });
+});
+
+apiRoutes.delete("/terminal/history", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  if (body.confirm !== "clear-terminal-history") {
+    return c.json({
+      error: "History clearing requires confirm: clear-terminal-history",
+    }, 409);
+  }
+  const sessionId = textValue(body.sessionId) || undefined;
+  if (sessionId && !sessions.has(sessionId)) return c.json({ error: "Session not found" }, 404);
+  const before = body.before === undefined ? undefined : Number(body.before);
+  if (before !== undefined && (!Number.isFinite(before) || before < 0)) {
+    return c.json({ error: "before must be a non-negative timestamp" }, 400);
+  }
+  return c.json({
+    cleared: true,
+    scope: sessionId || "all-sessions",
+    ...clearTerminalHistory({
+      sessionId,
+      before,
+      includeBookmarked: body.includeBookmarked === true,
+    }),
+  });
+});
+
+apiRoutes.get("/terminal/workflows", (c) => {
+  return c.json({ workflows: terminalAutomation.listWorkflows() });
+});
+
+apiRoutes.get("/terminal/workflows/export", (c) => {
+  try {
+    const ids = (c.req.query("ids") || "").split(",").map((id) => id.trim()).filter(Boolean);
+    const yaml = terminalAutomation.exportWorkflowsYaml(ids.length ? ids : undefined);
+    c.header("Content-Type", "application/yaml; charset=utf-8");
+    c.header("Content-Disposition", "attachment; filename=\"openui-workflows.yaml\"");
+    c.header("Cache-Control", "no-store");
+    return c.body(yaml);
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workflows/import", async (c) => {
+  try {
+    const body = await c.req.json();
+    return c.json(terminalAutomation.importWorkflowsYaml(body.yaml, {
+      workspacePath: textValue(body.workspacePath) || undefined,
+      conflict: body.conflict,
+    }), 201);
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workflows", async (c) => {
+  try {
+    const workflow = terminalAutomation.createWorkflow(await c.req.json());
+    return c.json({ workflow }, 201);
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.get("/terminal/workflows/:workflowId", (c) => {
+  try {
+    return c.json({ workflow: terminalAutomation.getWorkflow(c.req.param("workflowId")) });
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.put("/terminal/workflows/:workflowId", async (c) => {
+  try {
+    const workflow = terminalAutomation.updateWorkflow(c.req.param("workflowId"), await c.req.json());
+    return c.json({ workflow });
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.delete("/terminal/workflows/:workflowId", (c) => {
+  try {
+    terminalAutomation.deleteWorkflow(c.req.param("workflowId"));
+    return c.json({ deleted: true });
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workflows/:workflowId/render", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    return c.json(terminalAutomation.renderWorkflow(c.req.param("workflowId"), body.values || {}));
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workflows/:workflowId/parameters/:parameterName/options", async (c) => {
+  try {
+    const workflow = terminalAutomation.getWorkflow(c.req.param("workflowId"));
+    const parameter = workflow.parameters.find((item) => item.name === c.req.param("parameterName"));
+    if (!parameter) return c.json({ error: "Workflow parameter not found" }, 404);
+    if (!parameter.dynamicOptionsCommand) {
+      return c.json({ error: "Workflow parameter has no dynamic options command" }, 409);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    if (body.confirm !== "run-dynamic-options") {
+      return c.json({ error: "Dynamic options require confirm: run-dynamic-options" }, 409);
+    }
+    const cwd = textValue(body.cwd) || workflow.workspacePath || getLaunchCwd();
+    if (!isAbsolute(cwd) || !existsSync(cwd) || !statSync(cwd).isDirectory()) {
+      return c.json({ error: "Dynamic options require an existing absolute cwd" }, 400);
+    }
+    const { stdout } = await execFileAsync(parameter.dynamicOptionsCommand, {
+      cwd,
+      timeout: 5000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+    });
+    const redacted = redactTerminalText(String(stdout)).text;
+    const options = [...new Set(redacted.split(/\r?\n/).map((value) => value.trim()).filter(Boolean))].slice(0, 100);
+    return c.json({ options, cwd, truncated: options.length >= 100 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Dynamic options command failed";
+    return c.json({ error: message }, 400);
+  }
+});
+
+apiRoutes.get("/terminal/launch-configurations", (c) => {
+  return c.json({ launchConfigurations: terminalAutomation.listLaunchConfigurations() });
+});
+
+apiRoutes.post("/terminal/launch-configurations/import", async (c) => {
+  try {
+    const body = await c.req.json();
+    return c.json(terminalAutomation.importLaunchConfigurationsYaml(body.yaml, {
+      defaultCwd: textValue(body.defaultCwd) || getLaunchCwd(),
+      conflict: body.conflict,
+    }), 201);
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/launch-configurations", async (c) => {
+  try {
+    const launchConfiguration = terminalAutomation.createLaunchConfiguration(await c.req.json());
+    return c.json({ launchConfiguration }, 201);
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.get("/terminal/launch-configurations/:configurationId", (c) => {
+  try {
+    const launchConfiguration = terminalAutomation.getLaunchConfiguration(c.req.param("configurationId"));
+    return c.json({ launchConfiguration });
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.get("/terminal/launch-configurations/:configurationId/export", (c) => {
+  try {
+    const format = c.req.query("format") === "warp" ? "warp" : "openui";
+    const yaml = terminalAutomation.exportLaunchConfigurationYaml(
+      c.req.param("configurationId"),
+      format,
+    );
+    c.header("Content-Type", "application/yaml; charset=utf-8");
+    c.header("Content-Disposition", `attachment; filename="openui-launch-${format}.yaml"`);
+    c.header("Cache-Control", "no-store");
+    return c.body(yaml);
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.put("/terminal/launch-configurations/:configurationId", async (c) => {
+  try {
+    const launchConfiguration = terminalAutomation.updateLaunchConfiguration(
+      c.req.param("configurationId"),
+      await c.req.json(),
+    );
+    return c.json({ launchConfiguration });
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.delete("/terminal/launch-configurations/:configurationId", (c) => {
+  try {
+    terminalAutomation.deleteLaunchConfiguration(c.req.param("configurationId"));
+    return c.json({ deleted: true });
+  } catch (error) {
+    const failure = terminalAutomationFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/launch-configurations/:configurationId/launch", async (c) => {
+  const configurationId = c.req.param("configurationId");
+  const started: Array<{ ref: string; sessionId: string; nodeId: string; cwd: string; gitBranch?: string }> = [];
+  const failures: Array<{ ref: string; error: string }> = [];
+  try {
+    const configuration = terminalAutomation.getLaunchConfiguration(configurationId);
+    for (let index = 0; index < configuration.sessions.length; index++) {
+      const launchSession = configuration.sessions[index];
+      try {
+        if (!existsSync(launchSession.cwd)) {
+          throw new TerminalAutomationError(`Working directory does not exist: ${launchSession.cwd}`);
+        }
+        let workflowPrompt = "";
+        if (launchSession.workflowId) {
+          const rendered = terminalAutomation.renderWorkflow(
+            launchSession.workflowId,
+            launchSession.workflowValues || {},
+          );
+          if (rendered.sensitive) {
+            throw new TerminalAutomationError(
+              `Launch session ${launchSession.ref} uses sensitive workflow values and requires interactive confirmation`,
+            );
+          }
+          workflowPrompt = rendered.command;
+        }
+        const initialPrompt = [launchSession.initialPrompt, workflowPrompt].filter(Boolean).join("\n\n") || undefined;
+        const position = launchSession.position || {
+          x: (index % 4) * 460,
+          y: Math.floor(index / 4) * 360,
+        };
+        const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const result = await startSessionFromApiInput(
+          { ...launchSession, initialPrompt, position },
+          {
+            persist: false,
+            sessionId: `session-${unique}`,
+            nodeId: `node-${configuration.id}-${launchSession.ref}-${unique}`.replace(/[^A-Za-z0-9_.-]/g, "-"),
+            workspace: "defer",
+          },
+        );
+        started.push({ ref: launchSession.ref, ...result });
+      } catch (error) {
+        failures.push({
+          ref: launchSession.ref,
+          error: error instanceof Error ? error.message : "Session launch failed",
+        });
+        if (configuration.launchMode === "atomic") throw error;
+      }
+    }
+
+    const activeSessionId = started.find((item) => item.ref === configuration.activeSessionRef)?.sessionId;
+    const workspace = terminalWorkspace.addLaunchTab({
+      layout: configuration.layout,
+      sessionIdsByRef: new Map(started.map((item) => [item.ref, item.sessionId])),
+      activeSessionId,
+      title: configuration.name,
+    });
+    saveState(sessions);
+    return c.json({
+      configurationId,
+      launchMode: configuration.launchMode,
+      layout: configuration.layout,
+      started,
+      failures,
+      activeSessionId,
+      workspace,
+      partial: failures.length > 0,
+    });
+  } catch (error) {
+    for (const item of started) deleteSession(item.sessionId);
+    saveState(sessions);
+    const failure = error instanceof TerminalWorkspaceError
+      ? terminalWorkspaceFailure(error)
+      : terminalAutomationFailure(error);
+    return c.json({
+      error: failure.message,
+      rolledBack: started.map((item) => item.sessionId),
+      failures,
+    }, failure.status);
+  }
+});
+
+apiRoutes.get("/terminal/workspace", (c) => {
+  try {
+    const activeSessionIds = [...sessions.keys()];
+    const workspace = terminalWorkspace.reconcile(activeSessionIds, { addMissing: true });
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/synchronized-input/dispatch", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const sourceSessionId = textValue(body.sourceSessionId);
+    const scope = body.scope === "all-tabs" ? "all-tabs"
+      : body.scope === "current-tab" ? "current-tab"
+      : null;
+    if (!scope) return c.json({ error: "scope must be current-tab or all-tabs" }, 400);
+
+    const workspace = terminalWorkspace.reconcile([...sessions.keys()], { addMissing: true });
+    const sourceTab = workspace.tabs.find((tab) =>
+      collectTerminalWorkspaceSessionIds(tab.root).includes(sourceSessionId)
+    );
+    if (!sourceTab) return c.json({ error: "Synchronized input source is not in the terminal workspace" }, 409);
+    const targetSessionIds = scope === "all-tabs"
+      ? workspace.tabs.flatMap((tab) => collectTerminalWorkspaceSessionIds(tab.root))
+      : collectTerminalWorkspaceSessionIds(sourceTab.root);
+    const result = dispatchSynchronizedTerminalCommand(
+      sourceSessionId,
+      targetSessionIds,
+      body.command,
+    );
+    return c.json({ ...result, scope, targetSessionIds });
+  } catch (error) {
+    if (error instanceof TerminalCommandQueueError) {
+      return c.json({ error: error.message }, error.status as any);
+    }
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/tabs", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const sessionId = textValue(body.sessionId);
+    const session = sessions.get(sessionId);
+    if (!session || session.pendingDelete) return c.json({ error: "Session not found" }, 404);
+    const workspace = terminalWorkspace.addTab(sessionId, {
+      title: body.title,
+      activate: body.activate !== false,
+      expectedRevision: expectedWorkspaceRevision(body.expectedRevision),
+    });
+    return c.json({ workspace }, 201);
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.patch("/terminal/workspace/tabs/:tabId", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.renameTab(
+      c.req.param("tabId"),
+      body.title,
+      expectedWorkspaceRevision(body.expectedRevision),
+    );
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/tabs/:tabId/activate", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.activateTab(
+      c.req.param("tabId"),
+      expectedWorkspaceRevision(body.expectedRevision),
+    );
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.delete("/terminal/workspace/tabs/:tabId", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.closeTab(
+      c.req.param("tabId"),
+      expectedWorkspaceRevision(body.expectedRevision),
+    );
+    return c.json({ workspace, sessionsRetained: true });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/panes/:sessionId/split", async (c) => {
+  const sourceSessionId = c.req.param("sessionId");
+  let createdSessionId: string | undefined;
+  try {
+    const source = sessions.get(sourceSessionId);
+    if (!source || source.pendingDelete) return c.json({ error: "Source session not found" }, 404);
+    const body = await c.req.json().catch(() => ({}));
+    const expectedRevision = expectedWorkspaceRevision(body.expectedRevision);
+    const existingSessionId = textValue(body.sessionId);
+    if (existingSessionId) {
+      if (body.session !== undefined) {
+        throw new TerminalWorkspaceError("Use either sessionId or session when splitting, not both");
+      }
+      const existing = sessions.get(existingSessionId);
+      if (!existing || existing.pendingDelete) throw new TerminalWorkspaceError("New pane session was not found", 404);
+      const workspace = terminalWorkspace.splitPane({
+        targetSessionId: sourceSessionId,
+        newSessionId: existingSessionId,
+        direction: body.direction,
+        expectedRevision,
+      });
+      return c.json({ workspace, sessionId: existingSessionId, created: false });
+    }
+
+    const requestedSession = body.session && typeof body.session === "object" ? body.session : {};
+    const cwd = resolveTerminalSplitWorkingDirectory(sourceSessionId, requestedSession.cwd);
+    const sessionInput = {
+      agentId: source.agentId,
+      agentName: source.agentName,
+      command: source.command,
+      agentProfileId: source.agentProfileId,
+      agentProfileVersion: source.agentProfileVersion,
+      customColor: source.customColor,
+      customName: `${source.customName || source.agentName} Split`.slice(0, 120),
+      ...requestedSession,
+      cwd: cwd.cwd,
+    };
+    const result = await startSessionFromApiInput(sessionInput, {
+      persist: false,
+      workspace: "defer",
+    });
+    createdSessionId = result.sessionId;
+    const workspace = terminalWorkspace.splitPane({
+      targetSessionId: sourceSessionId,
+      newSessionId: result.sessionId,
+      direction: body.direction,
+      expectedRevision,
+    });
+    saveState(sessions);
+    return c.json({
+      workspace,
+      sessionId: result.sessionId,
+      nodeId: result.nodeId,
+      created: true,
+      cwd: result.cwd,
+      cwdSource: cwd.source,
+    }, 201);
+  } catch (error) {
+    if (createdSessionId) {
+      deleteSession(createdSessionId);
+      saveState(sessions);
+    }
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/panes/:sessionId/move", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.movePane({
+      sessionId: c.req.param("sessionId"),
+      targetSessionId: body.targetSessionId,
+      direction: body.direction,
+      expectedRevision: expectedWorkspaceRevision(body.expectedRevision),
+    });
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/panes/:sessionId/focus", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = body.direction === undefined
+      ? terminalWorkspace.focusPane(
+          c.req.param("sessionId"),
+          expectedWorkspaceRevision(body.expectedRevision),
+        )
+      : terminalWorkspace.focusDirection({
+          sessionId: c.req.param("sessionId"),
+          direction: body.direction,
+          expectedRevision: expectedWorkspaceRevision(body.expectedRevision),
+        });
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/panes/:sessionId/zoom", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.toggleZoom(
+      c.req.param("sessionId"),
+      expectedWorkspaceRevision(body.expectedRevision),
+    );
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.patch("/terminal/workspace/splits/:splitId", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.resizeSplit({
+      splitId: c.req.param("splitId"),
+      sizes: body.sizes,
+      expectedRevision: expectedWorkspaceRevision(body.expectedRevision),
+    });
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.delete("/terminal/workspace/panes/:sessionId", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const workspace = terminalWorkspace.closePane(
+      c.req.param("sessionId"),
+      expectedWorkspaceRevision(body.expectedRevision),
+    );
+    return c.json({ workspace, sessionRetained: true });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.post("/terminal/workspace/undo-close", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const activeSessionIds = [...sessions.keys()];
+    const workspace = terminalWorkspace.undoClose(
+      activeSessionIds,
+      expectedWorkspaceRevision(body.expectedRevision),
+    );
+    return c.json({ workspace });
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
+});
+
+apiRoutes.get("/sessions/:sessionId/blocks", (c) => {
+  const sessionId = c.req.param("sessionId");
+  const includeOutput = c.req.query("includeOutput") === "true";
+  const snapshot = getTerminalSnapshot(sessionId, includeOutput);
+  if (!snapshot) return c.json({ error: "Session not found" }, 404);
+  const rawLimit = Number(c.req.query("limit") || 0);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0
+    ? Math.max(1, Math.min(250, Math.floor(rawLimit)))
+    : snapshot.blocks.length;
+  const totalBlocks = snapshot.blocks.length;
+  const selectedBlocks = snapshot.blocks.slice(-limit);
+  const plainOutput = includeOutput && c.req.query("plainOutput") === "true";
+  const maxOutputChars = 40_000;
+  const blocks = selectedBlocks.map((block) => {
+    if (!plainOutput) return block;
+    const plain = terminalOutputToPlainText(block.output, {
+      frameRedrawsInPlace: block.frameRedrawsInPlace,
+    });
+    if (plain.length <= maxOutputChars) return { ...block, output: plain, uiOutputTruncated: false };
+    const half = Math.floor((maxOutputChars - 58) / 2);
+    return {
+      ...block,
+      output: `${plain.slice(0, half)}\n… [middle of output hidden in block view] …\n${plain.slice(-half)}`,
+      uiOutputTruncated: true,
+    };
+  });
+  return c.json({
+    ...snapshot,
+    blocks,
+    totalBlocks,
+    returnedBlocks: blocks.length,
+    hasOlderBlocks: blocks.length < totalBlocks,
+  });
+});
+
+apiRoutes.get("/sessions/:sessionId/share", (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session || session.pendingDelete) return c.json({ error: "Session not found" }, 404);
+  const snapshot = getTerminalSnapshot(sessionId, true);
+  if (!snapshot) return c.json({ error: "Session not found" }, 404);
+  try {
+    const selectedBlocks = selectedTerminalShareBlocks(c, snapshot.blocks);
+    if (
+      selectedBlocks.some((block) => block.sensitive) &&
+      c.req.query("confirm") !== SENSITIVE_TERMINAL_SHARE_CONFIRMATION
+    ) {
+      return c.json({
+        error: `Sensitive terminal data requires confirm: ${SENSITIVE_TERMINAL_SHARE_CONFIRMATION}`,
+      }, 409);
+    }
+    return terminalShareResponse(c, createTerminalSessionShare(
+      terminalShareSession(sessionId, session),
+      selectedBlocks,
+      terminalShareOptions(c),
+    ));
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+apiRoutes.get("/sessions/:sessionId/blocks/:blockId/share", (c) => {
+  const sessionId = c.req.param("sessionId");
+  const session = sessions.get(sessionId);
+  if (!session || session.pendingDelete) return c.json({ error: "Session not found" }, 404);
+  const snapshot = getTerminalSnapshot(sessionId, true);
+  if (!snapshot) return c.json({ error: "Session not found" }, 404);
+  const block = snapshot.blocks.find((item) => item.id === c.req.param("blockId"));
+  if (!block) return c.json({ error: "Terminal block not found" }, 404);
+  if (block.sensitive && c.req.query("confirm") !== SENSITIVE_TERMINAL_SHARE_CONFIRMATION) {
+    return c.json({
+      error: `Sensitive terminal data requires confirm: ${SENSITIVE_TERMINAL_SHARE_CONFIRMATION}`,
+    }, 409);
+  }
+  try {
+    return terminalShareResponse(c, createTerminalBlockShare(
+      terminalShareSession(sessionId, session),
+      block,
+      terminalShareOptions(c),
+    ));
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400);
+  }
+});
+
+apiRoutes.get("/sessions/:sessionId/blocks/:blockId", (c) => {
+  const sessionId = c.req.param("sessionId");
+  const blockId = c.req.param("blockId");
+  const snapshot = getTerminalSnapshot(sessionId, true);
+  if (!snapshot) return c.json({ error: "Session not found" }, 404);
+  const block = snapshot.blocks.find((item) => item.id === blockId);
+  if (!block) return c.json({ error: "Terminal block not found" }, 404);
+  return c.json({ block });
+});
+
+apiRoutes.patch("/sessions/:sessionId/blocks/:blockId", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const blockId = c.req.param("blockId");
+  const body = await c.req.json().catch(() => ({}));
+  const updates: { bookmarked?: boolean; note?: string } = {};
+  if (typeof body.bookmarked === "boolean") updates.bookmarked = body.bookmarked;
+  if (typeof body.note === "string") updates.note = body.note;
+  const result = updateTerminalBlock(sessionId, blockId, updates);
+  if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+  return c.json({ block: result.block });
+});
+
+apiRoutes.post("/sessions/:sessionId/blocks/:blockId/command", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const blockId = c.req.param("blockId");
+  const body = await c.req.json().catch(() => ({}));
+  const mode = body.mode === "queue" ? "queue" : body.mode === "execute" ? "execute" : "insert";
+  const result = writeTerminalBlockCommand(sessionId, blockId, mode);
+  if (!result.ok) return c.json({ error: result.error }, result.status as 404 | 409);
+  return c.json({ success: true, mode });
+});
+
+function terminalCommandQueueError(c: any, error: unknown) {
+  if (error instanceof TerminalCommandQueueError) {
+    return c.json({ error: error.message }, error.status as any);
+  }
+  throw error;
+}
+
+apiRoutes.get("/sessions/:sessionId/command-queue", (c) => {
+  try {
+    return c.json({ queue: getTerminalCommandQueue(c.req.param("sessionId")) });
+  } catch (error) {
+    return terminalCommandQueueError(c, error);
+  }
+});
+
+apiRoutes.post("/sessions/:sessionId/command-queue", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(enqueueTerminalCommand(c.req.param("sessionId"), body.command));
+  } catch (error) {
+    return terminalCommandQueueError(c, error);
+  }
+});
+
+apiRoutes.patch("/sessions/:sessionId/command-queue/:commandId", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const commandId = c.req.param("commandId");
+  const body = await c.req.json().catch(() => ({}));
+  const hasCommand = Object.prototype.hasOwnProperty.call(body, "command");
+  const hasBeforeId = Object.prototype.hasOwnProperty.call(body, "beforeId");
+  if (!hasCommand && !hasBeforeId) {
+    return c.json({ error: "command or beforeId is required" }, 400);
+  }
+  if (hasBeforeId && body.beforeId !== null && typeof body.beforeId !== "string") {
+    return c.json({ error: "beforeId must be a queued command ID or null" }, 400);
+  }
+  try {
+    let queue = hasCommand
+      ? editTerminalQueuedCommand(sessionId, commandId, body.command)
+      : getTerminalCommandQueue(sessionId);
+    if (hasBeforeId) {
+      queue = reorderTerminalQueuedCommand(sessionId, commandId, body.beforeId);
+    }
+    return c.json({ queue });
+  } catch (error) {
+    return terminalCommandQueueError(c, error);
+  }
+});
+
+apiRoutes.delete("/sessions/:sessionId/command-queue/:commandId", (c) => {
+  try {
+    return c.json({
+      queue: removeTerminalQueuedCommand(
+        c.req.param("sessionId"),
+        c.req.param("commandId"),
+      ),
+    });
+  } catch (error) {
+    return terminalCommandQueueError(c, error);
+  }
+});
+
+apiRoutes.delete("/sessions/:sessionId/command-queue", (c) => {
+  try {
+    return c.json({ queue: clearPendingTerminalCommands(c.req.param("sessionId")) });
+  } catch (error) {
+    return terminalCommandQueueError(c, error);
+  }
+});
+
 apiRoutes.get("/state", (c) => {
   const state = loadState();
   const nodes = state.nodes.map(node => {
@@ -1599,67 +3031,21 @@ apiRoutes.post("/state/positions", async (c) => {
 
 apiRoutes.post("/sessions", async (c) => {
   const body = await c.req.json();
-  const {
-    agentId, agentName, command, cwd, nodeId, customName, customColor,
-    ticketId, ticketTitle, ticketUrl, branchName, baseBranch,
-    initialPrompt,
-    createWorktree: createWorktreeFlag,
-    multiRepoMode,
-    additionalRepos,
-  } = body;
-
-  const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const workingDir = cwd || getLaunchCwd();
-  const starterTitlePrompt = buildTitlePrompt(initialPrompt);
-
-  const linearConfig = loadConfig();
-  const ticketPromptTemplate = linearConfig.ticketPromptTemplate;
-  const autoCareful = linearConfig.autoCareful;
-
-  let result;
-  let launchCheckpoint: CheckpointSummary | undefined;
   try {
-    result = await createSession({
-      sessionId, agentId, agentName, command, cwd: workingDir, nodeId,
-      customName, customColor, ticketId, ticketTitle, ticketUrl,
-      branchName, baseBranch, createWorktreeFlag, ticketPromptTemplate,
-      initialPrompt: buildInitialPrompt(initialPrompt),
-      autoCareful, multiRepoMode, additionalRepos,
-      beforeStart: async (finalCwd) => {
-        try {
-          const root = await gitRoot(finalCwd).catch(() => null);
-          if (!root) return;
-          const checkpoint = await createGitCheckpoint(
-            root,
-            `Before ${customName || agentName} session`,
-            { source: "session-launch", sessionId, nodeId },
-          );
-          launchCheckpoint = summarizeCheckpoint(checkpoint);
-        } catch (checkpointError: any) {
-          logError(`[PRBE_ERROR_launchCheckpoint] [api] launch checkpoint failed (session=${sessionId}): ${checkpointError.message}`);
-        }
-      },
-    });
-
-    if (launchCheckpoint) {
-      result.session.launchCheckpoint = launchCheckpoint;
-    }
+    return c.json(await startSessionFromApiInput(body));
   } catch (e: any) {
     // Probe Agent Error Log Trigger
     logError(`[PRBE_ERROR_acHsml] [api] Failed to create session: ${e.message}`);
+    if (e instanceof AgentProfileError) {
+      const status = e.status === 404 ? 404 : e.status === 409 ? 409 : 400;
+      return c.json({ error: e.message }, status);
+    }
+    if (e instanceof TerminalWorkspaceError) {
+      const failure = terminalWorkspaceFailure(e);
+      return c.json({ error: failure.message }, failure.status);
+    }
     return c.json({ error: e.message }, 500);
   }
-
-  saveState(sessions);
-  if (starterTitlePrompt) {
-    scheduleSessionTitleGeneration(sessionId, starterTitlePrompt);
-  }
-  return c.json({
-    sessionId, nodeId,
-    cwd: result.cwd,
-    gitBranch: result.gitBranch,
-    launchCheckpoint,
-  });
 });
 
 apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
@@ -1668,22 +3054,17 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   if (!session) return c.json({ error: "Session not found" }, 404);
   if (session.pty) return c.json({ error: "Session already running" }, 400);
 
-  const shell = process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/zsh";
+  const { shell, args: shellArgs } = getSessionShellLaunch(session);
   const cwd = existsSync(session.cwd) ? session.cwd : homedir();
 
   let ptyProcess: pty.IPty;
   try {
-    ptyProcess = pty.spawn(shell, ["--login"], {
+    ptyProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cwd,
-      env: {
-        ...process.env,
-        TERM: "xterm-256color",
-        OPENUI_SESSION_ID: sessionId,
-        OPENUI_PORT: String(getServerPort()),
-      } as Record<string, string>,
-      cols: DEFAULT_PTY_COLS,
-      rows: DEFAULT_PTY_ROWS,
+      env: getSessionPtyEnvironment(sessionId, session),
+      cols: session.terminalCols || DEFAULT_PTY_COLS,
+      rows: session.terminalRows || DEFAULT_PTY_ROWS,
     });
   } catch (e: any) {
     // Probe Agent Error Log Trigger
@@ -1695,6 +3076,13 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   session.isRestored = false;
   session.status = "running";
   session.lastOutputTime = Date.now();
+  session.cwd = cwd;
+  session.shellLaunch = { shell, args: [...shellArgs] };
+  resetTerminalLifecycle(sessionId, cwd);
+  session.agentFallbackIndex = 0;
+  session.agentAttemptCommand = undefined;
+  session.agentAttemptBlockId = undefined;
+  session.agentAttemptStartedAt = undefined;
 
   const resetInterval = setInterval(() => {
     if (!sessions.has(sessionId) || !session.pty) {
@@ -1707,53 +3095,15 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   // Reset plugin status tracking for fresh session
   session.pluginReportedStatus = false;
 
-  // PTY exit handler for restarted sessions
-  ptyProcess.onExit(({ exitCode, signal }) => {
-    log(`[session] Restarted PTY exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
-    session.status = "disconnected";
-    session.pty = null;
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "exit", exitCode, signal }));
-      }
-    }
-  });
-
-  ptyProcess.onData((data: string) => {
-    session.outputBuffer.push(data);
-    if (session.outputBuffer.length > 1000) {
-      session.outputBuffer.shift();
-    }
-
-    session.lastOutputTime = Date.now();
-    session.recentOutputSize += data.length;
-
-    // Auto-detect running status from PTY output when plugin hasn't reported yet
-    if (session.status === "idle" && !session.pluginReportedStatus) {
-      session.status = "running";
-      for (const client of session.clients) {
-        if (client.readyState === 1) {
-          client.send(JSON.stringify({
-            type: "status",
-            status: "running",
-            isRestored: session.isRestored,
-          }));
-        }
-      }
-    }
-
-    for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "output", data }));
-      }
-    }
-  });
+  attachSessionPty(sessionId, session, ptyProcess, "Restarted PTY");
 
   const finalCommand = injectPluginDir(session.command, session.agentId);
   setTimeout(() => {
-    ptyProcess.write(`${finalCommand}\r`);
-  }, 300);
+    if (session.pty === ptyProcess) installShellIntegration(sessionId, session, ptyProcess, shell);
+  }, 150);
+  setTimeout(() => {
+    if (finalCommand) startTrackedCommand(sessionId, session, ptyProcess, finalCommand);
+  }, 450);
 
   log(`[session] Restarted ${sessionId}`);
   return c.json({ success: true });
@@ -1796,7 +3146,18 @@ apiRoutes.post("/sessions/:sessionId/soft-delete", (c) => {
   const session = sessions.get(sessionId);
   if (!session) return c.json({ error: "Session not found" }, 404);
 
+  let workspace;
+  try {
+    workspace = terminalWorkspace.closePane(sessionId);
+  } catch (error) {
+    if (!(error instanceof TerminalWorkspaceError) || error.status !== 404) {
+      const failure = terminalWorkspaceFailure(error);
+      return c.json({ error: failure.message }, failure.status);
+    }
+    workspace = terminalWorkspace.snapshot();
+  }
   session.pendingDelete = true;
+  discardTerminalCommandQueue(sessionId);
 
   if (session.deleteTimeout) {
     clearTimeout(session.deleteTimeout);
@@ -1805,16 +3166,14 @@ apiRoutes.post("/sessions/:sessionId/soft-delete", (c) => {
   session.deleteTimeout = setTimeout(() => {
     const s = sessions.get(sessionId);
     if (s && s.pendingDelete) {
-      if (s.pty) s.pty.kill();
-      if (s.stateTrackerPty) s.stateTrackerPty.kill();
-      sessions.delete(sessionId);
+      deleteSession(sessionId);
       saveState(sessions);
       log(`[session] Hard-deleted ${sessionId} after timeout`);
     }
   }, 5000);
 
   saveState(sessions);
-  return c.json({ success: true });
+  return c.json({ success: true, workspace });
 });
 
 // Undo soft delete - restores a pending-delete session
@@ -1822,6 +3181,14 @@ apiRoutes.post("/sessions/:sessionId/undo-delete", (c) => {
   const sessionId = c.req.param("sessionId");
   const session = sessions.get(sessionId);
   if (!session) return c.json({ error: "Session not found" }, 404);
+
+  let workspace;
+  try {
+    workspace = terminalWorkspace.restoreDetachedSession(sessionId, sessions.keys());
+  } catch (error) {
+    const failure = terminalWorkspaceFailure(error);
+    return c.json({ error: failure.message }, failure.status);
+  }
 
   if (session.deleteTimeout) {
     clearTimeout(session.deleteTimeout);
@@ -1831,7 +3198,19 @@ apiRoutes.post("/sessions/:sessionId/undo-delete", (c) => {
 
   saveState(sessions);
   log(`[session] Restored ${sessionId} from soft-delete`);
-  return c.json({ success: true });
+  return c.json({ success: true, workspace });
+});
+
+apiRoutes.get("/sessions/:sessionId/permissions", (c) => {
+  const session = sessions.get(c.req.param("sessionId"));
+  if (!session) return c.json({ error: "Session not found" }, 404);
+  return c.json({
+    profileId: session.agentProfileId,
+    profileVersion: session.agentProfileVersion,
+    permissionPolicy: session.agentPermissionPolicy,
+    allowedTools: session.agentAllowedTools || [],
+    events: session.agentPermissionEvents || [],
+  });
 });
 
 // Status update endpoint for Claude Code plugin
@@ -1873,34 +3252,59 @@ apiRoutes.post("/status-update", async (c) => {
     }
 
     let effectiveStatus = status;
+    let hookDecision: { permissionDecision: "deny"; reason: string } | null = null;
 
     if (status === "pre_tool") {
+      if (
+        session.agentProfileId &&
+        session.agentProfileVersion &&
+        session.agentPermissionPolicy &&
+        typeof toolName === "string"
+      ) {
+        hookDecision = evaluateAgentProfileToolPermission(
+          session.agentPermissionPolicy,
+          session.agentAllowedTools || [],
+          toolName,
+        );
+        session.agentPermissionEvents ||= [];
+        session.agentPermissionEvents.push({
+          id: `permission-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          createdAt: Date.now(),
+          toolName,
+          decision: hookDecision ? "deny" : "provider-flow",
+          reason: hookDecision?.reason || "Deferred to the provider permission flow",
+          profileId: session.agentProfileId,
+          profileVersion: session.agentProfileVersion,
+        });
+        if (session.agentPermissionEvents.length > 200) session.agentPermissionEvents.shift();
+      }
+
       effectiveStatus = "running";
-      session.currentTool = toolName;
-      session.preToolTime = Date.now();
+      session.currentTool = hookDecision ? undefined : toolName;
+      session.preToolTime = hookDecision ? undefined : Date.now();
 
       if (session.permissionTimeout) {
         clearTimeout(session.permissionTimeout);
       }
 
-      session.permissionTimeout = setTimeout(() => {
-        // Only force waiting_input if we're still in a state where it makes sense
-        // (pre_tool was set and status hasn't already moved past it)
-        if (session!.preToolTime && (session!.status === "running" || session!.status === "tool_calling")) {
-          session!.status = "waiting_input";
-          for (const client of session!.clients) {
-            if (client.readyState === 1) {
-              client.send(JSON.stringify({
+      if (!hookDecision) {
+        session.permissionTimeout = setTimeout(() => {
+          // Only force waiting_input if we're still in a state where it makes sense
+          // (pre_tool was set and status hasn't already moved past it)
+          if (session!.preToolTime && (session!.status === "running" || session!.status === "tool_calling")) {
+            session!.status = "waiting_input";
+            for (const client of session!.clients) {
+              sendTerminalMessage(client, {
                 type: "status",
                 status: "waiting_input",
                 isRestored: session!.isRestored,
                 currentTool: session!.currentTool,
                 hookEvent: "permission_timeout",
-              }));
+              });
             }
           }
-        }
-      }, 3500); // Increased from 2.5s to 3.5s — gives tools more time before flagging as stuck
+        }, 3500); // Increased from 2.5s to 3.5s — gives tools more time before flagging as stuck
+      }
     } else if (status === "post_tool") {
       effectiveStatus = "running";
       session.preToolTime = undefined;
@@ -1931,18 +3335,17 @@ apiRoutes.post("/status-update", async (c) => {
     }
 
     for (const client of session.clients) {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({
-          type: "status",
-          status: session.status,
-          isRestored: session.isRestored,
-          currentTool: session.currentTool,
-          hookEvent,
-        }));
-      }
+      sendTerminalMessage(client, {
+        type: "status",
+        status: session.status,
+        isRestored: session.isRestored,
+        currentTool: session.currentTool,
+        hookEvent,
+      });
     }
 
-    return c.json({ success: true });
+    if (status === "pre_tool" && session.agentProfileId) saveState(sessions);
+    return c.json({ success: true, ...(hookDecision ? { hookDecision } : {}) });
   }
 
   return c.json({ success: true, warning: "No matching session found" });
@@ -2053,10 +3456,21 @@ apiRoutes.post("/sessions/:sessionId/upload", async (c) => {
 
   // Inject the saved paths into the PTY so the agent sees them as an attachment.
   // No trailing Enter — the user types their question and submits themselves.
+  let injected = false;
   if (saved.length > 0 && session.pty) {
     const injection = saved.map((p) => `${quoteUploadPath(p)} `).join("");
-    session.pty.write(injection);
-    session.lastInputTime = Date.now();
+    if (!writeTerminalData(sessionId, injection, {
+      kind: "upload",
+      proxySafe: true,
+      bracketedPaste: true,
+      beforeWrite: () => {
+        noteTerminalInput(sessionId, injection);
+        session.lastInputTime = Date.now();
+      },
+    })) {
+      return c.json({ error: "Terminal input queue is full", saved, skipped }, 409);
+    }
+    injected = true;
   }
 
   log(`[upload] Saved ${saved.length}/${files.length} files for ${sessionId} in ${uploadDir}`);
@@ -2065,6 +3479,7 @@ apiRoutes.post("/sessions/:sessionId/upload", async (c) => {
     saved,
     skipped,
     uploadDir,
+    injected,
   });
 });
 
@@ -2081,7 +3496,14 @@ apiRoutes.post("/categories", async (c) => {
   if (!state.categories) state.categories = [];
   state.categories.push(category);
 
-  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  try {
+    savePersistedState(state);
+  } catch (error: any) {
+    return c.json({ error: error.message || "Invalid category" }, 400);
+  }
+  if (!category?.id || !loadState().categories?.some((item) => item.id === category.id)) {
+    return c.json({ error: "Invalid category" }, 400);
+  }
 
   return c.json({ success: true });
 });
@@ -2098,7 +3520,14 @@ apiRoutes.patch("/categories/:categoryId", async (c) => {
 
   Object.assign(category, updates);
 
-  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  try {
+    savePersistedState(state);
+  } catch (error: any) {
+    return c.json({ error: error.message || "Invalid category update" }, 400);
+  }
+  if (!loadState().categories?.some((item) => item.id === categoryId)) {
+    return c.json({ error: "Invalid category update" }, 400);
+  }
 
   return c.json({ success: true });
 });
@@ -2114,7 +3543,7 @@ apiRoutes.delete("/categories/:categoryId", (c) => {
 
   state.categories.splice(index, 1);
 
-  writeFileSync(join(getDataDir(), "state.json"), JSON.stringify(state, null, 2));
+  savePersistedState(state);
 
   return c.json({ success: true });
 });

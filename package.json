@@ -21,11 +21,13 @@
     "canvas"
   ],
   "bin": {
-    "openui-desktop": "./bin/openui-desktop"
+    "openui-desktop": "./bin/openui-desktop",
+    "openui-control": "./bin/openui-control.js"
   },
   "files": [
     "bin/",
     "server/",
+    "resources/",
     "client/dist/",
     "claude-code-plugin/",
     "dist/",
@@ -44,23 +46,27 @@
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "prepublishOnly": "npm run build",
-    "postinstall": "cd client && npm install"
+    "postinstall": "npm ci --prefix client"
   },
   "dependencies": {
-    "@hono/node-server": "^1.13.8",
+    "@hono/node-server": "^2.0.8",
     "@prbe.ai/electron-sdk": "^0.1.19",
-    "electron-updater": "^6.8.3",
-    "hono": "^4.7.5",
+    "electron-updater": "^6.8.9",
+    "hono": "^4.12.28",
     "node-pty": "^1.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.21.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
     "@types/ws": "^8.5.14",
-    "concurrently": "^9.1.2",
+    "concurrently": "^10.0.3",
     "electron": "^41.1.1",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "js-yaml": "^4.3.0"
   },
   "build": {
     "appId": "com.openui.desktop",
@@ -70,6 +76,7 @@
       "output": "release"
     },
     "files": [
+      "bin/openui-control.js",
       "dist/**/*",
       "client/dist/**/*",
       "claude-code-plugin/**/*",
@@ -85,6 +92,7 @@
       ]
     },
     "linux": {
+      "executableName": "openui",
       "target": [
         "AppImage",
         "deb"
@@ -103,6 +111,18 @@
       {
         "from": "claude-code-plugin",
         "to": "claude-code-plugin"
+      },
+      {
+        "from": "resources/shell-integration",
+        "to": "shell-integration"
+      },
+      {
+        "from": "resources/remote-terminal",
+        "to": "remote-terminal"
+      },
+      {
+        "from": "resources/bin",
+        "to": "bin"
       }
     ],
     "publish": {

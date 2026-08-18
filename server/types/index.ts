@@ -3,6 +3,308 @@ import type WebSocket from "ws";
 
 export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error";
 
+export type TerminalBlockStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "interrupted"
+  | "unknown";
+
+export type TerminalBlockFailureKind =
+  | "command_not_found"
+  | "not_executable"
+  | "exit_error";
+
+export type TerminalBlockSource = "shell-integration" | "inferred" | "recovered";
+
+export interface TerminalCommandBlock {
+  id: string;
+  sequence: number;
+  command: string;
+  cwd: string;
+  startedAt: number;
+  completedAt?: number;
+  exitCode?: number;
+  status: TerminalBlockStatus;
+  failureKind?: TerminalBlockFailureKind;
+  source: TerminalBlockSource;
+  output: string;
+  outputTruncated: boolean;
+  bookmarked?: boolean;
+  note?: string;
+  sensitive?: boolean;
+  shellIntegration?: string;
+  shellEpochId?: string;
+  shellDepth?: number;
+  frameRedrawsInPlace?: boolean;
+}
+
+export type TerminalLifecyclePhase =
+  | "unknown"
+  | "at_prompt"
+  | "executing"
+  | "awaiting_prompt"
+  | "terminated";
+
+export type TerminalMouseTrackingMode = "none" | "click" | "drag" | "motion";
+export type TerminalMouseEncoding = "default" | "utf8" | "sgr";
+
+export interface TerminalModeSnapshot {
+  applicationCursorKeys: boolean;
+  mouseTracking: TerminalMouseTrackingMode;
+  focusReporting: boolean;
+  mouseEncoding: TerminalMouseEncoding;
+  alternateScroll: boolean;
+  synchronizedOutput: boolean;
+}
+
+export interface TerminalLifecycleSnapshot {
+  phase: TerminalLifecyclePhase;
+  currentCwd: string;
+  shellIntegration?: string;
+  shellEpochId?: string;
+  shellDepth: number;
+  activeBlockId?: string;
+  alternateScreen: boolean;
+  bracketedPasteEnabled: boolean;
+  terminalModes: TerminalModeSnapshot;
+  blocks: TerminalCommandBlock[];
+}
+
+export type TerminalShellCompletionKind =
+  | "alias"
+  | "function"
+  | "builtin"
+  | "keyword"
+  | "abbreviation"
+  | "variable";
+
+export interface TerminalShellCompletionEntry {
+  name: string;
+  kind: TerminalShellCompletionKind;
+}
+
+export type TerminalShellEnvironmentKey = "PATH" | "PATHEXT" | "CDPATH";
+export type TerminalShellEnvironment = Partial<Record<TerminalShellEnvironmentKey, string>>;
+
+export type TerminalShellCapabilityKey = "autocd";
+export type TerminalShellCapabilities = Partial<Record<TerminalShellCapabilityKey, boolean>>;
+
+export type TerminalFindField = "command" | "output" | "note" | "cwd";
+export type TerminalFindOrder = "newest-first" | "oldest-first";
+export type TerminalFindStatus = "scanning" | "complete" | "cancelled" | "error";
+
+export interface TerminalFindMatch {
+  id: string;
+  blockId: string;
+  blockSequence: number;
+  field: TerminalFindField;
+  start: number;
+  end: number;
+  line: number;
+  column: number;
+  excerpt: string;
+  sensitive: boolean;
+}
+
+export interface TerminalFindSnapshot {
+  id: string;
+  sessionId: string;
+  clientId?: string;
+  query: string;
+  regex: boolean;
+  caseSensitive: boolean;
+  fields: TerminalFindField[];
+  order: TerminalFindOrder;
+  status: TerminalFindStatus;
+  version: number;
+  totalBlocks: number;
+  scannedBlocks: number;
+  totalMatches: number;
+  returnedMatches: number;
+  hiddenOutputRangeCount: number;
+  truncated: boolean;
+  matches: TerminalFindMatch[];
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TerminalWorkflowParameter {
+  name: string;
+  description?: string;
+  defaultValue?: string;
+  required?: boolean;
+  options?: string[];
+  dynamicOptionsCommand?: string;
+  sensitive?: boolean;
+  shellQuote?: boolean;
+}
+
+export interface TerminalWorkflow {
+  id: string;
+  name: string;
+  description: string;
+  command: string;
+  parameters: TerminalWorkflowParameter[];
+  tags: string[];
+  scope: "global" | "workspace";
+  workspacePath?: string;
+  shells?: Array<"zsh" | "bash" | "fish" | "powershell">;
+  sourceUrl?: string;
+  author?: string;
+  authorUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type TerminalPaneLayout =
+  | { type: "pane"; sessionRef: string }
+  | {
+      type: "split";
+      direction: "horizontal" | "vertical";
+      sizes?: number[];
+      children: TerminalPaneLayout[];
+    };
+
+export type TerminalPaneDirection = "left" | "right" | "up" | "down";
+
+export type TerminalWorkspacePaneNode =
+  | {
+      id: string;
+      type: "pane";
+      sessionId: string;
+    }
+  | {
+      id: string;
+      type: "split";
+      direction: "horizontal" | "vertical";
+      sizes: number[];
+      children: TerminalWorkspacePaneNode[];
+    };
+
+export interface TerminalWorkspaceTab {
+  id: string;
+  title?: string;
+  root: TerminalWorkspacePaneNode;
+  activeSessionId: string;
+  zoomedSessionId?: string;
+}
+
+export interface TerminalWorkspaceSnapshot {
+  version: 1;
+  revision: number;
+  tabs: TerminalWorkspaceTab[];
+  activeTabId?: string;
+  detachedSessionIds: string[];
+  closedPaneCount: number;
+  updatedAt: number;
+}
+
+export interface TerminalLaunchSession {
+  ref: string;
+  agentId: string;
+  agentName: string;
+  command: string;
+  cwd: string;
+  customName?: string;
+  customColor?: string;
+  initialPrompt?: string;
+  workflowId?: string;
+  workflowValues?: Record<string, string>;
+  position?: { x: number; y: number };
+}
+
+export interface TerminalLaunchConfiguration {
+  id: string;
+  version: 1;
+  name: string;
+  description: string;
+  sessions: TerminalLaunchSession[];
+  layout?: TerminalPaneLayout;
+  activeSessionRef?: string;
+  launchMode: "atomic" | "best-effort";
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TerminalAutomationState {
+  version: 1;
+  workflows: TerminalWorkflow[];
+  launchConfigurations: TerminalLaunchConfiguration[];
+}
+
+export type TerminalSuggestionKind =
+  | "action"
+  | "workflow"
+  | "history"
+  | "session"
+  | "file"
+  | "command"
+  | "subcommand"
+  | "option"
+  | "argument"
+  | "variable";
+
+export interface TerminalSuggestion {
+  id: string;
+  kind: TerminalSuggestionKind;
+  title: string;
+  description: string;
+  value: string;
+  score: number;
+  metadata?: Record<string, string | number | boolean | undefined>;
+}
+
+export interface AgentProfileConfig {
+  name: string;
+  description: string;
+  command: string;
+  initialPrompt?: string;
+  color: string;
+  icon: string;
+  model?: string;
+  systemPrompt?: string;
+  tools: string[];
+  mcpServers: Array<{ name: string; url?: string; command?: string }>;
+  skills: string[];
+  fallbackCommands: string[];
+  permissionPolicy: "ask" | "allow-edits" | "read-only";
+  metadata: Record<string, string>;
+}
+
+export interface AgentProfileVersion {
+  version: number;
+  createdAt: number;
+  config: AgentProfileConfig;
+  changeNote?: string;
+  promotedFromVersion?: number;
+}
+
+export interface AgentProfile {
+  id: string;
+  latestVersion: number;
+  versions: AgentProfileVersion[];
+  createdAt: number;
+  updatedAt: number;
+  archivedAt?: number;
+}
+
+export interface AgentProfileReference {
+  id: string;
+  version?: number;
+}
+
+export interface AgentPermissionEvent {
+  id: string;
+  createdAt: number;
+  toolName: string;
+  decision: "deny" | "provider-flow";
+  reason: string;
+  profileId: string;
+  profileVersion: number;
+}
+
 export interface CheckpointSummary {
   id: string;
   repoRoot: string;
@@ -46,6 +348,12 @@ export interface Session {
   createdAt: string;
   clients: Set<WebSocket>;
   outputBuffer: string[];
+  outputBufferChars: number;
+  outputBufferTruncated?: boolean;
+  shellLaunch?: { shell: string; args: string[] };
+  terminalCols: number;
+  terminalRows: number;
+  terminalFrameRedrawsInPlace: boolean;
   status: AgentStatus;
   lastOutputTime: number;
   lastInputTime: number;
@@ -81,6 +389,22 @@ export interface Session {
   // Soft delete
   pendingDelete?: boolean;
   deleteTimeout?: ReturnType<typeof setTimeout>;
+  // Semantic terminal history. The runtime coordinator mutates this array in
+  // place so persistence can save command blocks without serializing runtime
+  // parser state.
+  terminalBlocks: TerminalCommandBlock[];
+  agentProfileId?: string;
+  agentProfileVersion?: number;
+  agentPermissionPolicy?: AgentProfileConfig["permissionPolicy"];
+  agentAllowedTools?: string[];
+  agentRuntimeManifestPath?: string;
+  agentModel?: string;
+  agentPermissionEvents?: AgentPermissionEvent[];
+  agentFallbackCommands?: string[];
+  agentFallbackIndex?: number;
+  agentAttemptCommand?: string;
+  agentAttemptBlockId?: string;
+  agentAttemptStartedAt?: number;
 }
 
 export interface LinearTicket {
@@ -111,6 +435,10 @@ export interface PersistedNode {
   agentName: string;
   command: string;
   cwd: string;
+  shellLaunch?: { shell: string; args: string[] };
+  terminalCols?: number;
+  terminalRows?: number;
+  terminalFrameRedrawsInPlace?: boolean;
   originalCwd?: string;
   createdAt: string;
   customName?: string;
@@ -122,6 +450,13 @@ export interface PersistedNode {
   position: { x: number; y: number };
   worktreePaths?: Record<string, string>;
   launchCheckpoint?: CheckpointSummary;
+  agentProfileId?: string;
+  agentProfileVersion?: number;
+  agentPermissionPolicy?: AgentProfileConfig["permissionPolicy"];
+  agentAllowedTools?: string[];
+  agentRuntimeManifestPath?: string;
+  agentModel?: string;
+  agentPermissionEvents?: AgentPermissionEvent[];
 }
 
 export interface PersistedCategory {
@@ -134,6 +469,8 @@ export interface PersistedCategory {
 }
 
 export interface PersistedState {
+  version?: 2;
+  savedAt?: number;
   nodes: PersistedNode[];
   categories?: PersistedCategory[];
 }
@@ -145,6 +482,9 @@ export interface Agent {
   description: string;
   color: string;
   icon: string;
+  profileId?: string;
+  profileVersion?: number;
+  profileConfig?: AgentProfileConfig;
 }
 
 export interface WebSocketData {

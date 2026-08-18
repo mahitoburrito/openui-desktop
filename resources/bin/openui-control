@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+asar="$bin_dir/../app.asar"
+
+case "$(uname -s 2>/dev/null || true)" in
+  Darwin)
+    electron="$bin_dir/../../MacOS/OpenUI"
+    ;;
+  *)
+    electron=""
+    for candidate in \
+      "$bin_dir/../../openui" \
+      "$bin_dir/../../OpenUI" \
+      "$bin_dir/../../openui-desktop"
+    do
+      if [ -x "$candidate" ]; then
+        electron="$candidate"
+        break
+      fi
+    done
+    ;;
+esac
+
+if [ ! -x "${electron:-}" ] || [ ! -f "$asar" ]; then
+  echo "openui-control: packaged OpenUI runtime not found (transport_unavailable)" >&2
+  exit 1
+fi
+
+ELECTRON_RUN_AS_NODE=1 exec "$electron" "$asar/bin/openui-control.js" "$@"

@@ -6,6 +6,8 @@ interface ResizableSplitProps {
   direction: "row" | "col";
   children: ReactNode[];
   minPaneSize?: number;
+  initialRatios?: number[];
+  onRatiosCommit?: (ratios: number[]) => void;
 }
 
 const HANDLE_SIZE = 4;
@@ -22,6 +24,8 @@ export function ResizableSplit({
   direction,
   children,
   minPaneSize = 80,
+  initialRatios,
+  onRatiosCommit,
 }: ResizableSplitProps) {
   const stored = useStore((s) => s.splitRatios[storageKey]);
   const setSplitRatios = useStore((s) => s.setSplitRatios);
@@ -29,27 +33,33 @@ export function ResizableSplit({
 
   const childCount = children.length;
   const equal = Array.from({ length: childCount }, () => 1 / childCount);
-
-  // Local ratios for smooth dragging; flush to store on drag end.
-  const [ratios, setRatios] = useState<number[]>(() => {
-    if (stored && stored.length === childCount) return normalize(stored);
-    return equal;
-  });
-
-  // Keep in sync when child count changes.
-  useEffect(() => {
-    if (ratios.length !== childCount) {
-      setRatios(equal);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [childCount]);
-
   const dragRef = useRef<{
     index: number;
     startCoord: number;
     totalSize: number;
     startRatios: number[];
   } | null>(null);
+
+  // Local ratios for smooth dragging; flush to store on drag end.
+  const [ratios, setRatios] = useState<number[]>(() => {
+    if (initialRatios && initialRatios.length === childCount) return normalize(initialRatios);
+    if (stored && stored.length === childCount) return normalize(stored);
+    return equal;
+  });
+
+  // Keep in sync when the persisted tree or child count changes. During a
+  // drag, local ratios remain authoritative until the pointer is released.
+  useEffect(() => {
+    if (dragRef.current) return;
+    if (initialRatios && initialRatios.length === childCount) {
+      setRatios(normalize(initialRatios));
+    } else if (stored && stored.length === childCount) {
+      setRatios(normalize(stored));
+    } else {
+      setRatios(equal);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [childCount, storageKey, initialRatios?.join(",")]);
 
   const handleMouseDown = useCallback(
     (index: number) => (e: React.MouseEvent) => {
@@ -91,6 +101,7 @@ export function ResizableSplit({
           // Persist final ratios.
           setRatios((current) => {
             setSplitRatios(storageKey, current);
+            onRatiosCommit?.(current);
             return current;
           });
         }
@@ -101,7 +112,7 @@ export function ResizableSplit({
       document.body.style.cursor = direction === "row" ? "col-resize" : "row-resize";
       document.body.style.userSelect = "none";
     },
-    [direction, ratios, minPaneSize, setSplitRatios, storageKey],
+    [direction, ratios, minPaneSize, onRatiosCommit, setSplitRatios, storageKey],
   );
 
   const isRow = direction === "row";

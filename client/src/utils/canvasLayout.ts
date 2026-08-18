@@ -13,6 +13,8 @@ const CAT_PAD_TOP = 56; // room for the category label/title row
 const CAT_PAD_BOTTOM = 24;
 // Vertical gap between stacked category boxes (and the uncategorized grid).
 const GROUP_GAP_Y = 80;
+// Horizontal gap between the folders created by Organize.
+const GROUP_GAP_X = 80;
 const CANVAS_ORIGIN_X = 96;
 const CANVAS_ORIGIN_Y = 96;
 const TITLE_CLUSTER_PREFIX = "title-cluster-";
@@ -77,6 +79,48 @@ function titleClusterId(title: string): string {
 
 function isTitleCluster(node: Node): boolean {
   return node.type === "category" && node.id.startsWith(TITLE_CLUSTER_PREFIX);
+}
+
+/**
+ * Remove generated Organize folders that no longer contain a session card.
+ * Manual categories stay put so an intentionally empty drop target is not lost.
+ */
+export function pruneEmptyTitleClusters(nodes: Node[]): {
+  nodes: Node[];
+  removedCategoryIds: string[];
+} {
+  const agents = nodes.filter((node) => node.type === "agent");
+  const removedCategoryIds = nodes
+    .filter(isTitleCluster)
+    .filter((category) => {
+      const { w, h } = nodeSize(category);
+      const box = {
+        x: category.position.x,
+        y: category.position.y,
+        w,
+        h,
+      };
+      return !agents.some((agent) => centerInBox(agent.position, box));
+    })
+    .map((category) => category.id);
+
+  if (removedCategoryIds.length === 0) {
+    return { nodes, removedCategoryIds };
+  }
+
+  const removedIds = new Set(removedCategoryIds);
+  return {
+    nodes: nodes.filter((node) => !removedIds.has(node.id)),
+    removedCategoryIds,
+  };
+}
+
+export async function deletePersistedCategories(categoryIds: string[]): Promise<void> {
+  await Promise.all(
+    categoryIds.map((categoryId) =>
+      fetch(`/api/categories/${categoryId}`, { method: "DELETE" }).catch(() => undefined),
+    ),
+  );
 }
 
 function titleClusterColor(index: number): string {
@@ -298,14 +342,14 @@ export function buildTitleClusterCanvasLayout(
 
   const agentPositions = new Map<string, { x: number; y: number }>();
   const clusterNodes: Node[] = [];
-  let cursorY = CANVAS_ORIGIN_Y;
+  let cursorX = CANVAS_ORIGIN_X;
 
   orderedGroups.forEach(([id, group], index) => {
     const sortedAgents = group.hasTitle
       ? [...group.agents].sort((a, b) => nodeCreatedAt(b.id, sessions) - nodeCreatedAt(a.id, sessions))
       : sortAgents(group.agents, sessions);
-    const innerOriginX = CANVAS_ORIGIN_X + CAT_PAD_X;
-    const innerOriginY = cursorY + CAT_PAD_TOP;
+    const innerOriginX = cursorX + CAT_PAD_X;
+    const innerOriginY = CANVAS_ORIGIN_Y + CAT_PAD_TOP;
     const { positions, width, height } = gridLayout(sortedAgents, innerOriginX, innerOriginY);
 
     for (const [agentId, pos] of positions) agentPositions.set(agentId, pos);
@@ -316,7 +360,7 @@ export function buildTitleClusterCanvasLayout(
     clusterNodes.push({
       id,
       type: "category",
-      position: { x: snap(CANVAS_ORIGIN_X), y: snap(cursorY) },
+      position: { x: snap(cursorX), y: snap(CANVAS_ORIGIN_Y) },
       style: { width: snap(boxW), height: snap(boxH) },
       width: snap(boxW),
       height: snap(boxH),
@@ -327,7 +371,7 @@ export function buildTitleClusterCanvasLayout(
       zIndex: -1,
     });
 
-    cursorY = cursorY + boxH + GROUP_GAP_Y;
+    cursorX = cursorX + boxW + GROUP_GAP_X;
   });
 
   const movedAgents = agentNodes.map((node) => {

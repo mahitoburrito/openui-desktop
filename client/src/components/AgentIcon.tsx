@@ -5,6 +5,7 @@ import {
   Code,
   Cpu,
   Rocket,
+  ShieldCheck,
   Sparkles,
   Terminal,
   Wand2,
@@ -22,6 +23,7 @@ const fallbackIconMap: Record<string, LucideIcon> = {
   brain: Brain,
   wand2: Wand2,
   terminal: Terminal,
+  shield: ShieldCheck,
 };
 
 export const AGENT_BRAND_ACCENTS: Record<string, string> = {
