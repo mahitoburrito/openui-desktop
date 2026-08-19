@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile, readFile, access, chmod, mkdir, readdir, realpa
 import { spawn, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { request as createHttpRequest } from "node:http";
 import { connect as connectNetSocket, createServer as createNetServer } from "node:net";
@@ -9,7 +10,21 @@ import WebSocket from "ws";
 
 const execFileAsync = promisify(execFile);
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// Every wait below is a poll that returns the moment its predicate holds, so a larger
+// ceiling costs nothing on a healthy run — it only decides how long a slow machine is
+// tolerated before we call it a failure. These were tuned on a laptop, and a shared CI
+// runner is a different animal: four matrix jobs, real shell startup, live PTYs, and no
+// dedicated cores. That is why the release gate has been failing at a different wait on
+// each platform (zsh child integration on Linux, agent fallback on macOS) while the same
+// suite is green locally. Scale the ceilings there rather than trim coverage.
+const TIMEOUT_SCALE =
+  Number(process.env.OPENUI_TEST_TIMEOUT_SCALE || (process.env.CI ? 4 : 1)) || 1;
+const patience = (ms) => Math.round(ms * TIMEOUT_SCALE);
+
+// fileURLToPath, not .pathname: on Windows the latter yields "/D:/a/repo/", and
+// join() then produces "\\D:\\a\\repo\\..." which resolves against the current drive
+// as "D:\\D:\\a\\repo\\...". Every readFile against ROOT fails with ENOENT.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = Number(process.env.OPENUI_TEST_PORT || 7159);
 const BASE_URL = process.env.OPENUI_TEST_BASE_URL || `http://localhost:${PORT}`;
 const BASE_URL_PARTS = new URL(BASE_URL);
@@ -17,7 +32,7 @@ const API_HOST = BASE_URL_PARTS.hostname;
 const API_PORT = Number(BASE_URL_PARTS.port || (BASE_URL_PARTS.protocol === "https:" ? 443 : 80));
 const WS_BASE_URL = `${BASE_URL_PARTS.protocol === "https:" ? "wss:" : "ws:"}//${BASE_URL_PARTS.host}`;
 
-async function waitForServer(url, timeoutMs = 10000) {
+async function waitForServer(url, timeoutMs = patience(10000)) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
@@ -31,7 +46,7 @@ async function waitForServer(url, timeoutMs = 10000) {
   throw new Error(`Server did not become ready: ${url}`);
 }
 
-async function waitForFileIncludes(path, expected, timeoutMs = 5000) {
+async function waitForFileIncludes(path, expected, timeoutMs = patience(5000)) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
@@ -45,7 +60,7 @@ async function waitForFileIncludes(path, expected, timeoutMs = 5000) {
   throw new Error(`File did not include expected text: ${path}`);
 }
 
-async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
+async function waitForTerminalBlock(sessionId, predicate, timeoutMs = patience(5000)) {
   const started = Date.now();
   let lastSnapshot;
   while (Date.now() - started < timeoutMs) {
@@ -60,7 +75,7 @@ async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
   );
 }
 
-async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = 8000) {
+async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = patience(8000)) {
   const started = Date.now();
   let lastQueue;
   while (Date.now() - started < timeoutMs) {
@@ -74,7 +89,7 @@ async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = 800
   );
 }
 
-async function waitForTerminalSearch(searchId, predicate, timeoutMs = 10000) {
+async function waitForTerminalSearch(searchId, predicate, timeoutMs = patience(10000)) {
   const started = Date.now();
   let version = -1;
   while (Date.now() - started < timeoutMs) {
@@ -88,7 +103,7 @@ async function waitForTerminalSearch(searchId, predicate, timeoutMs = 10000) {
   throw new Error(`Terminal search did not reach expected state: ${searchId}`);
 }
 
-async function waitForExit(child, timeoutMs = 3000) {
+async function waitForExit(child, timeoutMs = patience(3000)) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -261,7 +276,7 @@ async function availablePort() {
   });
 }
 
-async function waitForControlRecords(directory, count, timeoutMs = 5000) {
+async function waitForControlRecords(directory, count, timeoutMs = patience(5000)) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
@@ -2314,7 +2329,7 @@ async function runTerminalWorkspaceUnitTests() {
   }
 }
 
-async function waitForFindSnapshot(service, searchId, predicate, description, timeoutMs = 5000) {
+async function waitForFindSnapshot(service, searchId, predicate, description, timeoutMs = patience(5000)) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const snapshot = service.get(searchId);
@@ -2649,7 +2664,7 @@ async function existingExecutable(candidates) {
   return null;
 }
 
-async function waitForLifecycleState(lifecycle, predicate, description, timeoutMs = 15000) {
+async function waitForLifecycleState(lifecycle, predicate, description, timeoutMs = patience(15000)) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const snapshot = lifecycle.snapshot(true);
@@ -3221,7 +3236,7 @@ exit 0
   process.env.OPENUI_TEST_REMOTE_SERVER = remoteServer;
   process.env.OPENUI_FAKE_SSH_LOG = fakeLog;
 
-  const waitForRemote = async (sessionId, predicate, description, timeoutMs = 8_000) => {
+  const waitForRemote = async (sessionId, predicate, description, timeoutMs = patience(8_000)) => {
     const started = Date.now();
     let snapshot;
     while (Date.now() - started < timeoutMs) {
