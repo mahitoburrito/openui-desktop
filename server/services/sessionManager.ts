@@ -933,6 +933,10 @@ export function updateTerminalBlock(
     block.note = updates.note.trim().slice(0, 2000) || undefined;
     terminalFind.invalidateBlock(sessionId, block.id);
   }
+  // Persist immediately rather than waiting for the periodic save. These are
+  // user-authored annotations on a block that may be far from the tail, and a
+  // crash between here and the next tick would lose them.
+  saveTerminalBlocks(sessionId, session.terminalBlocks);
   broadcastTerminalState(sessionId, session);
   return { ok: true, block };
 }
@@ -2128,6 +2132,12 @@ export function deleteSession(sessionId: string) {
   // own session, so once the shell exits those are reparented to init with
   // nothing left to identify them by. The pty still owns the root kill so its
   // onExit handler fires as usual.
+  //
+  // Gated on there being a LIVE pty, which matters beyond the obvious. A
+  // session restored from disk has pty === null, so a second instance pointed
+  // at the same LAUNCH_CWD (a dev build defaulting to the same home directory)
+  // reaps nothing for sessions it did not itself spawn, and cannot tear down
+  // the trees belonging to the app that actually owns them.
   if (activePty) {
     reapProcessTreeDetached(activePty.pid, {
       label: sessionId,

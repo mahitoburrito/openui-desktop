@@ -25,10 +25,12 @@ function assert(condition, message) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Returns the predicate's own truthy value, so callers can use what it found. */
 async function until(predicate, { timeoutMs = 10000, intervalMs = 100, label = "condition" } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await predicate()) return true;
+    const value = await predicate();
+    if (value) return value;
     await sleep(intervalMs);
   }
   throw new Error(`Timed out waiting for ${label}`);
@@ -203,6 +205,19 @@ async function testSessionMarkerScan() {
   );
   assert(!found.includes(800), "a longer id sharing our prefix must not match");
   assert(!found.includes(900), "the id inside a different variable must not match");
+
+  // A variable merely ENDING in our name is a different variable.
+  const suffixed = " 950 sleep 300 MY_OPENUI_SESSION_ID=session-abc";
+  assert(
+    parseSessionMarkerListing(suffixed, "session-abc").length === 0,
+    "a variable whose name ends in OPENUI_SESSION_ID must not match",
+  );
+  // ...but the real variable later on the same line still must.
+  const both = " 960 sh MY_OPENUI_SESSION_ID=session-abc OPENUI_SESSION_ID=session-abc";
+  assert(
+    parseSessionMarkerListing(both, "session-abc").includes(960),
+    "a genuine marker must still match when a similarly-named variable precedes it",
+  );
   assert(!found.includes(1), "init must never be a reap target");
   assert(
     parseSessionMarkerListing(listing, "").length === 0,
@@ -337,6 +352,71 @@ async function testIdleSessionIsNotRewritten(launchCwd) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. Integration: annotating a non-tail block survives a restart
+// ---------------------------------------------------------------------------
+
+async function testBlockAnnotationIsPersisted(launchCwd) {
+  const session = await api("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      agentId: "shell",
+      agentName: "Annotation Probe",
+      command: "echo block-one",
+      cwd: launchCwd,
+      nodeId: `node-annotate-${Date.now()}`,
+    }),
+  });
+
+  // Several blocks, so the one we annotate is NOT the tail. A tail-only dirty
+  // signature would skip persisting the annotation entirely.
+  for (const cmd of ["echo block-two", "echo block-three", "echo block-four"]) {
+    await sendInput(session.sessionId, `${cmd}\r`);
+  }
+
+  const blocks = await until(async () => {
+    const snapshot = await api(`/api/sessions/${session.sessionId}/blocks`);
+    return snapshot.blocks && snapshot.blocks.length >= 2 ? snapshot.blocks : false;
+  }, { timeoutMs: 30000, label: "terminal blocks to appear" });
+
+  const target = blocks[0];
+  assert(
+    blocks[blocks.length - 1].id !== target.id,
+    "the annotated block must not be the tail, or this test proves nothing",
+  );
+
+  // The session must be fully quiet BEFORE annotating. Otherwise a later block
+  // append moves the tail and rewrites the file for unrelated reasons, which
+  // would mask a dirty-check that ignores non-tail blocks.
+  const blocksFile = join(launchCwd, ".openui-desktop", "terminal-blocks", `${session.sessionId}.json`);
+  const settled = await waitForQuiescence(blocksFile, { stableMs: 15000, timeoutMs: 90000 });
+
+  await api(`/api/sessions/${session.sessionId}/blocks/${target.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bookmarked: true, note: "teardown-probe-note" }),
+  });
+
+  await until(async () => {
+    try {
+      const now = await stat(blocksFile);
+      if (now.mtimeMs === settled.mtimeMs) return false;
+      return (await readFile(blocksFile, "utf8")).includes("teardown-probe-note");
+    } catch {
+      return false;
+    }
+  }, { timeoutMs: 20000, label: "annotation of a non-tail block to reach disk" });
+
+  const persisted = JSON.parse(await readFile(blocksFile, "utf8"));
+  const saved = persisted.blocks.find((b) => b.id === target.id);
+  assert(saved?.bookmarked === true, "the bookmark must survive to disk");
+  assert(saved?.note === "teardown-probe-note", "the note must survive to disk");
+
+  await api(`/api/sessions/${session.sessionId}`, { method: "DELETE" });
+  console.log("  ok  non-tail block annotation persisted");
+}
+
+// ---------------------------------------------------------------------------
 
 async function main() {
   const launchCwd = await mkdtemp(join(tmpdir(), "openui-teardown."));
@@ -347,6 +427,7 @@ async function main() {
   try {
     await testDetachedGrandchildIsReaped(launchCwd);
     await testIdleSessionIsNotRewritten(launchCwd);
+    await testBlockAnnotationIsPersisted(launchCwd);
   } finally {
     await server.close();
     await rm(launchCwd, { recursive: true, force: true }).catch(() => {});

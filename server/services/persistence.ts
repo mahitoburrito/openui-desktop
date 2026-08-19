@@ -58,22 +58,37 @@ function bufferRevisionKey(session: Session): string {
 }
 
 function blockSignature(blocks: TerminalCommandBlock[]): string {
-  // Blocks are append-mostly with a mutating tail, so length plus the identity
-  // and running output size of the last block moves whenever the file would.
-  const last = blocks[blocks.length - 1];
-  if (!last) return "0";
-  return [
-    blocks.length,
-    last.id,
-    last.sequence,
-    last.status,
-    last.completedAt || 0,
-    last.exitCode ?? "",
-    last.output.length,
-    last.outputTruncated === true ? 1 : 0,
-    last.bookmarked === true ? 1 : 0,
-    last.note || "",
-  ].join(":");
+  // Must fold over EVERY block, not just the tail. Bookmarks and notes are
+  // applied in place to whichever block the user picked, which is usually not
+  // the last one, and a tail-only signature would skip persisting them.
+  //
+  // Cheap by construction: lengths and flags rather than content, plus a hash
+  // of the note (bounded at 2000 chars and absent on almost every block) so a
+  // same-length edit still moves the signature.
+  let hash = 5381;
+  for (const block of blocks) {
+    hash = foldString(hash, block.id);
+    hash = foldNumber(hash, block.sequence);
+    hash = foldString(hash, block.status);
+    hash = foldNumber(hash, block.completedAt || 0);
+    hash = foldNumber(hash, block.exitCode ?? -1);
+    hash = foldNumber(hash, block.output.length);
+    hash = foldNumber(hash, block.outputTruncated === true ? 1 : 0);
+    hash = foldNumber(hash, block.bookmarked === true ? 1 : 0);
+    if (block.note) hash = foldString(hash, block.note);
+  }
+  return `${blocks.length}:${hash >>> 0}`;
+}
+
+// djb2. Only ever compared against itself, never persisted or used as an id.
+function foldString(hash: number, value: string): number {
+  let next = hash;
+  for (let i = 0; i < value.length; i++) next = (next * 33) ^ value.charCodeAt(i);
+  return next | 0;
+}
+
+function foldNumber(hash: number, value: number): number {
+  return ((hash * 33) ^ value) | 0;
 }
 
 /** Forget dirty-tracking state for a session. Safe to call for unknown ids. */

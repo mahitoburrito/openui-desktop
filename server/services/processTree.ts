@@ -104,6 +104,12 @@ export async function killProcessTree(
 
   // Anything ignoring SIGTERM, blocked in uninterruptible IO, or respawning
   // gets no second chance.
+  //
+  // The SIGTERM pass runs microseconds after the snapshot, but the SIGKILL pass
+  // is `graceMs` later, so in principle a pid could be recycled underneath it.
+  // Not defended against: pids are handed out sequentially up to ~99998, so
+  // recycling inside a 2s window would take on the order of 100k spawns in
+  // those two seconds. Revisit if the grace period ever grows substantially.
   await delay(graceMs);
   const survivors = targets.filter((pid) => isAlive(pid));
   for (const pid of survivors) signal(pid, "SIGKILL");
@@ -153,12 +159,27 @@ export function parseSessionMarkerListing(listing: string | null, sessionId: str
     const pid = Number(match[1]);
     if (!isSignalablePid(pid)) continue;
 
-    // The marker must be a whole assignment, so a session id appearing inside
-    // some other value cannot drag an unrelated process in.
-    const at = match[2].indexOf(needle);
-    if (at === -1) continue;
-    const after = match[2][at + needle.length];
-    if (after !== undefined && after !== " " && after !== "\t") continue;
+    // The marker must be a whole assignment on both sides. Without the leading
+    // check a variable merely ENDING in our name (MY_OPENUI_SESSION_ID=...)
+    // would match; without the trailing one a longer session id sharing our
+    // prefix would.
+    const rest = match[2];
+    let from = 0;
+    let matched = false;
+    for (;;) {
+      const at = rest.indexOf(needle, from);
+      if (at === -1) break;
+      const before = at === 0 ? undefined : rest[at - 1];
+      const after = rest[at + needle.length];
+      const boundedLeft = before === undefined || before === " " || before === "\t";
+      const boundedRight = after === undefined || after === " " || after === "\t";
+      if (boundedLeft && boundedRight) {
+        matched = true;
+        break;
+      }
+      from = at + 1;
+    }
+    if (!matched) continue;
 
     out.push(pid);
   }
@@ -188,38 +209,49 @@ export function reapProcessTreeDetached(
  * and every descendant would leak on every quit. Costs one `ps` plus a short
  * blocking grace, both on a path that is already ending.
  */
-export function killProcessTreeSync(
-  rootPid: number | undefined,
-  options: { label?: string; killRoot?: boolean; graceMs?: number; sessionMarker?: string } = {},
+export function killProcessTreesSync(
+  roots: Array<{ pid: number | undefined; label?: string; sessionMarker?: string }>,
+  options: { killRoot?: boolean; graceMs?: number } = {},
 ): number[] {
-  const { label = String(rootPid), killRoot = true, graceMs = 400, sessionMarker } = options;
-  if (!isSignalablePid(rootPid)) return [];
+  const { killRoot = true, graceMs = 400 } = options;
+  const signalable = roots.filter((root) => isSignalablePid(root.pid));
+  if (signalable.length === 0) return [];
 
   if (process.platform === "win32") {
-    try {
-      execFileSync("taskkill", ["/pid", String(rootPid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
-    } catch {}
-    return [rootPid!];
+    for (const root of signalable) {
+      try {
+        execFileSync("taskkill", ["/pid", String(root.pid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
+      } catch {}
+    }
+    return signalable.map((root) => root.pid!);
   }
 
+  // One `ps` pair for the whole shutdown, not one per session. Quitting with a
+  // dozen sessions open otherwise meant a dozen full process-table scans and a
+  // dozen serial grace periods, and Electron does not wait that long.
   const childrenByParent = readProcessParentsSync();
-  const descendants = childrenByParent ? descendantsFrom(childrenByParent, rootPid!) : [];
-  const strays = sessionMarker
-    ? parseSessionMarkerListing(runEnvListingSync(), sessionMarker)
-    : [];
-  const targets = dedupe([
-    ...descendants,
-    ...strays.filter((pid) => pid !== rootPid),
-    ...(killRoot ? [rootPid!] : []),
-  ]);
+  const wantsMarkers = signalable.some((root) => root.sessionMarker);
+  const envListing = wantsMarkers ? runEnvListingSync() : null;
+
+  const targets = dedupe(
+    signalable.flatMap((root) => [
+      ...(childrenByParent ? descendantsFrom(childrenByParent, root.pid!) : []),
+      ...(root.sessionMarker
+        ? parseSessionMarkerListing(envListing, root.sessionMarker).filter((pid) => pid !== root.pid)
+        : []),
+      ...(killRoot ? [root.pid!] : []),
+    ]),
+  );
   if (targets.length === 0) return [];
 
   for (const pid of targets) signal(pid, "SIGTERM");
   sleepSync(graceMs);
   for (const pid of targets.filter((pid) => isAlive(pid))) signal(pid, "SIGKILL");
 
-  const reaped = targets.length - (killRoot ? 1 : 0);
-  if (reaped > 0) log(`[reap] ${label}: terminated ${reaped} process(es) on shutdown`);
+  const reaped = targets.length - (killRoot ? signalable.length : 0);
+  if (reaped > 0) {
+    log(`[reap] shutdown: terminated ${reaped} process(es) across ${signalable.length} session(s)`);
+  }
   return targets;
 }
 
