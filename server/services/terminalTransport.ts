@@ -77,8 +77,19 @@ export function parseTerminalClientMessage(
     // known final, so a program can never smuggle text or a newline into the tty
     // through its own query. `u` is excluded on purpose — the Kitty rule above owns
     // that final and is deliberately stricter.
-    const csiReportResponse = /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRSt]|\$y)$/.test(message.data);
-    if (!osc52Response && !kittyKeyboardResponse && !csiReportResponse) {
+    // CSI: DA1/2/3 (c), DSR (n), CPR (R), window ops incl. size reports (t),
+    // XTSMGRAPHICS (S), focus in/out (I/O), DECRPM ($y). `u` is excluded on purpose —
+    // the Kitty rule above owns that final and is stricter.
+    const csiReportResponse = /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRStIO]|\$y)$/.test(message.data);
+    // OSC 4/10/11/12 colour reports. Editors and pagers query these to pick a light or
+    // dark theme and block on the answer, so dropping them stalls them at startup.
+    const oscColorResponse =
+      /^\x1b\](?:4;\d{1,3}|1[012]);rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\x1b\\$/
+        .test(message.data);
+    // DCS DECRQSS status strings.
+    const dcsStatusResponse = /^\x1bP[01]\$r[ -~]{0,64}\x1b\\$/.test(message.data);
+    if (!osc52Response && !kittyKeyboardResponse && !csiReportResponse &&
+        !oscColorResponse && !dcsStatusResponse) {
       throw new TerminalClientMessageError("Unsupported terminal response", 1008);
     }
     return { type: "terminalResponse", data: message.data, bytes: responseBytes };

@@ -249,6 +249,7 @@ interface CachedTerminal {
   // DOM drift apart, which is what leaves a pane permanently black.
   mounts: HTMLDivElement[];
   fitFrame?: number;
+  gpuReleaseTimer?: ReturnType<typeof setTimeout>;
   webgl: WebglAddon | null;
   webglRetries: number;
   // Set by xterm just before it hands us a typed chunk; see watchUserInput.
@@ -340,6 +341,7 @@ function attachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
   if (index !== -1) entry.mounts.splice(index, 1);
   entry.mounts.push(container);
   if (entry.wrapperDiv.parentNode !== container) container.appendChild(entry.wrapperDiv);
+  cancelGpuRelease(entry);
   enableGpuRenderer(entry);
 }
 
@@ -348,10 +350,7 @@ function detachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
   if (index !== -1) entry.mounts.splice(index, 1);
   if (entry.wrapperDiv.parentNode === container) container.removeChild(entry.wrapperDiv);
   reclaimTerminal(entry);
-  if (entry.mounts.length === 0) {
-    disableGpuRenderer(entry);
-    rebalanceGpuRenderers();
-  }
+  if (entry.mounts.length === 0) scheduleGpuRelease(entry);
 }
 
 // Chromium drops the least-recently-used WebGL context once a renderer holds too
@@ -360,6 +359,31 @@ function detachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
 // to terminals that are actually on screen — a detached one gives its slot back
 // rather than sitting on a canvas nobody is looking at.
 const MAX_GPU_TERMINALS = 4;
+
+// React runs a pane's cleanup before the next pane's mount effect, so every tab switch
+// momentarily leaves a terminal with zero mounts. Releasing the context on that edge
+// would destroy and rebuild it on each switch, and rapid switching can create contexts
+// faster than Chromium reclaims them — which force-loses one that a user is reading.
+// Wait long enough for the handoff to finish before giving the slot up.
+const GPU_RELEASE_DELAY_MS = 750;
+
+function cancelGpuRelease(entry: CachedTerminal) {
+  if (entry.gpuReleaseTimer === undefined) return;
+  clearTimeout(entry.gpuReleaseTimer);
+  entry.gpuReleaseTimer = undefined;
+}
+
+function scheduleGpuRelease(entry: CachedTerminal) {
+  if (entry.gpuReleaseTimer !== undefined) return;
+  entry.gpuReleaseTimer = setTimeout(() => {
+    entry.gpuReleaseTimer = undefined;
+    if (!entry.alive || entry.mounts.length > 0) return;
+    disableGpuRenderer(entry);
+    // Handing a slot back is a handoff, not a failure, so the retry budget resets.
+    entry.webglRetries = 0;
+    rebalanceGpuRenderers();
+  }, GPU_RELEASE_DELAY_MS);
+}
 
 function gpuTerminalCount(): number {
   let count = 0;
@@ -438,15 +462,38 @@ function watchUserInput(entry: CachedTerminal): boolean {
   return true;
 }
 
-// Replies carry digits, separators and a known final — never a newline and never
-// program-chosen text, which is what makes forwarding them to the PTY safe. Must stay
-// in step with the allowlist in server/services/terminalTransport.ts: anything outside
-// the shape is dropped here rather than sent, so an unrecognized sequence can never
+// Enumerated from every triggerDataEvent(data) call site in xterm 5.5.0 that does not
+// pass wasUserInput, plus the image addon's XTSMGRAPHICS reply:
+//   CSI — DA1/DA2/DA3 (c), DSR (n), CPR (R), window ops incl. the size reports (t),
+//         XTSMGRAPHICS (S), focus in/out (I/O), DECRPM ($y)
+//   OSC — colour reports for OSC 4/10/11/12, which vim, neovim, delta, bat and fzf
+//         query at startup and then block waiting on
+//   DCS — DECRQSS status strings
+// Getting this list short is not a virtue: a reply that falls outside it is dropped,
+// and a program waiting on one hangs. `u` is the one deliberate omission — the Kitty
+// keyboard rule owns that final and is stricter about it.
+//
+// What every shape has in common is the reason forwarding them to the PTY is safe:
+// digits, separators and a fixed final, no newline and no program-chosen text. Must
+// stay in step with the allowlist in server/services/terminalTransport.ts; anything
+// outside it is dropped here rather than sent, so an unrecognized sequence can never
 // trip that allowlist and close the socket.
-const TERMINAL_REPLY_RE = /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRSt]|\$y)$/;
+const TERMINAL_REPLY_RES = [
+  /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRStIO]|\$y)$/,
+  /^\x1b\](?:4;\d{1,3}|1[012]);rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\x1b\\$/,
+  /^\x1bP[01]\$r[ -~]{0,64}\x1b\\$/,
+];
+
+// Modified F3/F4 encode as CSI 1;<mod>R and CSI 1;<mod>S, colliding with CPR and
+// XTSMGRAPHICS. Only the shape-based fallback below can confuse the two.
+const KEY_SHAPED_LIKE_REPLY_RE = /^\x1b\[1;\d{1,3}[RS]$/;
+
+function looksLikeTerminalReply(data: string): boolean {
+  return TERMINAL_REPLY_RES.some((pattern) => pattern.test(data));
+}
 
 function sendTerminalReply(entry: CachedTerminal, data: string) {
-  if (!TERMINAL_REPLY_RE.test(data)) return;
+  if (!looksLikeTerminalReply(data)) return;
   if (entry.ws?.readyState !== WebSocket.OPEN) return;
   entry.ws.send(JSON.stringify({ type: "terminalResponse", data }));
 }
@@ -454,7 +501,9 @@ function sendTerminalReply(entry: CachedTerminal, data: string) {
 // Reads and clears the flag xterm set just before handing us this chunk. Without the
 // internal hook, fall back to shape: treat a bare complete CSI sequence as a reply.
 function chunkWasTyped(entry: CachedTerminal, data: string): boolean {
-  if (!entry.userInputTracked) return !TERMINAL_REPLY_RE.test(data);
+  if (!entry.userInputTracked) {
+    return KEY_SHAPED_LIKE_REPLY_RE.test(data) || !looksLikeTerminalReply(data);
+  }
   const typed = entry.sawUserInput;
   entry.sawUserInput = false;
   return typed;
@@ -521,6 +570,7 @@ export function destroyCachedTerminal(sessionId: string) {
   entry.alive = false;
   if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
   if (entry.fitFrame !== undefined) window.cancelAnimationFrame(entry.fitFrame);
+  cancelGpuRelease(entry);
   entry.mounts.length = 0;
   entry.webgl = null;
   entry.ws?.close();
@@ -1271,9 +1321,15 @@ export function Terminal({
   // state costs a Map lookup and two reference compares.
   useEffect(() => {
     const entry = cache.get(sessionId);
-    if (!entry?.alive || !containerRef.current) return;
+    const container = containerRef.current;
+    if (!entry?.alive || !container) return;
     if (entry.wrapperDiv.isConnected) return;
     reclaimTerminal(entry);
+    // reclaimTerminal only considers panes still on the stack. When the stranding IS
+    // this pane's container going stale, every entry gets popped and the node has
+    // nowhere to land — leaving the session black with its recovery path emptied out.
+    // Adopt it here instead.
+    if (!entry.wrapperDiv.isConnected) attachTerminal(entry, container);
   });
 
   const updateInlineAnchor = useCallback(() => {

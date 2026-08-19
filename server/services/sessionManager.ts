@@ -71,10 +71,14 @@ export const DEFAULT_PTY_ROWS = 24;
 // cheap — the client's first resize narrows it and the emulator re-wraps — while
 // spawning too narrow bakes hard line breaks into the buffer permanently.
 //
-// Process-global and in-memory. seedPreferredTerminalSize() carries it across a
-// restart from persisted session geometry so the first session of a launch is not
-// stuck at the default.
-const MAX_REPORTED_PTY_DIMENSION = 1_000;
+// Process-global, and seeded at startup from persisted session geometry so the first
+// session of a launch is not stuck at the default. It only grows and never decays, so
+// a single session opened on a large external display keeps raising the floor for
+// every later session, including across restarts. That is tolerable because spawning
+// wide only costs a re-wrap once a client attaches, but it is why the ceiling here is
+// a plausible-terminal size rather than the transport's much looser 1000-cell clamp:
+// one outlier should not be able to set the default forever.
+const MAX_REPORTED_PTY_DIMENSION = 300;
 let preferredPtyCols = DEFAULT_PTY_COLS;
 let preferredPtyRows = DEFAULT_PTY_ROWS;
 

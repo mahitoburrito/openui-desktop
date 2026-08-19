@@ -1846,7 +1846,15 @@ async function runTerminalTransportUnitTests() {
   );
   // Emulator replies to a program's query travel on terminalResponse, not input:
   // the input path attributes them to the user, which cancels agent fallback.
-  for (const reportData of ["\x1b[?62;4;9;22c", "\x1b[0n", "\x1b[24;80R", "\x1b[?1;0;256S", "\x1b[8;37;111t", "\x1b[?2004;1$y"]) {
+  for (const reportData of [
+    "\x1b[?62;4;9;22c", "\x1b[0n", "\x1b[24;80R", "\x1b[?1;0;256S", "\x1b[8;37;111t", "\x1b[?2004;1$y",
+    // Focus in/out (DECSET 1004) — vim FocusGained/FocusLost and tmux focus-events.
+    "\x1b[I", "\x1b[O",
+    // OSC colour reports. Editors and pagers query these at startup and block on them.
+    "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\", "\x1b]4;12;rgb:00/00/ffff\x1b\\",
+    // DCS DECRQSS status string.
+    "\x1bP1$r0m\x1b\\",
+  ]) {
     const report = loaded.parseTerminalClientMessage(
       Buffer.from(JSON.stringify({ type: "terminalResponse", data: reportData })),
       false,
@@ -1870,6 +1878,8 @@ async function runTerminalTransportUnitTests() {
     [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[?1;2u" })), false, 1008],
     [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[0;rm -rf /\x07t" })), false, 1008],
     [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[8;37;111t\rwhoami\r" })), false, 1008],
+    [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b]11;rgb:00/00/00\nwhoami\n\x1b\\" })), false, 1008],
+    [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b]99;rgb:00/00/00\x1b\\" })), false, 1008],
   ];
   for (const [payload, binary, closeCode] of expectedErrors) {
     let actual;
