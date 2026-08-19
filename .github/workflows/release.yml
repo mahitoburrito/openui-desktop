@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  # Validate on PRs too. Without this nothing exercised the suite before main, so the
+  # gate rotted unnoticed for two weeks and every release was blocked behind it. The
+  # release jobs below stay push-only.
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -114,6 +120,9 @@ jobs:
 
   version:
     needs: validate
+    # Push-only: a pull_request run stops after validate. build, publish and
+    # update-homebrew all chain off this job, so they skip with it.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.bump.outputs.version }}
