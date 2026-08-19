@@ -118,6 +118,16 @@ npm run dev
 - **Persistent layout** — everything saved across restarts
 - **Claude Code plugin** — precise status via hooks (auto-injected)
 
+### Session teardown
+
+Deleting a session terminates the whole process tree it started, not just its
+shell: the agent CLI, its plugins, and anything they left running in the
+background. Agent CLIs commonly detach helpers that used to survive the delete
+and accumulate in the background for days.
+
+If you want something to outlive its session (a long-running dev server, say),
+start it outside OpenUI. Quitting the app tears down every session the same way.
+
 ## Development
 
 ```bash

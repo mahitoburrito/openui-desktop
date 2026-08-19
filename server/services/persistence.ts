@@ -38,6 +38,50 @@ const MAX_BLOCKS_FILE_BYTES = 64_000_000;
 const incompatibleVersionFiles = new Set<string>();
 const warnedIncompatibleVersionFiles = new Set<string>();
 
+// What the last successful periodic write actually put on disk, per session.
+// saveState runs every 10s over every session; without this it re-serialises
+// and rewrites multi-MB scrollback for sessions that have been idle for hours.
+// Cleared on delete so a recycled session id can never inherit a stale entry.
+const persistedBufferRevisions = new Map<string, string>();
+const persistedBlockSignatures = new Map<string, string>();
+
+function bufferRevisionKey(session: Session): string {
+  // outputBufferRev counts mutations of the scrollback and is the exact signal.
+  // The rest disambiguates a session restored from disk, whose rev restarts at
+  // 0 while its buffer already holds content.
+  return [
+    session.outputBufferRev || 0,
+    session.outputBuffer.length,
+    session.outputBufferChars || 0,
+    session.outputBufferTruncated === true ? 1 : 0,
+  ].join(":");
+}
+
+function blockSignature(blocks: TerminalCommandBlock[]): string {
+  // Blocks are append-mostly with a mutating tail, so length plus the identity
+  // and running output size of the last block moves whenever the file would.
+  const last = blocks[blocks.length - 1];
+  if (!last) return "0";
+  return [
+    blocks.length,
+    last.id,
+    last.sequence,
+    last.status,
+    last.completedAt || 0,
+    last.exitCode ?? "",
+    last.output.length,
+    last.outputTruncated === true ? 1 : 0,
+    last.bookmarked === true ? 1 : 0,
+    last.note || "",
+  ].join(":");
+}
+
+/** Forget dirty-tracking state for a session. Safe to call for unknown ids. */
+export function forgetPersistedSignatures(sessionId: string) {
+  persistedBufferRevisions.delete(sessionId);
+  persistedBlockSignatures.delete(sessionId);
+}
+
 export interface LoadedTerminalBuffer {
   chunks: string[];
   truncated: boolean;
@@ -559,8 +603,15 @@ export function saveState(sessions: Map<string, Session>) {
       agentPermissionEvents: session.agentPermissionEvents?.slice(-200),
     });
 
-    saveBuffer(sessionId, session.outputBuffer, Boolean(session.outputBufferTruncated));
-    saveTerminalBlocks(sessionId, session.terminalBlocks);
+    // Skip sessions that produced nothing since the last write. A failed write
+    // leaves no signature, so the next pass retries instead of treating the
+    // failure as persisted.
+    if (persistedBufferRevisions.get(sessionId) !== bufferRevisionKey(session)) {
+      saveBuffer(sessionId, session.outputBuffer, Boolean(session.outputBufferTruncated), session);
+    }
+    if (persistedBlockSignatures.get(sessionId) !== blockSignature(session.terminalBlocks)) {
+      saveTerminalBlocks(sessionId, session.terminalBlocks);
+    }
   }
 
   try {
@@ -603,9 +654,21 @@ function legacyBufferPath(sessionId: string): string {
   return join(getBuffersDir(), `${sessionId}.txt`);
 }
 
-export function saveBuffer(sessionId: string, buffer: string[], alreadyTruncated = false) {
+/**
+ * Returns true when the scrollback actually reached disk.
+ *
+ * Pass `session` to record what was written, so the periodic save can skip it
+ * next tick. Omitting it just means the next tick rewrites once.
+ */
+export function saveBuffer(
+  sessionId: string,
+  buffer: string[],
+  alreadyTruncated = false,
+  session?: Session,
+): boolean {
   ensureDirs();
   const bufferFile = bufferJsonPath(sessionId);
+  persistedBufferRevisions.delete(sessionId);
   try {
     assertVersionWritable(bufferFile);
     const replay = terminalReplayText(buffer, alreadyTruncated);
@@ -616,8 +679,11 @@ export function saveBuffer(sessionId: string, buffer: string[], alreadyTruncated
       data: replay.data,
     }));
     rmSync(legacyBufferPath(sessionId), { force: true });
+    if (session) persistedBufferRevisions.set(sessionId, bufferRevisionKey(session));
+    return true;
   } catch (e) {
     reportPersistenceSaveError("Failed to save buffer:", e);
+    return false;
   }
 }
 
@@ -742,10 +808,12 @@ function normalizedBlocks(rawBlocks: unknown[], restoring: boolean): TerminalCom
   return blocks.slice(-MAX_BLOCKS_PER_SESSION);
 }
 
-export function saveTerminalBlocks(sessionId: string, blocks: TerminalCommandBlock[]) {
+/** Returns true when the blocks actually reached disk. */
+export function saveTerminalBlocks(sessionId: string, blocks: TerminalCommandBlock[]): boolean {
   ensureDirs();
   assertSessionId(sessionId);
   const blocksFile = join(getTerminalBlocksDir(), `${sessionId}.json`);
+  persistedBlockSignatures.delete(sessionId);
   try {
     assertVersionWritable(blocksFile);
     const safeBlocks = normalizedBlocks(blocks, false);
@@ -754,8 +822,11 @@ export function saveTerminalBlocks(sessionId: string, blocks: TerminalCommandBlo
       savedAt: Date.now(),
       blocks: safeBlocks,
     }));
+    persistedBlockSignatures.set(sessionId, blockSignature(blocks));
+    return true;
   } catch (e) {
     reportPersistenceSaveError("Failed to save terminal blocks:", e);
+    return false;
   }
 }
 
@@ -800,6 +871,7 @@ export function loadTerminalBlocks(sessionId: string): TerminalCommandBlock[] {
 export function deletePersistedSession(sessionId: string) {
   ensureDirs();
   assertSessionId(sessionId);
+  forgetPersistedSignatures(sessionId);
   for (const path of [
     bufferJsonPath(sessionId),
     legacyBufferPath(sessionId),
@@ -825,6 +897,15 @@ function deleteAtomicFamily(path: string) {
 }
 
 function cleanupOrphanedSessionFiles(activeSessionIds: Set<string>) {
+  // Sessions can leave the map without routing through deletePersistedSession
+  // (restore replacing the set, a failed spawn rolling back). Prune here so the
+  // dirty-tracking maps stay the same size as the session map.
+  for (const map of [persistedBufferRevisions, persistedBlockSignatures]) {
+    for (const sessionId of map.keys()) {
+      if (!activeSessionIds.has(sessionId)) map.delete(sessionId);
+    }
+  }
+
   for (const [directory, suffixes] of [
     [getBuffersDir(), [".json", ".json.bak", ".txt", ".txt.bak"]],
     [getTerminalBlocksDir(), [".json", ".json.bak"]],

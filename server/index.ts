@@ -17,6 +17,7 @@ import {
   writeTerminalData,
 } from "./services/sessionManager";
 import { saveState, terminalReplayText } from "./services/persistence";
+import { killProcessTreeSync } from "./services/processTree";
 import {
   parseTerminalClientMessage,
   sendTerminalMessage,
@@ -347,7 +348,23 @@ export async function startServer(): Promise<number> {
     process.on("SIGINT", () => {
       log("[server] Saving state before exit...");
       emergencySave();
-      for (const [, session] of sessions) {
+      for (const [sessionId, session] of sessions) {
+        // Synchronous: Electron tears the process down as soon as this handler
+        // returns, so anything deferred to the event loop never runs and every
+        // descendant of every session leaks on quit.
+        if (session.pty) {
+          killProcessTreeSync(session.pty.pid, {
+            label: sessionId,
+            killRoot: false,
+            sessionMarker: sessionId,
+          });
+        }
+        if (session.stateTrackerPty) {
+          killProcessTreeSync(session.stateTrackerPty.pid, {
+            label: `${sessionId}:state-tracker`,
+            killRoot: false,
+          });
+        }
         if (session.pty) session.pty.kill();
         if (session.stateTrackerPty) session.stateTrackerPty.kill();
       }

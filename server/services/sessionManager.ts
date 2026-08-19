@@ -34,6 +34,7 @@ import {
   saveTerminalBlocks,
 } from "./persistence";
 import { generateSessionTitle } from "./titleGenerator";
+import { reapProcessTreeDetached } from "./processTree";
 import { TerminalLifecycle } from "./terminalLifecycle";
 import { terminalFind, type TerminalFindBlockIndexEntry } from "./terminalFind";
 import { sendTerminalMessage } from "./terminalTransport";
@@ -523,6 +524,7 @@ export function getTerminalWriteQueueState(sessionId: string): { bytes: number; 
 
 function appendOutputBuffer(session: Session, data: string) {
   if (!data) return;
+  session.outputBufferRev = (session.outputBufferRev || 0) + 1;
   if (!Number.isFinite(session.outputBufferChars)) {
     session.outputBufferChars = session.outputBuffer.reduce((total, chunk) => total + chunk.length, 0);
   }
@@ -2121,6 +2123,24 @@ export function deleteSession(sessionId: string) {
   session.stateTrackerPty = null;
   terminalLifecycles.get(sessionId)?.terminate(undefined);
   terminalCommandQueue.clear(sessionId);
+  // Reap before the pty dies. `pty.kill()` SIGHUPs the shell only; the agent
+  // CLI sits in its own process group and anything it daemonized sits in its
+  // own session, so once the shell exits those are reparented to init with
+  // nothing left to identify them by. The pty still owns the root kill so its
+  // onExit handler fires as usual.
+  if (activePty) {
+    reapProcessTreeDetached(activePty.pid, {
+      label: sessionId,
+      killRoot: false,
+      sessionMarker: sessionId,
+    });
+  }
+  if (stateTrackerPty) {
+    reapProcessTreeDetached(stateTrackerPty.pid, {
+      label: `${sessionId}:state-tracker`,
+      killRoot: false,
+    });
+  }
   if (activePty) activePty.kill();
   if (stateTrackerPty) stateTrackerPty.kill();
 
