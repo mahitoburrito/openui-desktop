@@ -489,6 +489,7 @@ function connectWs(
       } else if (msg.type === "status") {
         entry.updateSession(entry.nodeId, {
           status: msg.status as AgentStatus,
+          statusChangedAt: typeof msg.statusChangedAt === "number" ? msg.statusChangedAt : Date.now(),
           isRestored: msg.isRestored,
           currentTool: msg.currentTool,
         });

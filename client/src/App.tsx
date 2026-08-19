@@ -113,6 +113,7 @@ function restoreServerSessionToCanvas(sessionData: any) {
     originalCwd: sessionData.originalCwd,
     gitBranch: sessionData.gitBranch,
     status: sessionData.status || "idle",
+    statusChangedAt: sessionData.statusChangedAt,
     customName: sessionData.customName,
     customColor: sessionData.customColor,
     notes: sessionData.notes,
@@ -290,9 +291,21 @@ function AppContent() {
               }
               if (existing) {
                 const sessionUpdates: Partial<AgentSession> = {};
-                if (existing.status !== sessionData.status) {
+                // The poll response was serialized before it got here, so a
+                // websocket status that landed mid-flight is newer than this.
+                // Without the timestamp check the poll rolls it back for up to
+                // a second, which reads as the card flickering.
+                const polledAt = typeof sessionData.statusChangedAt === "number"
+                  ? sessionData.statusChangedAt
+                  : 0;
+                const isStale = polledAt > 0 && polledAt < (existing.statusChangedAt ?? 0);
+
+                if (!isStale && existing.status !== sessionData.status) {
                   sessionUpdates.status = sessionData.status;
                   console.log(`[poll] Updating ${sessionData.nodeId} status: ${existing.status} -> ${sessionData.status}`);
+                }
+                if (polledAt > 0 && !isStale && existing.statusChangedAt !== polledAt) {
+                  sessionUpdates.statusChangedAt = polledAt;
                 }
                 if (existing.customName !== sessionData.customName) {
                   sessionUpdates.customName = sessionData.customName;

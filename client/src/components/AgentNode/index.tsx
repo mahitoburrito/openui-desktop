@@ -182,6 +182,7 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
           displayName={displayName}
           agentId={nodeData.agentId}
           status={status}
+          statusChangedAt={session?.statusChangedAt}
           currentTool={currentTool}
           cwd={session?.cwd}
           originalCwd={session?.originalCwd}

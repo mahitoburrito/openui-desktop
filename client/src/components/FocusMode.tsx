@@ -60,7 +60,7 @@ const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
   creating: { label: "Starting", color: "oklch(72% 0.11 280)" },
   running: { label: "Working", color: "oklch(74% 0.12 145)" },
   tool_calling: { label: "Working", color: "oklch(74% 0.12 145)" },
-  waiting_input: { label: "Needs input", color: "oklch(72% 0.13 48)" },
+  waiting_input: { label: "Needs Input", color: "oklch(72% 0.13 48)" },
   idle: { label: "Idle", color: "oklch(67% 0.02 260)" },
   disconnected: { label: "Offline", color: "oklch(58% 0.02 260)" },
   error: { label: "Error", color: "oklch(70% 0.15 28)" },

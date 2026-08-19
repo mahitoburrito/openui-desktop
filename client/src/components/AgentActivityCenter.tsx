@@ -34,7 +34,7 @@ const statusLabel: Record<AgentStatus, string> = {
   creating: "Creating",
   running: "Running",
   tool_calling: "Using tool",
-  waiting_input: "Needs input",
+  waiting_input: "Needs Input",
   idle: "Finished",
   disconnected: "Disconnected",
   error: "Error",

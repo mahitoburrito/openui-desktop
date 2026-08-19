@@ -88,6 +88,8 @@ export interface AgentSession {
   originalCwd?: string; // Mother repo path when using worktrees
   gitBranch?: string;
   status: AgentStatus;
+  /** Server timestamp of the last real status change, for "waiting a while". */
+  statusChangedAt?: number;
   customName?: string;
   customColor?: string;
   notes?: string;
