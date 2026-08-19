@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ImageAddon } from "@xterm/addon-image";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { useStore, AgentStatus, type TerminalOsc52ClipboardAccess } from "../stores/useStore";
 import {
@@ -248,6 +249,8 @@ interface CachedTerminal {
   // DOM drift apart, which is what leaves a pane permanently black.
   mounts: HTMLDivElement[];
   fitFrame?: number;
+  webgl: WebglAddon | null;
+  webglRetries: number;
   // Set by xterm just before it hands us a typed chunk; see watchUserInput.
   userInputTracked: boolean;
   sawUserInput: boolean;
@@ -337,6 +340,7 @@ function attachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
   if (index !== -1) entry.mounts.splice(index, 1);
   entry.mounts.push(container);
   if (entry.wrapperDiv.parentNode !== container) container.appendChild(entry.wrapperDiv);
+  enableGpuRenderer(entry);
 }
 
 function detachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
@@ -344,6 +348,72 @@ function detachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
   if (index !== -1) entry.mounts.splice(index, 1);
   if (entry.wrapperDiv.parentNode === container) container.removeChild(entry.wrapperDiv);
   reclaimTerminal(entry);
+  if (entry.mounts.length === 0) {
+    disableGpuRenderer(entry);
+    rebalanceGpuRenderers();
+  }
+}
+
+// Chromium drops the least-recently-used WebGL context once a renderer holds too
+// many, and that surfaces as a lost context on a terminal the user is looking at.
+// Stay well under the ceiling; terminals past it keep the DOM renderer. Contexts go
+// to terminals that are actually on screen — a detached one gives its slot back
+// rather than sitting on a canvas nobody is looking at.
+const MAX_GPU_TERMINALS = 4;
+
+function gpuTerminalCount(): number {
+  let count = 0;
+  for (const entry of cache.values()) if (entry.webgl) count++;
+  return count;
+}
+
+// The GPU renderer is a large readability and throughput win for TUI agents, but
+// a lost WebGL context leaves the canvases permanently blank. Drop straight back
+// to the DOM renderer when that happens, and only retry GPU once.
+function disableGpuRenderer(entry: CachedTerminal) {
+  const addon = entry.webgl;
+  if (!addon) return;
+  entry.webgl = null;
+  try { addon.dispose(); } catch {}
+  if (entry.alive) entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+}
+
+// Hand a freed slot to whichever terminal is on screen and still on the DOM renderer.
+function rebalanceGpuRenderers() {
+  for (const entry of cache.values()) {
+    if (gpuTerminalCount() >= MAX_GPU_TERMINALS) return;
+    if (entry.alive && !entry.webgl && entry.mounts.length > 0) enableGpuRenderer(entry);
+  }
+}
+
+function enableGpuRenderer(entry: CachedTerminal) {
+  if (!entry.alive || entry.webgl) return;
+  if (entry.mounts.length === 0) return;
+  if (typeof WebGL2RenderingContext === "undefined") return;
+  if (gpuTerminalCount() >= MAX_GPU_TERMINALS) return;
+  let addon: WebglAddon;
+  try {
+    addon = new WebglAddon();
+  } catch {
+    return;
+  }
+  addon.onContextLoss(() => {
+    try { addon.dispose(); } catch {}
+    if (entry.webgl !== addon) return;
+    entry.webgl = null;
+    entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+    if (entry.webglRetries >= 1) return;
+    entry.webglRetries += 1;
+    window.setTimeout(() => enableGpuRenderer(entry), 1_000);
+  });
+  try {
+    entry.term.loadAddon(addon);
+    entry.webgl = addon;
+  } catch {
+    // No WebGL2 in this window — the DOM renderer stays in charge.
+    try { addon.dispose(); } catch {}
+    entry.webgl = null;
+  }
 }
 
 // Everything the emulator answers a program with arrives on onData looking exactly
@@ -452,10 +522,12 @@ export function destroyCachedTerminal(sessionId: string) {
   if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
   if (entry.fitFrame !== undefined) window.cancelAnimationFrame(entry.fitFrame);
   entry.mounts.length = 0;
+  entry.webgl = null;
   entry.ws?.close();
   entry.wrapperDiv.remove();
   entry.term.dispose();
   cache.delete(sessionId);
+  rebalanceGpuRenderers();
 }
 
 function buildTheme(color: string, themeId: TerminalThemeId) {
@@ -837,6 +909,8 @@ export function Terminal({
       fitAddon,
       wrapperDiv,
       mounts: [],
+      webgl: null,
+      webglRetries: 0,
       userInputTracked: false,
       sawUserInput: false,
       ws: null,
@@ -861,6 +935,7 @@ export function Terminal({
     // only registers the ownership claim — but it keeps every mount path on one
     // function, which is the invariant that stops panes stranding each other.
     attachTerminal(entry, container);
+    enableGpuRenderer(entry);
 
     // Every path that changes the grid (fit, font size, manual resize) lands here,
     // so the terminal and the PTY cannot drift. ws.onopen additionally re-sends the
