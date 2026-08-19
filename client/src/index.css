@@ -154,7 +154,8 @@ html, body {
 .xterm {
   padding: 0;
   height: 100%;
-  font-family: "SF Mono", ui-monospace, Menlo, Monaco, "Cascadia Code", monospace;
+  /* No font-family here: xterm derives cell metrics from its own fontFamily
+     option, and a CSS override desynchronizes measurement from rendering. */
 }
 
 .xterm-screen {

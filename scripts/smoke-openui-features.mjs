@@ -1844,6 +1844,26 @@ async function runTerminalTransportUnitTests() {
     kittyResponse.type === "terminalResponse" && kittyResponse.data === kittyResponseData,
     "valid history-neutral Kitty keyboard query response did not parse",
   );
+  // Emulator replies to a program's query travel on terminalResponse, not input:
+  // the input path attributes them to the user, which cancels agent fallback.
+  for (const reportData of [
+    "\x1b[?62;4;9;22c", "\x1b[0n", "\x1b[24;80R", "\x1b[?1;0;256S", "\x1b[8;37;111t", "\x1b[?2004;1$y",
+    // Focus in/out (DECSET 1004) — vim FocusGained/FocusLost and tmux focus-events.
+    "\x1b[I", "\x1b[O",
+    // OSC colour reports. Editors and pagers query these at startup and block on them.
+    "\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\", "\x1b]4;12;rgb:00/00/ffff\x1b\\",
+    // DCS DECRQSS status string.
+    "\x1bP1$r0m\x1b\\",
+  ]) {
+    const report = loaded.parseTerminalClientMessage(
+      Buffer.from(JSON.stringify({ type: "terminalResponse", data: reportData })),
+      false,
+    );
+    await assert(
+      report.type === "terminalResponse" && report.data === reportData,
+      `terminal-generated report ${JSON.stringify(reportData)} was not accepted`,
+    );
+  }
   const resize = loaded.parseTerminalClientMessage(Buffer.from(JSON.stringify({ type: "resize", cols: 0, rows: 9999 })), false);
   await assert(resize.cols === 2 && resize.rows === 1000, "terminal resize bounds were not clamped");
 
@@ -1856,6 +1876,10 @@ async function runTerminalTransportUnitTests() {
     [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b]52;c;not_base64!\x07" })), false, 1008],
     [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[?32u" })), false, 1008],
     [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[?1;2u" })), false, 1008],
+    [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[0;rm -rf /\x07t" })), false, 1008],
+    [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b[8;37;111t\rwhoami\r" })), false, 1008],
+    [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b]11;rgb:00/00/00\nwhoami\n\x1b\\" })), false, 1008],
+    [Buffer.from(JSON.stringify({ type: "terminalResponse", data: "\x1b]99;rgb:00/00/00\x1b\\" })), false, 1008],
   ];
   for (const [payload, binary, closeCode] of expectedErrors) {
     let actual;
@@ -2633,6 +2657,89 @@ async function waitForLifecycleState(lifecycle, predicate, description, timeoutM
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for nested shell state: ${description}\n${JSON.stringify(lifecycle.snapshot(true), null, 2)}`);
+}
+
+async function runPreferredTerminalSizeUnitTests() {
+  const loaded = await import(new URL("../dist/electron/server/services/sessionManager.js", import.meta.url));
+  const { notePreferredTerminalSize, preferredTerminalSize, resetPreferredTerminalSize } = loaded;
+  try {
+    resetPreferredTerminalSize();
+    await assert(
+      preferredTerminalSize().cols === 80 && preferredTerminalSize().rows === 24,
+      "preferred terminal size did not start at the classic default",
+    );
+
+    notePreferredTerminalSize(Number.NaN, Number.POSITIVE_INFINITY);
+    await assert(
+      preferredTerminalSize().cols === 80 && preferredTerminalSize().rows === 24,
+      "non-finite reported geometry was accepted",
+    );
+
+    notePreferredTerminalSize(5_000, 5_000);
+    await assert(
+      preferredTerminalSize().cols === 80 && preferredTerminalSize().rows === 24,
+      "absurd reported geometry was accepted past the sanity ceiling",
+    );
+
+    notePreferredTerminalSize(160.7, 50.9);
+    await assert(
+      preferredTerminalSize().cols === 160 && preferredTerminalSize().rows === 50,
+      "fractional reported geometry was not truncated to whole cells",
+    );
+
+    // The regression this guards: every client sends its pre-fit 80x24 the moment
+    // its socket opens, so a last-writer-wins preference would reset here and new
+    // PTYs would go back to hard-wrapping at 80 columns.
+    notePreferredTerminalSize(80, 24);
+    await assert(
+      preferredTerminalSize().cols === 160 && preferredTerminalSize().rows === 50,
+      "a smaller later report lowered the remembered spawn geometry",
+    );
+  } finally {
+    resetPreferredTerminalSize();
+  }
+}
+
+async function runTerminalOwnershipSourceTests() {
+  const terminalSource = await readFile(join(ROOT, "client", "src", "components", "Terminal.tsx"), "utf8");
+
+  // The cached xterm node is shared between panes. Any direct appendChild/removeChild
+  // desynchronizes the ownership stack from the DOM and leaves a pane black forever,
+  // so every move has to stay inside the three helpers.
+  const removals = terminalSource.match(/removeChild\(/g) || [];
+  await assert(removals.length === 1, `wrapperDiv is removed from ${removals.length} places; only detachTerminal may remove it`);
+  const appends = terminalSource.match(/appendChild\(entry\.wrapperDiv\)|appendChild\(wrapperDiv\)/g) || [];
+  await assert(
+    appends.length === 3,
+    `wrapperDiv is appended from ${appends.length} places; expected only attachTerminal, reclaimTerminal, and the pre-open() attach`,
+  );
+
+  // FitAddon proposes a 2x1 grid for a zero-sized box, which reflows the scrollback
+  // and repaints a full-screen TUI into two columns. safeFit is the guard.
+  const fits = terminalSource.match(/fitAddon\.fit\(\)/g) || [];
+  await assert(fits.length === 1, `fitAddon.fit() is called from ${fits.length} places; only safeFit may call it`);
+
+  // The server replays its whole scrollback on connect. Clearing the viewport alone
+  // stacked a duplicate copy every reconnect; term.reset() would drop DEC modes the
+  // running program set and a replay cannot restore them.
+  await assert(
+    terminalSource.includes("\\x1b[H\\x1b[2J\\x1b[3J") && !terminalSource.includes("entry.term.reset()"),
+    "reconnect no longer clears scrollback with CSI 3J, or reintroduced a full terminal reset",
+  );
+
+  // Emulator replies (DSR/CPR, DA, DECRQM, XTSMGRAPHICS, CSI t) must not be
+  // attributed to the user: server-side that cancels a pending agent fallback.
+  await assert(
+    terminalSource.includes("chunkWasTyped") && terminalSource.includes("sendTerminalReply"),
+    "terminal replies are no longer separated from user input on the onData path",
+  );
+
+  const cssSource = await readFile(join(ROOT, "client", "src", "index.css"), "utf8");
+  const xtermRule = cssSource.slice(cssSource.indexOf(".xterm {"), cssSource.indexOf("}", cssSource.indexOf(".xterm {")));
+  await assert(
+    !/^\s*font-family:/m.test(xtermRule),
+    "index.css sets font-family on .xterm again, which desynchronizes xterm cell measurement from rendering",
+  );
 }
 
 async function runShellLaunchUnitTests() {
@@ -7566,6 +7673,8 @@ async function main() {
   await runTerminalSignatureUnitTests();
   await runTerminalSuggestionsUnitTests();
   await runShellLaunchUnitTests();
+  await runPreferredTerminalSizeUnitTests();
+  await runTerminalOwnershipSourceTests();
   await runTerminalFilesUnitTests();
   await runTerminalGitUnitTests();
   await runTerminalRemoteUnitTests();

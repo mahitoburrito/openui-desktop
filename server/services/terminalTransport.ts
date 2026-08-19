@@ -69,7 +69,27 @@ export function parseTerminalClientMessage(
     );
     const kittyMatch = /^\x1b\[\?(\d{1,2})u$/.exec(message.data);
     const kittyKeyboardResponse = Boolean(kittyMatch && Number(kittyMatch[1]) <= 31);
-    if (!osc52Response && !kittyKeyboardResponse) {
+    // Emulator answers to a program's query, by final: DA1/2/3 (c), DSR (n), CPR (R),
+    // XTSMGRAPHICS (S), window ops incl. the CSI 14/16/18 t size reports (t), and
+    // DECRPM ($y). They reach the client as ordinary terminal output and have to go
+    // back to the PTY, but they are not user input and must not be attributed as
+    // such. The shape is what makes forwarding them safe: digits, separators and a
+    // known final, so a program can never smuggle text or a newline into the tty
+    // through its own query. `u` is excluded on purpose — the Kitty rule above owns
+    // that final and is deliberately stricter.
+    // CSI: DA1/2/3 (c), DSR (n), CPR (R), window ops incl. size reports (t),
+    // XTSMGRAPHICS (S), focus in/out (I/O), DECRPM ($y). `u` is excluded on purpose —
+    // the Kitty rule above owns that final and is stricter.
+    const csiReportResponse = /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRStIO]|\$y)$/.test(message.data);
+    // OSC 4/10/11/12 colour reports. Editors and pagers query these to pick a light or
+    // dark theme and block on the answer, so dropping them stalls them at startup.
+    const oscColorResponse =
+      /^\x1b\](?:4;\d{1,3}|1[012]);rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\x1b\\$/
+        .test(message.data);
+    // DCS DECRQSS status strings.
+    const dcsStatusResponse = /^\x1bP[01]\$r[ -~]{0,64}\x1b\\$/.test(message.data);
+    if (!osc52Response && !kittyKeyboardResponse && !csiReportResponse &&
+        !oscColorResponse && !dcsStatusResponse) {
       throw new TerminalClientMessageError("Unsupported terminal response", 1008);
     }
     return { type: "terminalResponse", data: message.data, bytes: responseBytes };

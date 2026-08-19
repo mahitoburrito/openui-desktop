@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { ImageAddon } from "@xterm/addon-image";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { useStore, AgentStatus, type TerminalOsc52ClipboardAccess } from "../stores/useStore";
 import {
@@ -240,6 +242,19 @@ interface CachedTerminal {
   term: XTerm;
   fitAddon: FitAddon;
   wrapperDiv: HTMLDivElement;
+  // Every pane that currently renders this session, least recently attached first.
+  // The DOM only lets `wrapperDiv` live in one of them, so the LAST entry owns it
+  // and the rest wait their turn. Never appendChild/removeChild wrapperDiv directly:
+  // go through attachTerminal/detachTerminal/reclaimTerminal or the stack and the
+  // DOM drift apart, which is what leaves a pane permanently black.
+  mounts: HTMLDivElement[];
+  fitFrame?: number;
+  gpuReleaseTimer?: ReturnType<typeof setTimeout>;
+  webgl: WebglAddon | null;
+  webglRetries: number;
+  // Set by xterm just before it hands us a typed chunk; see watchUserInput.
+  userInputTracked: boolean;
+  sawUserInput: boolean;
   ws: WebSocket | null;
   reconnectTimer?: ReturnType<typeof setTimeout>;
   reconnectAttempt: number;
@@ -262,6 +277,238 @@ interface CachedTerminal {
 }
 
 const cache = new Map<string, CachedTerminal>();
+
+// A pane narrower or shorter than this is collapsed, animating open, or hidden.
+// FitAddon has no such notion: it happily proposes its 2x1 floor for a zero-sized
+// box, which reflows the scrollback and makes the PTY repaint a full-screen TUI
+// into two columns. Below the threshold we keep the last known-good size.
+const MIN_FITTABLE_PX = 24;
+
+// Image budgets are PER TERMINAL and this app keeps one alive per opened session,
+// so the addon defaults (128MB store, 4096x4096 decode) multiply badly: a handful of
+// sessions would outweigh the whole renderer. The decode limit also has to stay under
+// the store limit, because the storage evictor inserts an over-sized image anyway
+// once it has nothing left to evict — a larger pixelLimit quietly uncaps the store.
+const IMAGE_STORAGE_LIMIT_MB = 8;
+const IMAGE_PIXEL_LIMIT = 2048 * 2048;
+const IMAGE_SEQUENCE_LIMIT_BYTES = 4_000_000;
+
+function safeFit(entry: CachedTerminal) {
+  const wrapper = entry.wrapperDiv;
+  if (!entry.alive || !wrapper.isConnected || !wrapper.parentElement) return;
+  const rect = wrapper.getBoundingClientRect();
+  if (rect.width < MIN_FITTABLE_PX || rect.height < MIN_FITTABLE_PX) return;
+  try {
+    entry.fitAddon.fit();
+  } catch {
+    // The renderer can be torn down between the schedule and the callback.
+  }
+}
+
+function scheduleFit(entry: CachedTerminal) {
+  if (entry.fitFrame !== undefined) return;
+  entry.fitFrame = window.requestAnimationFrame(() => {
+    entry.fitFrame = undefined;
+    safeFit(entry);
+  });
+}
+
+function sendResize(entry: CachedTerminal, cols: number, rows: number) {
+  if (entry.ws?.readyState !== WebSocket.OPEN) return;
+  entry.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+}
+
+// Give the terminal to the newest pane that is still on screen. Without this a
+// pane that unmounts while another one is also showing the session strands
+// wrapperDiv outside the document and every remaining pane renders black.
+function reclaimTerminal(entry: CachedTerminal) {
+  while (entry.mounts.length > 0) {
+    const next = entry.mounts[entry.mounts.length - 1];
+    if (!next.isConnected) {
+      entry.mounts.pop();
+      continue;
+    }
+    if (entry.wrapperDiv.parentNode !== next) {
+      next.appendChild(entry.wrapperDiv);
+      scheduleFit(entry);
+    }
+    return;
+  }
+}
+
+function attachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
+  const index = entry.mounts.indexOf(container);
+  if (index !== -1) entry.mounts.splice(index, 1);
+  entry.mounts.push(container);
+  if (entry.wrapperDiv.parentNode !== container) container.appendChild(entry.wrapperDiv);
+  cancelGpuRelease(entry);
+  enableGpuRenderer(entry);
+}
+
+function detachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
+  const index = entry.mounts.indexOf(container);
+  if (index !== -1) entry.mounts.splice(index, 1);
+  if (entry.wrapperDiv.parentNode === container) container.removeChild(entry.wrapperDiv);
+  reclaimTerminal(entry);
+  if (entry.mounts.length === 0) scheduleGpuRelease(entry);
+}
+
+// Chromium drops the least-recently-used WebGL context once a renderer holds too
+// many, and that surfaces as a lost context on a terminal the user is looking at.
+// Stay well under the ceiling; terminals past it keep the DOM renderer. Contexts go
+// to terminals that are actually on screen — a detached one gives its slot back
+// rather than sitting on a canvas nobody is looking at.
+const MAX_GPU_TERMINALS = 4;
+
+// React runs a pane's cleanup before the next pane's mount effect, so every tab switch
+// momentarily leaves a terminal with zero mounts. Releasing the context on that edge
+// would destroy and rebuild it on each switch, and rapid switching can create contexts
+// faster than Chromium reclaims them — which force-loses one that a user is reading.
+// Wait long enough for the handoff to finish before giving the slot up.
+const GPU_RELEASE_DELAY_MS = 750;
+
+function cancelGpuRelease(entry: CachedTerminal) {
+  if (entry.gpuReleaseTimer === undefined) return;
+  clearTimeout(entry.gpuReleaseTimer);
+  entry.gpuReleaseTimer = undefined;
+}
+
+function scheduleGpuRelease(entry: CachedTerminal) {
+  if (entry.gpuReleaseTimer !== undefined) return;
+  entry.gpuReleaseTimer = setTimeout(() => {
+    entry.gpuReleaseTimer = undefined;
+    if (!entry.alive || entry.mounts.length > 0) return;
+    disableGpuRenderer(entry);
+    // Handing a slot back is a handoff, not a failure, so the retry budget resets.
+    entry.webglRetries = 0;
+    rebalanceGpuRenderers();
+  }, GPU_RELEASE_DELAY_MS);
+}
+
+function gpuTerminalCount(): number {
+  let count = 0;
+  for (const entry of cache.values()) if (entry.webgl) count++;
+  return count;
+}
+
+// The GPU renderer is a large readability and throughput win for TUI agents, but
+// a lost WebGL context leaves the canvases permanently blank. Drop straight back
+// to the DOM renderer when that happens, and only retry GPU once.
+function disableGpuRenderer(entry: CachedTerminal) {
+  const addon = entry.webgl;
+  if (!addon) return;
+  entry.webgl = null;
+  try { addon.dispose(); } catch {}
+  if (entry.alive) entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+}
+
+// Hand a freed slot to whichever terminal is on screen and still on the DOM renderer.
+function rebalanceGpuRenderers() {
+  for (const entry of cache.values()) {
+    if (gpuTerminalCount() >= MAX_GPU_TERMINALS) return;
+    if (entry.alive && !entry.webgl && entry.mounts.length > 0) enableGpuRenderer(entry);
+  }
+}
+
+function enableGpuRenderer(entry: CachedTerminal) {
+  if (!entry.alive || entry.webgl) return;
+  if (entry.mounts.length === 0) return;
+  if (typeof WebGL2RenderingContext === "undefined") return;
+  if (gpuTerminalCount() >= MAX_GPU_TERMINALS) return;
+  let addon: WebglAddon;
+  try {
+    addon = new WebglAddon();
+  } catch {
+    return;
+  }
+  addon.onContextLoss(() => {
+    try { addon.dispose(); } catch {}
+    if (entry.webgl !== addon) return;
+    entry.webgl = null;
+    entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+    if (entry.webglRetries >= 1) return;
+    entry.webglRetries += 1;
+    window.setTimeout(() => enableGpuRenderer(entry), 1_000);
+  });
+  try {
+    entry.term.loadAddon(addon);
+    entry.webgl = addon;
+  } catch {
+    // No WebGL2 in this window — the DOM renderer stays in charge.
+    try { addon.dispose(); } catch {}
+    entry.webgl = null;
+  }
+}
+
+// Everything the emulator answers a program with arrives on onData looking exactly
+// like typing: DSR/CPR, DA1/2/3, DECRQM, the XTSMGRAPHICS and CSI 14/16/18 t
+// replies the image addon adds. Attributing those to the user is wrong three times
+// over — they get broadcast to synchronized panes, folded into the prompt buffer
+// behind inline completion, and land on the server's user-input path, where
+// lastInputTime cancels a pending agent fallback chain.
+//
+// xterm fires coreService.onUserInput immediately before onData and only for real
+// typing, so provenance settles it for every reply family at once, including ones a
+// future addon introduces. It is an internal handle, hence the feature check.
+function watchUserInput(entry: CachedTerminal): boolean {
+  const core = (entry.term as unknown as {
+    _core?: { coreService?: { onUserInput?: (listener: () => void) => unknown } };
+  })._core;
+  const coreService = core?.coreService;
+  if (typeof coreService?.onUserInput !== "function") return false;
+  coreService.onUserInput(() => {
+    entry.sawUserInput = true;
+  });
+  return true;
+}
+
+// Enumerated from every triggerDataEvent(data) call site in xterm 5.5.0 that does not
+// pass wasUserInput, plus the image addon's XTSMGRAPHICS reply:
+//   CSI — DA1/DA2/DA3 (c), DSR (n), CPR (R), window ops incl. the size reports (t),
+//         XTSMGRAPHICS (S), focus in/out (I/O), DECRPM ($y)
+//   OSC — colour reports for OSC 4/10/11/12, which vim, neovim, delta, bat and fzf
+//         query at startup and then block waiting on
+//   DCS — DECRQSS status strings
+// Getting this list short is not a virtue: a reply that falls outside it is dropped,
+// and a program waiting on one hangs. `u` is the one deliberate omission — the Kitty
+// keyboard rule owns that final and is stricter about it.
+//
+// What every shape has in common is the reason forwarding them to the PTY is safe:
+// digits, separators and a fixed final, no newline and no program-chosen text. Must
+// stay in step with the allowlist in server/services/terminalTransport.ts; anything
+// outside it is dropped here rather than sent, so an unrecognized sequence can never
+// trip that allowlist and close the socket.
+const TERMINAL_REPLY_RES = [
+  /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRStIO]|\$y)$/,
+  /^\x1b\](?:4;\d{1,3}|1[012]);rgb:[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\x1b\\$/,
+  /^\x1bP[01]\$r[ -~]{0,64}\x1b\\$/,
+];
+
+// Modified F3/F4 encode as CSI 1;<mod>R and CSI 1;<mod>S, colliding with CPR and
+// XTSMGRAPHICS. Only the shape-based fallback below can confuse the two.
+const KEY_SHAPED_LIKE_REPLY_RE = /^\x1b\[1;\d{1,3}[RS]$/;
+
+function looksLikeTerminalReply(data: string): boolean {
+  return TERMINAL_REPLY_RES.some((pattern) => pattern.test(data));
+}
+
+function sendTerminalReply(entry: CachedTerminal, data: string) {
+  if (!looksLikeTerminalReply(data)) return;
+  if (entry.ws?.readyState !== WebSocket.OPEN) return;
+  entry.ws.send(JSON.stringify({ type: "terminalResponse", data }));
+}
+
+// Reads and clears the flag xterm set just before handing us this chunk. Without the
+// internal hook, fall back to shape: treat a bare complete CSI sequence as a reply.
+function chunkWasTyped(entry: CachedTerminal, data: string): boolean {
+  if (!entry.userInputTracked) {
+    return KEY_SHAPED_LIKE_REPLY_RE.test(data) || !looksLikeTerminalReply(data);
+  }
+  const typed = entry.sawUserInput;
+  entry.sawUserInput = false;
+  return typed;
+}
+
 const recentAutoPreviewOpens = new Map<string, number>();
 const AUTO_PREVIEW_SCAN_LIMIT = 1200;
 const AUTO_PREVIEW_COOLDOWN_MS = 45_000;
@@ -322,9 +569,15 @@ export function destroyCachedTerminal(sessionId: string) {
   if (!entry) return;
   entry.alive = false;
   if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+  if (entry.fitFrame !== undefined) window.cancelAnimationFrame(entry.fitFrame);
+  cancelGpuRelease(entry);
+  entry.mounts.length = 0;
+  entry.webgl = null;
   entry.ws?.close();
+  entry.wrapperDiv.remove();
   entry.term.dispose();
   cache.delete(sessionId);
+  rebalanceGpuRenderers();
 }
 
 function buildTheme(color: string, themeId: TerminalThemeId) {
@@ -459,17 +712,19 @@ function connectWs(
     entry.reconnectTimer = undefined;
   }
 
-  let isFirstMessage = true;
-
   ws.onopen = () => {
     entry.reconnectAttempt = 0;
-    ws.send(
-      JSON.stringify({
-        type: "resize",
-        cols: entry.term.cols,
-        rows: entry.term.rows,
-      }),
-    );
+    // The server replays its whole scrollback on every connect, so the old
+    // viewport-only clear (CSI 2J) left the previous copy sitting in scrollback
+    // and stacked a new one under it every reconnect. CSI 3J drops the
+    // scrollback too. Deliberately not term.reset(): that would also clear DEC
+    // modes the running program set — bracketed paste, mouse reporting,
+    // application cursor keys — and a replay cannot put them back. Doing it on
+    // open rather than on the first output frame also stops a late clear from
+    // wiping the first live frame of a session with an empty buffer.
+    entry.kittyKeyboard.reset();
+    entry.term.write("\x1b[H\x1b[2J\x1b[3J\x1b[0m");
+    sendResize(entry, entry.term.cols, entry.term.rows);
     entry.onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
     onReady?.(sendInput);
   };
@@ -478,11 +733,6 @@ function connectWs(
     try {
       const msg = JSON.parse(event.data);
       if (msg.type === "output") {
-        if (isFirstMessage) {
-          isFirstMessage = false;
-          entry.kittyKeyboard.reset();
-          entry.term.write("\x1b[2J\x1b[H\x1b[0m");
-        }
         const output = processOutput(msg.data);
         capturePendingLocalPreview(entry, output);
         entry.term.write(output, () => entry.onCursorUpdate?.());
@@ -600,7 +850,9 @@ export function Terminal({
       entry.term.options.lineHeight = 1.42;
       entry.wrapperDiv.style.backgroundColor = terminalTheme.background;
       entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
-      const fitTimer = setTimeout(() => entry.fitAddon.fit(), 0);
+      // A font change moves the cell size, so the column count moves with it —
+      // term.onResize forwards the new geometry to the PTY.
+      const fitTimer = setTimeout(() => safeFit(entry), 0);
       return () => clearTimeout(fitTimer);
     }
   }, [
@@ -635,10 +887,10 @@ export function Terminal({
       setInlineInput(existing.inlineTracker.snapshot());
       onPromptInputChange?.(sessionId, terminalInputSyncState(existing));
 
-      container.appendChild(existing.wrapperDiv);
+      attachTerminal(existing, container);
 
-      const f1 = setTimeout(() => existing.fitAddon.fit(), 50);
-      const f2 = setTimeout(() => existing.fitAddon.fit(), 300);
+      const f1 = setTimeout(() => safeFit(existing), 50);
+      const f2 = setTimeout(() => safeFit(existing), 300);
 
       if (!existing.ws || existing.ws.readyState >= WebSocket.CLOSING) {
         const sendInput = createSendInput(sessionId);
@@ -651,29 +903,16 @@ export function Terminal({
       let resizeTimer: ReturnType<typeof setTimeout>;
       const ro = new ResizeObserver(() => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          existing.fitAddon.fit();
-          if (existing.ws?.readyState === WebSocket.OPEN) {
-            existing.ws.send(
-              JSON.stringify({
-                type: "resize",
-                cols: existing.term.cols,
-                rows: existing.term.rows,
-              }),
-            );
-          }
-        }, 100);
+        resizeTimer = setTimeout(() => safeFit(existing), 100);
       });
-      ro.observe(containerRef.current);
+      ro.observe(container);
 
       return () => {
         clearTimeout(f1);
         clearTimeout(f2);
         clearTimeout(resizeTimer);
         ro.disconnect();
-        if (existing.wrapperDiv.parentNode === container) {
-          container.removeChild(existing.wrapperDiv);
-        }
+        detachTerminal(existing, container);
       };
     }
 
@@ -699,16 +938,31 @@ export function Terminal({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+    // SIXEL + iTerm2 inline images. Loaded before open() so its parser hooks and
+    // CSI 14/16/18 t size reports are in place for the first byte of output.
+    term.loadAddon(new ImageAddon({
+      storageLimit: IMAGE_STORAGE_LIMIT_MB,
+      pixelLimit: IMAGE_PIXEL_LIMIT,
+      sixelSizeLimit: IMAGE_SEQUENCE_LIMIT_BYTES,
+      iipSizeLimit: IMAGE_SEQUENCE_LIMIT_BYTES,
+    }));
+
+    // Attach first: xterm starts its visibility observer during open(), and an
+    // element that is measured while detached spends its first frames paused.
+    container.appendChild(wrapperDiv);
     term.open(wrapperDiv);
     term.write("\x1b[0m\x1b[?25h");
-
-    container.appendChild(wrapperDiv);
 
     const entry: CachedTerminal = {
       sessionId,
       term,
       fitAddon,
       wrapperDiv,
+      mounts: [],
+      webgl: null,
+      webglRetries: 0,
+      userInputTracked: false,
+      sawUserInput: false,
       ws: null,
       reconnectAttempt: 0,
       kittyKeyboard: new KittyKeyboardProtocol(!/^Win/.test(navigator.platform)),
@@ -726,6 +980,17 @@ export function Terminal({
       onUserInput,
     };
     cache.set(sessionId, entry);
+    entry.userInputTracked = watchUserInput(entry);
+    // wrapperDiv is already inside `container` (open() needs it attached), so this
+    // only registers the ownership claim — but it keeps every mount path on one
+    // function, which is the invariant that stops panes stranding each other.
+    attachTerminal(entry, container);
+    enableGpuRenderer(entry);
+
+    // Every path that changes the grid (fit, font size, manual resize) lands here,
+    // so the terminal and the PTY cannot drift. ws.onopen additionally re-sends the
+    // current geometry on each (re)connect, since a new socket knows nothing.
+    term.onResize(({ cols, rows }) => sendResize(entry, cols, rows));
 
     const sendTerminalResponse = (data: string) => {
       const current = cache.get(sessionId);
@@ -808,34 +1073,28 @@ export function Terminal({
       return true;
     });
 
-    term.onData(sendInput);
+    // The only call site that can carry emulator replies. Every other caller
+    // (typing through the kitty encoder, paste, drag-drop, completions,
+    // synchronized input) is user input by construction.
+    term.onData((data) => {
+      if (chunkWasTyped(entry, data)) sendInput(data);
+      else sendTerminalReply(entry, data);
+    });
 
     const connectTimeout = setTimeout(
       () => connectWs(entry, sessionId, sendInput, onReady),
       100,
     );
 
-    const fit1 = setTimeout(() => fitAddon.fit(), 250);
-    const fit2 = setTimeout(() => fitAddon.fit(), 500);
+    const fit1 = setTimeout(() => safeFit(entry), 250);
+    const fit2 = setTimeout(() => safeFit(entry), 500);
 
     let resizeTimer: ReturnType<typeof setTimeout>;
     const ro = new ResizeObserver(() => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        fitAddon.fit();
-        const e = cache.get(sessionId);
-        if (e?.ws?.readyState === WebSocket.OPEN) {
-          e.ws.send(
-            JSON.stringify({
-              type: "resize",
-              cols: term.cols,
-              rows: term.rows,
-            }),
-          );
-        }
-      }, 100);
+      resizeTimer = setTimeout(() => safeFit(entry), 100);
     });
-    ro.observe(containerRef.current);
+    ro.observe(container);
 
     return () => {
       clearTimeout(connectTimeout);
@@ -843,11 +1102,9 @@ export function Terminal({
       clearTimeout(fit2);
       clearTimeout(resizeTimer);
       ro.disconnect();
-      // Detach from DOM but keep the terminal alive in cache. Only detach
-      // if we still own it — another pane may have adopted it.
-      if (wrapperDiv.parentNode === container) {
-        container.removeChild(wrapperDiv);
-      }
+      // Detach from the DOM but keep the terminal alive in cache, handing it to
+      // whichever pane is still showing this session.
+      detachTerminal(entry, container);
     };
   }, [sessionId]); // Only remount when sessionId changes
 
@@ -1055,10 +1312,36 @@ export function Terminal({
     };
   }, [cwd, inlineEligible, inlineInput.buffer, inlineMenuOpen, sessionId]);
 
+  // Safety net: detach hands the terminal back, but a container that React swaps
+  // out underneath a live mount (a pane re-keyed mid-animation) changes ownership
+  // without either helper running, leaving the node parented to a container that is
+  // no longer in the document. Deliberately unconditional rather than keyed on
+  // deps — the trigger is a DOM identity change, which no dependency list can name.
+  // reclaimTerminal is a no-op once the node sits with its owner, so the steady
+  // state costs a Map lookup and two reference compares.
+  useEffect(() => {
+    const entry = cache.get(sessionId);
+    const container = containerRef.current;
+    if (!entry?.alive || !container) return;
+    if (entry.wrapperDiv.isConnected) return;
+    reclaimTerminal(entry);
+    // reclaimTerminal only considers panes still on the stack. When the stranding IS
+    // this pane's container going stale, every entry gets popped and the node has
+    // nowhere to land — leaving the session black with its recovery path emptied out.
+    // Adopt it here instead.
+    if (!entry.wrapperDiv.isConnected) attachTerminal(entry, container);
+  });
+
   const updateInlineAnchor = useCallback(() => {
     const root = containerRef.current;
     const entry = cache.get(sessionId);
     const screen = entry?.wrapperDiv.querySelector<HTMLElement>(".xterm-screen");
+    // Another pane may own the terminal right now; its rects say nothing about
+    // where our cursor is, so anchor nothing rather than something wrong.
+    if (entry && root && !root.contains(entry.wrapperDiv)) {
+      setInlineAnchor(null);
+      return;
+    }
     if (!root || !entry || !screen || entry.term.cols < 1 || entry.term.rows < 1) {
       setInlineAnchor(null);
       return;

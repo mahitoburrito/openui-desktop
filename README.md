@@ -108,7 +108,7 @@ npm run dev
 - **Infinite canvas** with drag-and-drop agent nodes
 - **Selection mode** — marquee or click to multi-select sessions, move them as a group, bulk-delete with undo
 - **Real-time status** — Running, Idle, Needs Input, Tool Calling
-- **Built-in terminal** with resizable sidebar
+- **Built-in terminal** with resizable sidebar, GPU rendering, and inline images (SIXEL, iTerm2)
 - **Auto-naming** — sessions named from your first prompt
 - **Agent support** — Claude Code, OpenCode, Ralph Loop
 - **Linear integration** — start sessions from tickets

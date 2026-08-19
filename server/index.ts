@@ -14,6 +14,7 @@ import {
   setServerPort,
   getTerminalSnapshot,
   noteTerminalInput,
+  notePreferredTerminalSize,
   writeTerminalData,
 } from "./services/sessionManager";
 import { saveState, terminalReplayText } from "./services/persistence";
@@ -301,6 +302,7 @@ export async function startServer(): Promise<number> {
             case "resize":
               session.terminalCols = msg.cols;
               session.terminalRows = msg.rows;
+              notePreferredTerminalSize(msg.cols, msg.rows);
               if (resizeTimer) clearTimeout(resizeTimer);
               resizeTimer = setTimeout(() => {
                 resizeTimer = undefined;
