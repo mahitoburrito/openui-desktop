@@ -69,7 +69,16 @@ export function parseTerminalClientMessage(
     );
     const kittyMatch = /^\x1b\[\?(\d{1,2})u$/.exec(message.data);
     const kittyKeyboardResponse = Boolean(kittyMatch && Number(kittyMatch[1]) <= 31);
-    if (!osc52Response && !kittyKeyboardResponse) {
+    // Emulator answers to a program's query, by final: DA1/2/3 (c), DSR (n), CPR (R),
+    // XTSMGRAPHICS (S), window ops incl. the CSI 14/16/18 t size reports (t), and
+    // DECRPM ($y). They reach the client as ordinary terminal output and have to go
+    // back to the PTY, but they are not user input and must not be attributed as
+    // such. The shape is what makes forwarding them safe: digits, separators and a
+    // known final, so a program can never smuggle text or a newline into the tty
+    // through its own query. `u` is excluded on purpose — the Kitty rule above owns
+    // that final and is deliberately stricter.
+    const csiReportResponse = /^\x1b\[[?>]?[0-9;:]{0,64}(?:[cnRSt]|\$y)$/.test(message.data);
+    if (!osc52Response && !kittyKeyboardResponse && !csiReportResponse) {
       throw new TerminalClientMessageError("Unsupported terminal response", 1008);
     }
     return { type: "terminalResponse", data: message.data, bytes: responseBytes };

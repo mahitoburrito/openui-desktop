@@ -59,6 +59,45 @@ const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 export const DEFAULT_PTY_COLS = 80;
 export const DEFAULT_PTY_ROWS = 24;
 
+// A PTY spawned at 80x24 hard-wraps everything the shell prints before the client's
+// first resize lands — startup banners, the first prompt, an agent's opening TUI
+// frame — and that wrapping is baked into the scrollback for good. Remember the
+// geometry clients report so later sessions start closer to the size they will be
+// read at.
+//
+// High-water mark, not last-writer-wins, for two reasons. A client sends its
+// pre-fit 80x24 the moment its socket opens, so tracking the latest report would
+// reset the preference on every terminal that opens. And spawning too WIDE is
+// cheap — the client's first resize narrows it and the emulator re-wraps — while
+// spawning too narrow bakes hard line breaks into the buffer permanently.
+//
+// Process-global and in-memory. seedPreferredTerminalSize() carries it across a
+// restart from persisted session geometry so the first session of a launch is not
+// stuck at the default.
+const MAX_REPORTED_PTY_DIMENSION = 1_000;
+let preferredPtyCols = DEFAULT_PTY_COLS;
+let preferredPtyRows = DEFAULT_PTY_ROWS;
+
+export function notePreferredTerminalSize(cols: number, rows: number) {
+  if (Number.isFinite(cols) && cols > preferredPtyCols && cols <= MAX_REPORTED_PTY_DIMENSION) {
+    preferredPtyCols = Math.floor(cols);
+  }
+  if (Number.isFinite(rows) && rows > preferredPtyRows && rows <= MAX_REPORTED_PTY_DIMENSION) {
+    preferredPtyRows = Math.floor(rows);
+  }
+}
+
+export function preferredTerminalSize(): { cols: number; rows: number } {
+  return { cols: preferredPtyCols, rows: preferredPtyRows };
+}
+
+// Test seam: the preference only ever grows, so a test that raises it would leak
+// into every later session created in the same process.
+export function resetPreferredTerminalSize() {
+  preferredPtyCols = DEFAULT_PTY_COLS;
+  preferredPtyRows = DEFAULT_PTY_ROWS;
+}
+
 const POSIX_FALLBACK_SHELLS = ["/bin/zsh", "/bin/bash", "/bin/fish", "/bin/sh"] as const;
 
 function executableFile(pathOrCommand: string, pathValue: string): string | null {
@@ -1911,8 +1950,8 @@ export async function createSession(params: {
         manifestPath: agentRuntimeManifestPath,
         model: agentModel,
       }),
-      cols: DEFAULT_PTY_COLS,
-      rows: DEFAULT_PTY_ROWS,
+      cols: preferredTerminalSize().cols,
+      rows: preferredTerminalSize().rows,
     });
   } catch (e: any) {
     // Probe Agent Error Log Trigger
@@ -1939,8 +1978,8 @@ export async function createSession(params: {
     outputBufferChars: 0,
     outputBufferTruncated: false,
     shellLaunch: { shell, args: [...shellArgs] },
-    terminalCols: DEFAULT_PTY_COLS,
-    terminalRows: DEFAULT_PTY_ROWS,
+    terminalCols: preferredTerminalSize().cols,
+    terminalRows: preferredTerminalSize().rows,
     terminalFrameRedrawsInPlace: agentId !== "shell" && agentId !== "test",
     status: "idle",
     lastOutputTime: now,
@@ -2138,6 +2177,15 @@ export async function restoreSessions() {
   const state = loadState();
 
   log(`[restore] Found ${state.nodes.length} saved sessions`);
+
+  // Carry the remembered spawn geometry across the restart, so the first session of
+  // a launch spawns at the size the user reads terminals at rather than at 80x24.
+  for (const node of state.nodes) {
+    notePreferredTerminalSize(
+      node.terminalCols || DEFAULT_PTY_COLS,
+      node.terminalRows || DEFAULT_PTY_ROWS,
+    );
+  }
 
   for (const node of state.nodes) {
     const buffer = loadBuffer(node.sessionId);

@@ -162,7 +162,14 @@ export function useKeyboardShortcuts() {
           e.preventDefault();
           const [nodeId] = sessionEntries[index];
           setSelectedNodeId(nodeId);
-          setSidebarOpen(true);
+          // In focus mode the sidebar is force-closed again a tick later, and
+          // the terminal it mounts in between is the same one focus mode is
+          // showing. Switch tabs instead of flashing a doomed second pane.
+          if (viewMode === "focus") {
+            addFocusedSession(nodeId);
+          } else {
+            setSidebarOpen(true);
+          }
 
           if (viewMode === "canvas") {
             const node = nodes.find((n) => n.id === nodeId);
