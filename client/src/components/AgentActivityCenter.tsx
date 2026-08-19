@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { useStore, type AgentActivityEvent, type AgentStatus } from "../stores/useStore";
+import { AGENT_STATUS } from "../theme/agentStatus";
 
 type ActivityFilter = "all" | "attention" | "done";
 
@@ -30,14 +31,14 @@ const statusIcon: Record<AgentStatus, typeof Terminal> = {
   error: AlertCircle,
 };
 
+// The feed lists things that happened, so `idle` reads better in the past
+// tense here than the canonical "Idle". Every other state uses the shared
+// vocabulary — see theme/agentStatus.ts.
 const statusLabel: Record<AgentStatus, string> = {
-  creating: "Creating",
-  running: "Running",
-  tool_calling: "Using tool",
-  waiting_input: "Needs Input",
+  ...Object.fromEntries(
+    Object.entries(AGENT_STATUS).map(([status, style]) => [status, style.label]),
+  ) as Record<AgentStatus, string>,
   idle: "Finished",
-  disconnected: "Disconnected",
-  error: "Error",
 };
 
 function timeAgo(timestamp: number): string {

@@ -21,21 +21,13 @@ import {
   Copy,
   Check,
 } from "lucide-react";
-import { useStore, AgentStatus } from "../stores/useStore";
+import { useStore } from "../stores/useStore";
 import { getTerminalTheme } from "../theme/appearance";
+import { agentStatusStyle } from "../theme/agentStatus";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { Terminal } from "./Terminal";
 import { InPaneMarkdown } from "./InPaneMarkdown";
 
-const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
-  creating: { label: "Creating...", color: "#818CF8" },
-  running: { label: "Running", color: "#22C55E" },
-  waiting_input: { label: "Waiting for input", color: "#FBBF24" },
-  tool_calling: { label: "Tool Calling", color: "#8B5CF6" },
-  idle: { label: "Idle", color: "#6B7280" },
-  disconnected: { label: "Disconnected", color: "#EF4444" },
-  error: { label: "Error", color: "#EF4444" },
-};
 
 const presetColors = [
   "#D97652", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"
@@ -240,7 +232,7 @@ export function Sidebar() {
     session?.agentId,
     editColor || session?.customColor || session?.color || undefined,
   );
-  const statusInfo = statusConfig[session?.status || "idle"];
+  const statusInfo = agentStatusStyle(session?.status);
   const isDisconnected = session?.status === "disconnected";
   const terminalPalette = getTerminalTheme(terminalTheme);
   const headerIconId = (node?.data?.icon as string) || session?.agentId;

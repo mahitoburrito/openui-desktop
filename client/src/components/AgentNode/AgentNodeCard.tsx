@@ -1,18 +1,8 @@
 import { useEffect, useState } from "react";
 import { GitBranch, Folder, Wrench, Layers, Loader2, RotateCcw, FileDiff } from "lucide-react";
 import { AgentStatus, type AgentChangeSummary, type CheckpointSummary } from "../../stores/useStore";
+import { agentStatusStyle } from "../../theme/agentStatus";
 import { AgentIcon } from "../AgentIcon";
-
-// Status config with visual priority levels
-const statusConfig: Record<AgentStatus, { label: string; color: string; bgColor: string; isActive?: boolean; needsAttention?: boolean }> = {
-  creating: { label: "Starting", color: "#8B93FF", bgColor: "#8B93FF12", isActive: true },
-  running: { label: "Working", color: "#79C68B", bgColor: "#79C68B12", isActive: true },
-  tool_calling: { label: "Working", color: "#79C68B", bgColor: "#79C68B12", isActive: true },
-  waiting_input: { label: "Needs Input", color: "#D6A64B", bgColor: "#D6A64B14", needsAttention: true },
-  idle: { label: "Idle", color: "#8A8F98", bgColor: "#8A8F9812" },
-  disconnected: { label: "Offline", color: "#6B7280", bgColor: "#6B728015" },
-  error: { label: "Error", color: "#E06464", bgColor: "#E0646414", needsAttention: true },
-};
 
 // How long a card has to sit waiting before it starts pulsing. Short enough
 // that you notice an agent you walked away from, long enough that a prompt you
@@ -103,7 +93,7 @@ export function AgentNodeCard({
   onRestoreLaunchCheckpoint,
   onReviewChanges,
 }: AgentNodeCardProps) {
-  const statusInfo = statusConfig[status] || statusConfig.idle;
+  const statusInfo = agentStatusStyle(status);
   const isActive = statusInfo.isActive;
   const isToolCalling = status === "tool_calling";
   const needsAttention = statusInfo.needsAttention;
@@ -130,11 +120,11 @@ export function AgentNodeCard({
         borderColor: inSelectionSet
           ? "#60A5FA"
           : needsAttention
-            ? `${statusInfo.color}99`
+            ? statusInfo.borderStrong
             : selected
               ? "#52525b"
               : isActive
-                ? `${statusInfo.color}4d`
+                ? statusInfo.border
                 : "#2a2d2c",
         boxShadow: selected ? "0 8px 22px rgba(0, 0, 0, 0.35)" : "0 2px 8px rgba(0, 0, 0, 0.26)",
       }}

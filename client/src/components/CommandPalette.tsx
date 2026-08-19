@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../stores/useStore";
+import { AGENT_STATUS } from "../theme/agentStatus";
 import {
   TERMINAL_THEMES,
   WORKSPACE_BACKGROUNDS,
@@ -500,10 +501,10 @@ export function CommandPalette() {
 
     const filterCommands: Command[] = [
       ["all", "All sessions"],
-      ["running", "Running sessions"],
-      ["waiting_input", "Waiting for input"],
-      ["idle", "Idle sessions"],
-      ["error", "Error sessions"],
+      ["running", `${AGENT_STATUS.running.label} sessions`],
+      ["waiting_input", `${AGENT_STATUS.waiting_input.label} sessions`],
+      ["idle", `${AGENT_STATUS.idle.label} sessions`],
+      ["error", `${AGENT_STATUS.error.label} sessions`],
     ].map(([filter, label]) => ({
       id: `filter-${filter}`,
       title: `Filter: ${label}`,
