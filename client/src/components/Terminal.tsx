@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { ImageAddon } from "@xterm/addon-image";
 import "@xterm/xterm/css/xterm.css";
 import { useStore, AgentStatus, type TerminalOsc52ClipboardAccess } from "../stores/useStore";
 import {
@@ -278,6 +279,15 @@ const cache = new Map<string, CachedTerminal>();
 // box, which reflows the scrollback and makes the PTY repaint a full-screen TUI
 // into two columns. Below the threshold we keep the last known-good size.
 const MIN_FITTABLE_PX = 24;
+
+// Image budgets are PER TERMINAL and this app keeps one alive per opened session,
+// so the addon defaults (128MB store, 4096x4096 decode) multiply badly: a handful of
+// sessions would outweigh the whole renderer. The decode limit also has to stay under
+// the store limit, because the storage evictor inserts an over-sized image anyway
+// once it has nothing left to evict — a larger pixelLimit quietly uncaps the store.
+const IMAGE_STORAGE_LIMIT_MB = 8;
+const IMAGE_PIXEL_LIMIT = 2048 * 2048;
+const IMAGE_SEQUENCE_LIMIT_BYTES = 4_000_000;
 
 function safeFit(entry: CachedTerminal) {
   const wrapper = entry.wrapperDiv;
@@ -806,6 +816,15 @@ export function Terminal({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+    // SIXEL + iTerm2 inline images. Loaded before open() so its parser hooks and
+    // CSI 14/16/18 t size reports are in place for the first byte of output.
+    term.loadAddon(new ImageAddon({
+      storageLimit: IMAGE_STORAGE_LIMIT_MB,
+      pixelLimit: IMAGE_PIXEL_LIMIT,
+      sixelSizeLimit: IMAGE_SEQUENCE_LIMIT_BYTES,
+      iipSizeLimit: IMAGE_SEQUENCE_LIMIT_BYTES,
+    }));
+
     // Attach first: xterm starts its visibility observer during open(), and an
     // element that is measured while detached spends its first frames paused.
     container.appendChild(wrapperDiv);
