@@ -21,6 +21,14 @@ const TIMEOUT_SCALE =
   Number(process.env.OPENUI_TEST_TIMEOUT_SCALE || (process.env.CI ? 4 : 1)) || 1;
 const patience = (ms) => Math.round(ms * TIMEOUT_SCALE);
 
+// Node synthesizes st_mode on Windows (0o666 for files, 0o777 for directories) with no
+// relation to the ACL that actually governs access, so a POSIX permission assertion there
+// tests nothing and fails for a reason unrelated to the code under test. The restoration
+// test already guards its mode check with an explicit platform test; this is that same
+// rule, for the places where permission bits are only one clause of a larger assertion.
+const POSIX_PERMISSIONS = process.platform !== "win32";
+const modeIsPrivate = (mode, expected) => !POSIX_PERMISSIONS || (mode & 0o777) === expected;
+
 // fileURLToPath, not .pathname: on Windows the latter yields "/D:/a/repo/", and
 // join() then produces "\\D:\\a\\repo\\..." which resolves against the current drive
 // as "D:\\D:\\a\\repo\\...". Every readFile against ROOT fails with ENOENT.
@@ -2293,7 +2301,7 @@ async function runTerminalWorkspaceUnitTests() {
     await writeFile(statePath, "{corrupt-current-generation");
     const fallbackSnapshot = new loaded.TerminalWorkspaceService(statePath).snapshot();
     await assert(
-      (workspaceStateMode & 0o077) === 0 && fallbackSnapshot.tabs.length === 2 &&
+      (!POSIX_PERMISSIONS || (workspaceStateMode & 0o077) === 0) && fallbackSnapshot.tabs.length === 2 &&
         fallbackSnapshot.tabs.some((tab) => paneOrder(tab.root, []).includes("pane-b")),
       "workspace persistence was not owner-only or did not fall back to its last valid generation",
     );
@@ -3779,11 +3787,11 @@ async function runNestedShellIntegrationLiveTest({
   const shimExecutable = join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, name);
   const shimDirectoryStat = await stat(shimEnvironment.OPENUI_SHELL_SHIM_DIR);
   const shimExecutableStat = await stat(shimExecutable);
-  await assert((shimDirectoryStat.mode & 0o777) === 0o700, `${name} shim directory was not private`);
-  await assert((shimExecutableStat.mode & 0o777) === 0o700, `${name} shim executable mode was not private`);
+  await assert(modeIsPrivate(shimDirectoryStat.mode, 0o700), `${name} shim directory was not private`);
+  await assert(modeIsPrivate(shimExecutableStat.mode, 0o700), `${name} shim executable mode was not private`);
   if (name === "zsh") {
     const privateZshrcStat = await stat(join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, "zsh-dotfiles", ".zshrc"));
-    await assert((privateZshrcStat.mode & 0o777) === 0o600, "zsh private startup file mode was not private");
+    await assert(modeIsPrivate(privateZshrcStat.mode, 0o600), "zsh private startup file mode was not private");
   }
   const bypassVersion = await execFileAsync(shimExecutable, ["--version"], {
     env: { ...baseEnvironment, ...shimEnvironment },
@@ -5278,7 +5286,7 @@ async function runContainerShellIntegrationTests() {
     for (const tool of ["docker", "podman", "kubectl"]) {
       const shim = join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, tool);
       const info = await stat(shim);
-      await assert((info.mode & 0o777) === 0o700, `${tool} container shim was not owner-executable only`);
+      await assert(modeIsPrivate(info.mode, 0o700), `${tool} container shim was not owner-executable only`);
     }
     const version = await execFileAsync(join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, "docker"), ["--version"], {
       env: { ...baseEnvironment, ...shimEnvironment },
@@ -5545,7 +5553,7 @@ async function runEnvironmentSubshellIntegrationTests() {
     for (const tool of ["poetry", "pipenv", "aws-vault", "flox", "custom-env"]) {
       const shim = join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, tool);
       const info = await stat(shim);
-      await assert((info.mode & 0o777) === 0o700, `${tool} subshell shim was not owner-executable only`);
+      await assert(modeIsPrivate(info.mode, 0o700), `${tool} subshell shim was not owner-executable only`);
     }
     await assert(
       !(await access(join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, "bad-env")).then(() => true).catch(() => false)),
@@ -5554,7 +5562,7 @@ async function runEnvironmentSubshellIntegrationTests() {
     const customPolicyPath = join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, "subshell-policy-custom-env.json");
     const customPolicyInfo = await stat(customPolicyPath);
     await assert(
-      (customPolicyInfo.mode & 0o777) === 0o600,
+      modeIsPrivate(customPolicyInfo.mode, 0o600),
       "compiled custom subshell policy was not owner-readable only",
     );
     const version = await execFileAsync(join(shimEnvironment.OPENUI_SHELL_SHIM_DIR, "poetry"), ["--version"], {
