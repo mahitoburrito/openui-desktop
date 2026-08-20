@@ -204,19 +204,25 @@ async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
 // in for this, which is fine on a laptop and not fine on a runner — PowerShell takes far
 // longer to come up than bash or zsh, and 500ms of it is nowhere near enough.
 //
-// The signal is shellIntegration, not phase "at_prompt". Reaching a prompt is the wrong
-// bar for PowerShell: its adapter announces itself when the profile is sourced but only
-// emits the prompt marker from its prompt function, which does not render again until
-// something runs. A session opened with an empty command therefore sits at "unknown"
-// forever. shellIntegration being set is the fact that matters anyway — the shell has
-// executed our install, so it is ready to receive and to be tracked.
+// "at_prompt" is the signal to prefer: it means the shell has rendered a prompt and is
+// unambiguously waiting on input. But it is not reachable for every shell here.
+// PowerShell's adapter announces itself when the profile is sourced and only emits the
+// prompt marker from its prompt function, which does not render again until something
+// runs — so a session opened with an empty command sits at "unknown" indefinitely.
+//
+// Accept shellIntegration as a fallback, but only after giving the stricter signal a
+// fair chance to arrive. Taking it immediately is too early for bash and zsh: they
+// announce integration while still starting up, and input sent at that moment is
+// swallowed, which is a slower and more confusing failure than the sleep this replaced.
 async function waitForShellReady(sessionId, timeoutMs = 10000) {
   timeoutMs = patience(timeoutMs);
+  const fallbackAfter = patience(2000);
   const started = Date.now();
   let snapshot;
   while (Date.now() - started < timeoutMs) {
     snapshot = await api(`/api/sessions/${sessionId}/blocks`);
-    if (snapshot?.shellIntegration || snapshot?.phase === "at_prompt") return snapshot;
+    if (snapshot?.phase === "at_prompt") return snapshot;
+    if (snapshot?.shellIntegration && Date.now() - started >= fallbackAfter) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(
