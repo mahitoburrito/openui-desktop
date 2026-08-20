@@ -327,6 +327,12 @@ async function makeRepo() {
   await git(repo, ["init", "-q"]);
   await git(repo, ["config", "user.email", "test@example.com"]);
   await git(repo, ["config", "user.name", "OpenUI Test"]);
+  // Git for Windows defaults core.autocrlf to true, so anything git writes into the
+  // worktree comes back with CRLF — a file this suite created with "\n" and then had
+  // patched reads as "two\r\n" and fails a byte comparison that has nothing to do
+  // with the behaviour under test. Pin the fixture to LF on every platform.
+  await git(repo, ["config", "core.autocrlf", "false"]);
+  await git(repo, ["config", "core.eol", "lf"]);
   await writeFile(join(repo, "tracked.txt"), "one\n");
   await git(repo, ["add", "tracked.txt"]);
   await git(repo, ["commit", "-q", "-m", "init"]);
