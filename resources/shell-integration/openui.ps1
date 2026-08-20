@@ -80,8 +80,22 @@ function global:__openui_emit_completion_context {
     )
   } catch { __openui_emit_completion_names function @() }
   try {
+    # -ListImported restricts this to modules already loaded in the session.
+    # Without it Get-Command walks the whole PSModulePath and loads metadata for
+    # every installed module. On a machine carrying the Az or AWS.Tools module
+    # sets that is tens of thousands of cmdlets and takes about a minute, which
+    # the user experiences as the shell hanging on its very first prompt.
+    #
+    # It also fixes what got emitted. The payload cap keeps the first names that
+    # fit, so a full enumeration yielded 196 entries every one of which began
+    # "Add-A" — the alphabetical head of the AWS and Az module sets, and not a
+    # single core cmdlet. Imported-only gives the commands actually in play.
+    #
+    # -TotalCount stops the pipeline early; the cap in
+    # __openui_emit_completion_names still bounds the payload as before.
     __openui_emit_completion_names builtin @(
-      Get-Command -CommandType Cmdlet -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+      Get-Command -CommandType Cmdlet -ListImported -TotalCount 512 -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.Name }
     )
   } catch { __openui_emit_completion_names builtin @() }
   try {
