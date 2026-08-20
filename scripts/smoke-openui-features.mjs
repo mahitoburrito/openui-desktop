@@ -199,6 +199,25 @@ async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
   );
 }
 
+// Typing into a shell that has not reached its first prompt loses the input: the bytes
+// land in the middle of startup and the command never becomes a block. A fixed sleep was
+// standing in for this, which is fine on a laptop and not fine on a runner — PowerShell
+// takes far longer to come up than bash or zsh, and 500ms of it is nowhere near enough.
+async function waitForShellPrompt(sessionId, timeoutMs = 10000) {
+  timeoutMs = patience(timeoutMs);
+  const started = Date.now();
+  let snapshot;
+  while (Date.now() - started < timeoutMs) {
+    snapshot = await api(`/api/sessions/${sessionId}/blocks`);
+    if (snapshot?.phase === "at_prompt") return snapshot;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Shell never reached its first prompt: ${sessionId}\n` +
+      JSON.stringify({ phase: snapshot?.phase, shellIntegration: snapshot?.shellIntegration }, null, 2),
+  );
+}
+
 async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = 8000) {
   timeoutMs = patience(timeoutMs);
   const started = Date.now();
@@ -8138,7 +8157,7 @@ async function main() {
       workspaceSocket.once("open", resolve);
       workspaceSocket.once("error", reject);
     });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await waitForShellPrompt(workspaceSource.sessionId);
     workspaceSocket.send(JSON.stringify({
       type: "input",
       data: `cd '${workspaceLatestCwd.replace(/'/g, `'\\''`)}'\r`,
@@ -8521,7 +8540,7 @@ async function main() {
         livePathSocket.once("open", resolve);
         livePathSocket.once("error", reject);
       });
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      await waitForShellPrompt(livePathSession.sessionId);
       livePathSocket.send(JSON.stringify({
         type: "input",
         data: `export PATH='${livePathBin.replace(/'/g, `'\\''`)}':"$PATH"\r`,
