@@ -353,6 +353,10 @@ export interface Session {
   outputBuffer: string[];
   outputBufferChars: number;
   outputBufferTruncated?: boolean;
+  // Bumped on every scrollback mutation so the periodic save can skip sessions
+  // that produced no output since the last write. Wraps harmlessly: the check
+  // is inequality against the last persisted value, never ordering.
+  outputBufferRev?: number;
   shellLaunch?: { shell: string; args: string[] };
   terminalCols: number;
   terminalRows: number;

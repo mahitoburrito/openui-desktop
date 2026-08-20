@@ -108,7 +108,7 @@ npm run dev
 - **Infinite canvas** with drag-and-drop agent nodes
 - **Selection mode** — marquee or click to multi-select sessions, move them as a group, bulk-delete with undo
 - **Real-time status** — Running, Idle, Needs Input, Tool Calling
-- **Built-in terminal** with resizable sidebar
+- **Built-in terminal** with resizable sidebar, GPU rendering, and inline images (SIXEL, iTerm2)
 - **Auto-naming** — sessions named from your first prompt
 - **Agent support** — Claude Code, OpenCode, Ralph Loop
 - **Linear integration** — start sessions from tickets
@@ -117,6 +117,16 @@ npm run dev
 - **Categories** — group agents by team or project
 - **Persistent layout** — everything saved across restarts
 - **Claude Code plugin** — precise status via hooks (auto-injected)
+
+### Session teardown
+
+Deleting a session terminates the whole process tree it started, not just its
+shell: the agent CLI, its plugins, and anything they left running in the
+background. Agent CLIs commonly detach helpers that used to survive the delete
+and accumulate in the background for days.
+
+If you want something to outlive its session (a long-running dev server, say),
+start it outside OpenUI. Quitting the app tears down every session the same way.
 
 ## Development
 

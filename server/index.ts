@@ -14,9 +14,11 @@ import {
   setServerPort,
   getTerminalSnapshot,
   noteTerminalInput,
+  notePreferredTerminalSize,
   writeTerminalData,
 } from "./services/sessionManager";
 import { saveState, terminalReplayText } from "./services/persistence";
+import { killProcessTreesSync } from "./services/processTree";
 import {
   parseTerminalClientMessage,
   sendTerminalMessage,
@@ -297,6 +299,7 @@ export async function startServer(): Promise<number> {
             case "resize":
               session.terminalCols = msg.cols;
               session.terminalRows = msg.rows;
+              notePreferredTerminalSize(msg.cols, msg.rows);
               if (resizeTimer) clearTimeout(resizeTimer);
               resizeTimer = setTimeout(() => {
                 resizeTimer = undefined;
@@ -344,6 +347,18 @@ export async function startServer(): Promise<number> {
     process.on("SIGINT", () => {
       log("[server] Saving state before exit...");
       emergencySave();
+      // Synchronous, and batched into a single pass: Electron tears the process
+      // down as soon as this handler returns, so anything deferred to the event
+      // loop never runs and every descendant of every session leaks on quit.
+      // One scan and one grace period for all sessions, not one per session.
+      const roots: Array<{ pid: number | undefined; label?: string; sessionMarker?: string }> = [];
+      for (const [sessionId, session] of sessions) {
+        if (session.pty) roots.push({ pid: session.pty.pid, label: sessionId, sessionMarker: sessionId });
+        if (session.stateTrackerPty) {
+          roots.push({ pid: session.stateTrackerPty.pid, label: `${sessionId}:state-tracker` });
+        }
+      }
+      killProcessTreesSync(roots, { killRoot: false });
       for (const [, session] of sessions) {
         if (session.pty) session.pty.kill();
         if (session.stateTrackerPty) session.stateTrackerPty.kill();
