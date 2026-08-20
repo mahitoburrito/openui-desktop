@@ -3274,8 +3274,15 @@ apiRoutes.post("/status-update", async (c) => {
   }
 
   if (session) {
-    if (claudeSessionId && !session.claudeSessionId) {
+    // Bind the agent's own session id, and re-bind it when a new agent session
+    // starts in the same terminal. Binding once and never clearing lets two
+    // OpenUI sessions carry the same id after a `--resume`, and the id-matching
+    // fallback below then routes hooks to whichever one the map yields first.
+    if (claudeSessionId && (!session.claudeSessionId || hookEvent === "SessionStart")) {
       session.claudeSessionId = claudeSessionId;
+    }
+    if (hookEvent === "SessionEnd") {
+      session.claudeSessionId = undefined;
     }
 
     if (userPrompt && matchedSessionId) {
@@ -3319,6 +3326,9 @@ apiRoutes.post("/status-update", async (c) => {
       session.preToolTime = hookDecision ? undefined : Date.now();
     } else if (status === "post_tool") {
       effectiveStatus = "running";
+      // The tool finished. Leaving its name set makes the card go on reporting
+      // "Working · Bash" through the model's think time before the next call.
+      nextTool = null;
       session.preToolTime = undefined;
     } else {
       if (status !== "tool_calling" && status !== "running") nextTool = null;

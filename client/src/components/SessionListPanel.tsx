@@ -18,7 +18,6 @@ import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { destroyCachedTerminal } from "./Terminal";
 import { agentStatusStyle } from "../theme/agentStatus";
 
-
 type SessionEntry = {
   nodeId: string;
   session: AgentSession;

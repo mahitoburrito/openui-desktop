@@ -43,6 +43,11 @@ export interface AgentStatusStyle {
  * The attention hierarchy is deliberate: only `waiting_input` and `error` carry
  * heavy warm chroma. Everything else is either cool or near-neutral, so amber
  * and red are the only two things on a full canvas that pull your eye.
+ *
+ * Every value clears 4.5:1 as 10px text on the card background (#171818), the
+ * darkest surface any of them lands on. `idle` and `disconnected` are the two
+ * that had to be raised to get there, and they keep a six-point lightness gap
+ * so "nothing happening" still reads as dimmer than "not running".
  */
 export const AGENT_STATUS: Record<AgentStatus, AgentStatusStyle> = {
   creating: {
@@ -85,18 +90,18 @@ export const AGENT_STATUS: Record<AgentStatus, AgentStatusStyle> = {
   // grey means nothing wants you, amber means something does.
   idle: {
     label: "Idle",
-    color: "oklch(67% 0.02 260)",
-    bg: "oklch(67% 0.02 260 / 0.12)",
-    border: "oklch(67% 0.02 260 / 0.30)",
-    borderStrong: "oklch(67% 0.02 260 / 0.60)",
+    color: "oklch(70% 0.02 260)",
+    bg: "oklch(70% 0.02 260 / 0.12)",
+    border: "oklch(70% 0.02 260 / 0.30)",
+    borderStrong: "oklch(70% 0.02 260 / 0.60)",
   },
   // Dimmer than idle, and pointedly not red. A closed session is not a crash.
   disconnected: {
     label: "Offline",
-    color: "oklch(58% 0.02 260)",
-    bg: "oklch(58% 0.02 260 / 0.15)",
-    border: "oklch(58% 0.02 260 / 0.30)",
-    borderStrong: "oklch(58% 0.02 260 / 0.60)",
+    color: "oklch(64% 0.02 260)",
+    bg: "oklch(64% 0.02 260 / 0.15)",
+    border: "oklch(64% 0.02 260 / 0.30)",
+    borderStrong: "oklch(64% 0.02 260 / 0.60)",
   },
   error: {
     label: "Error",

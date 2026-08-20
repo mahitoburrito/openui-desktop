@@ -15,6 +15,7 @@ const {
   noteAgentOutputActivity,
   startAgentStatusTicker,
   disposeAgentStatus,
+  MAX_RECENT_OUTPUT_BYTES,
 } = await import(join(here, "..", "dist", "electron", "server", "services", "agentStatus.js"));
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -162,18 +163,20 @@ console.log("\nstuck states");
 }
 {
   // Ending the agent with /exit reports disconnected while the shell lives on.
+  // The shell's own trailing output must not put the card back to "Working" —
+  // there is no agent left to be working.
   const { session } = makeSession("disconnected");
   session.recentOutputSize = 900;
   noteAgentOutputActivity(session);
   await sleep(1200);
-  check("typing into a live shell recovers an Offline card", session.status, "running");
+  check("shell output does not revive an Offline card", session.status, "disconnected");
 }
 {
   const { session } = makeSession("disconnected", { pty: null });
   session.recentOutputSize = 900;
   noteAgentOutputActivity(session);
   await sleep(1200);
-  check("...but a dead PTY stays Offline", session.status, "disconnected");
+  check("...and neither does a dead PTY", session.status, "disconnected");
 }
 
 console.log("\nterminal noise");
@@ -187,6 +190,59 @@ console.log("\nterminal noise");
   noteAgentOutputActivity(session);
   await sleep(1200);
   check("sustained output does", session.status, "running");
+}
+
+console.log("\nsecond-pass regressions");
+{
+  // The output counter is a rate, not a running total. A turn that printed
+  // half a megabyte used to leave it above the threshold for over an hour, so
+  // the next stray repaint read as the agent going back to work.
+  const { session } = makeSession("idle");
+  session.recentOutputSize = Math.min(MAX_RECENT_OUTPUT_BYTES, 0 + 500_000);
+  check("a huge burst cannot exceed the cap", session.recentOutputSize, MAX_RECENT_OUTPUT_BYTES);
+  const secondsToDrain = session.recentOutputSize / 100;
+  check("...so it drains in seconds, not hours", secondsToDrain < 30, true);
+}
+{
+  // A backward clock step made statusChangedAt look like the future, and the
+  // dwell was then computed in minutes.
+  const { session } = makeSession("waiting_input", { statusSource: "authoritative" });
+  session.statusChangedAt = Date.now() + 10 * 60_000;
+  applyAgentStatus(session, "running", { source: "hook" });
+  const wait = (session.pendingStatusCommitAt ?? 0) - Date.now();
+  check("a future timestamp cannot park a status for minutes", wait <= 10_000, true);
+}
+{
+  // The engine must be able to walk back a status it only guessed at, from the
+  // same terminal evidence it used to guess.
+  const { session } = makeSession("waiting_input", { statusSource: "inferred" });
+  session.pluginReportedStatus = true;
+  session.recentOutputSize = 900;
+  noteAgentOutputActivity(session);
+  await sleep(1200);
+  check("output retracts a committed guess", session.status, "running");
+}
+{
+  // ...but a hook-reported status is still immune to terminal noise.
+  const { session } = makeSession("waiting_input", { statusSource: "authoritative" });
+  session.pluginReportedStatus = true;
+  session.recentOutputSize = 900;
+  noteAgentOutputActivity(session);
+  await sleep(1200);
+  check("output cannot retract a hook-reported status", session.status, "waiting_input");
+}
+{
+  // A build that goes quiet for a minute is still running.
+  const { session } = makeSession("running", { statusSource: "inferred" });
+  session.lastOutputTime = Date.now() - 120_000;
+  session.terminalBlocks = [{ status: "running" }];
+  runAgentStatusWatchdog(session);
+  await sleep(3500);
+  check("a quiet but running command stays Working", session.status, "running");
+  session.terminalBlocks = [{ status: "succeeded" }];
+  runAgentStatusWatchdog(session);
+  await sleep(3500);
+  check("...and concedes once the command finishes", session.status, "idle");
 }
 
 console.log("\nticker ownership");

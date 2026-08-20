@@ -47,6 +47,9 @@ const COMMIT_DELAY_MS: Record<AgentStatus, number> = {
   error: 0,
 };
 
+/** Hard ceiling on any scheduled commit, whatever the dwell arithmetic says. */
+const MAX_COMMIT_DELAY_MS = 10_000;
+
 /** An authoritative source has already named the state, so it barely waits. */
 const AUTHORITATIVE_COMMIT_DELAY_MS = 250;
 
@@ -95,11 +98,19 @@ const PLUGIN_SILENCE_MS = 30_000;
 
 /**
  * Terminal bytes that must accumulate before silence-broken-by-output counts
- * as "the agent is working". `recentOutputSize` decays continuously, so this
- * is a rate, not a total: a blinking cursor or the echo of a keystroke never
- * reaches it, a working agent clears it immediately.
+ * as "the agent is working". A blinking cursor or the echo of a keystroke
+ * never reaches it; a working agent clears it immediately.
  */
 const PTY_ACTIVITY_BYTES = 400;
+
+/**
+ * ...and the counter is capped here so it stays a rate rather than becoming a
+ * running total. It drains at OUTPUT_DECAY_PER_TICK per tick — 100 bytes a
+ * second — so without a cap a turn that printed half a megabyte would leave it
+ * above the threshold for over an hour, and the next stray repaint would read
+ * as "the agent went back to work". Capped, it drains in about twelve seconds.
+ */
+export const MAX_RECENT_OUTPUT_BYTES = PTY_ACTIVITY_BYTES * 3;
 
 /** How often the per-session decay + inference tick runs. */
 export const STATUS_TICK_MS = 500;
@@ -231,9 +242,18 @@ export function applyAgentStatus(
   if (source !== "authoritative") {
     // A status we only inferred has not earned the right to block a correction.
     const dwell = session.statusSource === "inferred" ? 0 : MIN_DWELL_MS[session.status] ?? 0;
-    const dwellRemaining = dwell - (now - (session.statusChangedAt ?? 0));
+    // Clamp the timestamp: a backward clock step (sleep/wake, an NTP
+    // correction) would otherwise make this look like it changed in the
+    // future, and the dwell would be computed as minutes rather than seconds.
+    const changedAt = Math.min(session.statusChangedAt ?? 0, now);
+    const dwellRemaining = dwell - (now - changedAt);
     if (dwellRemaining > delay) delay = dwellRemaining;
   }
+
+  // Whatever the arithmetic said, nothing waits longer than this. A status
+  // parked minutes in the future can only be freed by an authoritative hook,
+  // and the card lies in the meantime.
+  delay = Math.min(delay, MAX_COMMIT_DELAY_MS);
 
   if (session.pendingStatus === status) {
     // Same candidate as the one already queued. Let the original timer run so a
@@ -314,7 +334,12 @@ export function runAgentStatusWatchdog(session: Session) {
   const canConcede =
     working || (session.status === "waiting_input" && session.statusSource === "inferred");
 
-  if (canConcede && quietFor > silenceLimit) {
+  // A command still executing in the terminal is not an idle session, however
+  // quiet it has gone. `make`, `docker build` and long test phases all go
+  // silent for minutes while very much running.
+  const commandRunning = session.terminalBlocks?.some((block) => block.status === "running");
+
+  if (canConcede && !commandRunning && quietFor > silenceLimit) {
     applyAgentStatus(session, "idle", { source: "inferred", hookEvent: "output_silence" });
   }
 }
@@ -324,18 +349,23 @@ export function runAgentStatusWatchdog(session: Session) {
  * after the turn ended is not the agent going back to work.
  */
 export function noteAgentOutputActivity(session: Session) {
-  if (session.pluginReportedStatus) return;
+  // Hook-driven sessions ignore terminal noise — except when the status on
+  // screen is one the engine itself inferred. The watchdog only guesses
+  // `waiting_input` while a tool is outstanding, which means the plugin IS
+  // reporting; without this exception the engine writes a status from terminal
+  // evidence and then refuses to correct it from the same evidence, leaving a
+  // visibly-printing agent reading "Needs Input" until the plugin goes quiet.
+  if (session.pluginReportedStatus && session.statusSource !== "inferred") return;
   if (session.recentOutputSize < PTY_ACTIVITY_BYTES) return;
 
-  // `disconnected` is recoverable on purpose: the PTY is a shell with the
-  // agent running inside it, so ending the agent session (`/exit`) reports
-  // disconnected while the shell is still very much alive. Without this the
-  // card stays "Offline" for a terminal the user is actively typing into.
-  const recoverable =
-    session.status === "idle" ||
-    session.status === "waiting_input" ||
-    (session.status === "disconnected" && Boolean(session.pty));
-  if (!recoverable) return;
+  // `disconnected` is deliberately NOT recoverable here. The PTY is a shell
+  // with the agent running inside it, so `/exit` ends the agent while the
+  // shell lives on — and it is tempting to revive the card when that shell
+  // prints again. But the agent really is gone: the trailing output of the
+  // exit itself, or the echo of someone typing at the bare prompt, would put
+  // the card back to "Working" with nothing working. "Offline" is the true
+  // label, and the sidebar already offers New Session from there.
+  if (session.status !== "idle" && session.status !== "waiting_input") return;
 
   applyAgentStatus(session, "running", { source: "inferred", hookEvent: "output_activity" });
 }

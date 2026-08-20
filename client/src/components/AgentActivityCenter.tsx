@@ -117,7 +117,7 @@ function ActivityRow({ event }: { event: AgentActivityEvent }) {
               {event.title}
             </button>
             <span className="flex-shrink-0 rounded bg-surface-active px-1.5 py-0.5 text-[10px] text-zinc-500">
-              {statusLabel[event.status]}
+              {statusLabel[event.status] || AGENT_STATUS.idle.label}
             </span>
           </div>
           <div className="mt-0.5 text-xs text-zinc-400 leading-relaxed">{event.body}</div>

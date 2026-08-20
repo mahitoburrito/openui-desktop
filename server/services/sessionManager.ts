@@ -41,6 +41,7 @@ import { sendTerminalMessage } from "./terminalTransport";
 import {
   applyAgentStatus,
   disposeAgentStatus,
+  MAX_RECENT_OUTPUT_BYTES,
   noteAgentOutputActivity,
   startAgentStatusTicker,
   stopAgentStatusTicker,
@@ -1094,7 +1095,10 @@ export function attachSessionPty(
     if (data) {
       appendOutputBuffer(session, lifecycle.sanitizeForPersistence(result.persistenceData));
       session.lastOutputTime = Date.now();
-      session.recentOutputSize += data.length;
+      session.recentOutputSize = Math.min(
+        MAX_RECENT_OUTPUT_BYTES,
+        session.recentOutputSize + data.length,
+      );
 
       noteAgentOutputActivity(session);
 
@@ -2126,6 +2130,8 @@ export function deleteSession(sessionId: string) {
   terminalWorkspace.removeSession(sessionId);
 
   disposeAgentStatus(session);
+  if (session.deleteTimeout) clearTimeout(session.deleteTimeout);
+  session.deleteTimeout = undefined;
 
   const activePty = session.pty;
   const stateTrackerPty = session.stateTrackerPty;

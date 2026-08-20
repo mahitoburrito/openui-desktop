@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../stores/useStore";
-import { AGENT_STATUS } from "../theme/agentStatus";
+import { AGENT_STATUS, agentStatusStyle } from "../theme/agentStatus";
 import {
   TERMINAL_THEMES,
   WORKSPACE_BACKGROUNDS,
@@ -388,7 +388,7 @@ export function CommandPalette() {
       {
         id: "filter-sessions",
         title: "Filter sessions",
-        hint: "Show all, running, waiting, idle, or error sessions",
+        hint: `Show all, ${AGENT_STATUS.running.label}, ${AGENT_STATUS.waiting_input.label}, ${AGENT_STATUS.idle.label}, or ${AGENT_STATUS.error.label} sessions`,
         icon: Search,
         surface: true,
         keepOpen: true,
@@ -510,7 +510,9 @@ export function CommandPalette() {
       title: `Filter: ${label}`,
       hint: "Apply to the session rail",
       icon: Search,
-      keywords: "filter status sessions",
+      // The displayed labels changed; people still type the old words, and the
+      // raw enum is what shows up in logs and bug reports.
+      keywords: `filter status sessions ${filter} running waiting idle error offline`,
       run: () => {
         setStatusFilter(filter as Parameters<typeof setStatusFilter>[0]);
         setSearchQuery("");
@@ -524,7 +526,7 @@ export function CommandPalette() {
       return {
         id: `session-${nodeId}`,
         title: `Go to session: ${name}`,
-        hint: [session.status, dir, session.gitBranch].filter(Boolean).join(" · "),
+        hint: [agentStatusStyle(session.status).label, dir, session.gitBranch].filter(Boolean).join(" · "),
         icon: Folder,
         keywords: "session agent jump open",
         run: () => openSession(nodeId),

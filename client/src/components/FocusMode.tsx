@@ -57,7 +57,6 @@ import {
   useTerminalWorkspace,
 } from "./useTerminalWorkspace";
 
-
 const toolDisplayNames: Record<string, string> = {
   Read: "Reading",
   Write: "Writing",

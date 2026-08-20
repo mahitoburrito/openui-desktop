@@ -307,6 +307,11 @@ function AppContent() {
                 if (polledAt > 0 && !isStale && existing.statusChangedAt !== polledAt) {
                   sessionUpdates.statusChangedAt = polledAt;
                 }
+                // Only the websocket used to carry this, so a card whose
+                // terminal was never mounted stayed flagged as restored.
+                if (existing.isRestored !== sessionData.isRestored) {
+                  sessionUpdates.isRestored = sessionData.isRestored;
+                }
                 if (existing.customName !== sessionData.customName) {
                   sessionUpdates.customName = sessionData.customName;
                   const title = sessionData.customName || existing.agentName;
@@ -442,6 +447,7 @@ function AppContent() {
             originalCwd: session.originalCwd,
             gitBranch: session.gitBranch,
             status: session.status || "idle",
+            statusChangedAt: session.statusChangedAt,
             customName: session.customName,
             customColor: session.customColor,
             notes: session.notes,
