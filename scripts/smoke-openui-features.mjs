@@ -4112,12 +4112,10 @@ async function runNestedShellIntegrationLiveTest({
         // about is that a syntax error completes through fish_posterror and lands as a
         // failed block, so assert that and only that the status is not a success.
         // Deliberately not requiring phase "at_prompt". On the fish 3.7 Ubuntu ships the
-        // lifecycle is still in "awaiting_prompt" here — fish's posterror path does not
-        // emit the prompt-start marker the way the newer build this was written against
-        // does. That is worth looking at on its own (Ubuntu fish users get a lagging
-        // phase after any syntax error), but it is not what this test is about: the
-        // assertion is that the syntax error completes through fish_posterror and lands
-        // as a failed block, which it does.
+        // The phase clause that used to be here was dropped when fish's posterror path
+        // was found not to emit the prompt-start marker. That is fixed at the source
+        // now — openui.fish closes the prompt on posterror — so the phase is no longer
+        // the thing in question; this assertion stays scoped to what it is named for.
         (snapshot) => snapshot.blocks.some((block) =>
           block.command === syntaxErrorCommand && block.status === "failed" &&
           block.exitCode !== 0
@@ -4135,17 +4133,10 @@ async function runNestedShellIntegrationLiveTest({
     write(repaintCommand);
     const repaintSnapshot = await waitForLifecycleState(
       lifecycle,
-      // Same fish caveat as the posterror assertion above, and the same cause: this
-      // runs straight after the syntax-error case, and Ubuntu's fish never emits the
-      // prompt-start marker on that path, so the phase is still "awaiting_prompt"
-      // when it gets here. Relaxing the clause for fish alone keeps what this test is
-      // actually for — an unauthenticated repaint must not manufacture a block —
-      // rather than asserting a phase the shell has already been shown not to report.
-      (snapshot) => (snapshot.phase === "at_prompt" || name === "fish") &&
-        snapshot.blocks.some((block) =>
-          block.command === repaintCommand && block.status === "succeeded" &&
-          block.output.includes(repaintOutput)
-        ),
+      (snapshot) => snapshot.phase === "at_prompt" && snapshot.blocks.some((block) =>
+        block.command === repaintCommand && block.status === "succeeded" &&
+        block.output.includes(repaintOutput)
+      ),
       `${name} ignored an unauthenticated prompt repaint during command execution`,
     );
     await assert(
@@ -10614,8 +10605,13 @@ async function main() {
         body: JSON.stringify({ rules: previousAgentRules }),
       }).catch(() => undefined);
     }
-    await Promise.all(repos.map((repo) => rm(repo, { recursive: true, force: true })));
+    // Close the server first. These are the directories sessions were running
+    // in, and on Windows a live PTY still holding a handle makes rmdir fail
+    // with EBUSY — which is how a suite that had passed every assertion still
+    // exited non-zero. removeTree then retries the cases where a handle is on
+    // its way out rather than already gone.
     await server.close();
+    await Promise.all(repos.map((repo) => removeTree(repo)));
   }
 }
 
