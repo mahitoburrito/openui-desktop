@@ -13,19 +13,10 @@ import {
   X,
 } from "lucide-react";
 import { useReactFlow, useStoreApi, type Node } from "@xyflow/react";
-import { useStore, type AgentSession, type AgentStatus } from "../stores/useStore";
+import { useStore, type AgentSession } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { destroyCachedTerminal } from "./Terminal";
-
-const statusDot: Record<AgentStatus, string> = {
-  creating: "#818CF8",
-  running: "#22C55E",
-  tool_calling: "#22C55E",
-  waiting_input: "#D97652",
-  idle: "#8A8F98",
-  disconnected: "#6B7280",
-  error: "#EF4444",
-};
+import { agentStatusStyle } from "../theme/agentStatus";
 
 type SessionEntry = {
   nodeId: string;
@@ -505,7 +496,7 @@ export function SessionListPanel() {
               );
               const iconId = (node?.data?.icon as string) || session.agentId;
               const dirName = session.cwd?.split("/").filter(Boolean).pop() || session.cwd || "";
-              const statusColor = statusDot[session.status] || statusDot.idle;
+              const statusStyle = agentStatusStyle(session.status);
               const isPinned = focusedSessionIds.includes(nodeId);
 
               return (
@@ -545,8 +536,8 @@ export function SessionListPanel() {
                         </span>
                         <span
                           className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
-                          style={{ backgroundColor: statusColor }}
-                          title={session.status.replace("_", " ")}
+                          style={{ backgroundColor: statusStyle.color }}
+                          title={statusStyle.label}
                         />
                       </div>
                       {(dirName || session.gitBranch) && (

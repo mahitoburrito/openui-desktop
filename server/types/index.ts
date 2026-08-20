@@ -3,6 +3,9 @@ import type WebSocket from "ws";
 
 export type AgentStatus = "running" | "waiting_input" | "tool_calling" | "idle" | "disconnected" | "error";
 
+/** How a status was arrived at. See services/agentStatus.ts. */
+export type AgentStatusSource = "authoritative" | "hook" | "inferred";
+
 export type TerminalBlockStatus =
   | "running"
   | "succeeded"
@@ -359,6 +362,17 @@ export interface Session {
   terminalRows: number;
   terminalFrameRedrawsInPlace: boolean;
   status: AgentStatus;
+  /** When `status` last actually changed — drives "waiting a while" in the UI. */
+  statusChangedAt?: number;
+  /** Where the committed status came from; a guess gets less benefit of doubt. */
+  statusSource?: AgentStatusSource;
+  /** Handle for the per-session decay + inference tick. */
+  statusTicker?: ReturnType<typeof setInterval>;
+  /** A status change waiting out its debounce. See services/agentStatus.ts. */
+  pendingStatus?: AgentStatus;
+  pendingStatusSource?: AgentStatusSource;
+  pendingStatusCommitAt?: number;
+  pendingStatusTimer?: ReturnType<typeof setTimeout>;
   lastOutputTime: number;
   lastInputTime: number;
   recentOutputSize: number;
@@ -380,9 +394,9 @@ export interface Session {
   claudeSessionId?: string;
   currentTool?: string;
   lastHookEvent?: string;
-  // Permission detection
+  // Permission detection: when the current tool call started, used with
+  // terminal silence to tell a slow tool apart from a prompt awaiting an answer.
   preToolTime?: number;
-  permissionTimeout?: ReturnType<typeof setTimeout>;
   // State tracker PTY (for output parsing fallback)
   stateTrackerPty?: IPty | null;
   // Auto-naming from first query

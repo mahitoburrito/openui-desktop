@@ -7,7 +7,7 @@ import { exec as execCb, spawn } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execCb);
-import type { Agent, AgentChangeSummary, AgentProfileConfig, CheckpointSummary, TerminalCommandBlock } from "../types";
+import type { Agent, AgentChangeSummary, AgentProfileConfig, AgentStatus, CheckpointSummary, TerminalCommandBlock } from "../types";
 import {
   sessions,
   createSession,
@@ -77,6 +77,11 @@ import { getTerminalSuggestionsAsync } from "../services/terminalSuggestions";
 import { terminalFind, TerminalFindError } from "../services/terminalFind";
 import { sendTerminalMessage } from "../services/terminalTransport";
 import {
+  applyAgentStatus,
+  startAgentStatusTicker,
+  statusSourceForHookEvent,
+} from "../services/agentStatus";
+import {
   createTerminalBlockShare,
   createTerminalSessionShare,
   terminalOutputToPlainText,
@@ -108,6 +113,24 @@ function getLaunchCwd(): string {
 }
 function textValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+const AGENT_STATUSES = new Set<AgentStatus>([
+  "running",
+  "waiting_input",
+  "tool_calling",
+  "idle",
+  "disconnected",
+  "error",
+]);
+
+/**
+ * Plugin hooks report a few pseudo-statuses (`pre_tool`, `post_tool`) that the
+ * caller maps to real ones, and anything unrecognised must not be able to put
+ * a card into a state the UI has no rendering for.
+ */
+function normalizeAgentStatus(reported: unknown, fallback: AgentStatus): AgentStatus {
+  return AGENT_STATUSES.has(reported as AgentStatus) ? (reported as AgentStatus) : fallback;
 }
 
 const SENSITIVE_TERMINAL_SHARE_CONFIRMATION = "share-sensitive-terminal-data";
@@ -1912,6 +1935,7 @@ apiRoutes.get("/sessions", (c) => {
     originalCwd: session.originalCwd,
     gitBranch: session.gitBranch,
     status: session.status,
+    statusChangedAt: session.statusChangedAt,
     customName: session.customName,
     customColor: session.customColor,
     notes: session.notes,
@@ -3074,7 +3098,6 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
 
   session.pty = ptyProcess;
   session.isRestored = false;
-  session.status = "running";
   session.lastOutputTime = Date.now();
   session.cwd = cwd;
   session.shellLaunch = { shell, args: [...shellArgs] };
@@ -3084,16 +3107,20 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
   session.agentAttemptBlockId = undefined;
   session.agentAttemptStartedAt = undefined;
 
-  const resetInterval = setInterval(() => {
-    if (!sessions.has(sessionId) || !session.pty) {
-      clearInterval(resetInterval);
-      return;
-    }
-    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-  }, 500);
+  startAgentStatusTicker(sessionId, session, sessions);
 
-  // Reset plugin status tracking for fresh session
+  // Reset plugin status tracking for a fresh process. Everything createSession
+  // initialises has to be reset here too, or the new PTY inherits the old
+  // one's inference state.
   session.pluginReportedStatus = false;
+  session.lastPluginStatusTime = undefined;
+  session.lastHookEvent = undefined;
+  session.claudeSessionId = undefined;
+  session.currentTool = undefined;
+  session.preToolTime = undefined;
+  session.recentOutputSize = 0;
+  applyAgentStatus(session, "running", { source: "authoritative", immediate: true });
+  session.statusChangedAt = Date.now();
 
   attachSessionPty(sessionId, session, ptyProcess, "Restarted PTY");
 
@@ -3247,15 +3274,23 @@ apiRoutes.post("/status-update", async (c) => {
   }
 
   if (session) {
-    if (claudeSessionId && !session.claudeSessionId) {
+    // Bind the agent's own session id, and re-bind it when a new agent session
+    // starts in the same terminal. Binding once and never clearing lets two
+    // OpenUI sessions carry the same id after a `--resume`, and the id-matching
+    // fallback below then routes hooks to whichever one the map yields first.
+    if (claudeSessionId && (!session.claudeSessionId || hookEvent === "SessionStart")) {
       session.claudeSessionId = claudeSessionId;
+    }
+    if (hookEvent === "SessionEnd") {
+      session.claudeSessionId = undefined;
     }
 
     if (userPrompt && matchedSessionId) {
       scheduleSessionTitleGeneration(matchedSessionId, userPrompt);
     }
 
-    let effectiveStatus = status;
+    let effectiveStatus: AgentStatus = normalizeAgentStatus(status, session.status);
+    let nextTool: string | null | undefined;
     let hookDecision: { permissionDecision: "deny"; reason: string } | null = null;
 
     if (status === "pre_tool") {
@@ -3284,50 +3319,30 @@ apiRoutes.post("/status-update", async (c) => {
       }
 
       effectiveStatus = "running";
-      session.currentTool = hookDecision ? undefined : toolName;
+      nextTool = hookDecision ? null : toolName || null;
+      // The tool is outstanding from here until post_tool. The watchdog pairs
+      // that with terminal silence to tell a slow tool apart from a prompt
+      // that is waiting on the user.
       session.preToolTime = hookDecision ? undefined : Date.now();
-
-      if (session.permissionTimeout) {
-        clearTimeout(session.permissionTimeout);
-      }
-
-      if (!hookDecision) {
-        session.permissionTimeout = setTimeout(() => {
-          // Only force waiting_input if we're still in a state where it makes sense
-          // (pre_tool was set and status hasn't already moved past it)
-          if (session!.preToolTime && (session!.status === "running" || session!.status === "tool_calling")) {
-            session!.status = "waiting_input";
-            for (const client of session!.clients) {
-              sendTerminalMessage(client, {
-                type: "status",
-                status: "waiting_input",
-                isRestored: session!.isRestored,
-                currentTool: session!.currentTool,
-                hookEvent: "permission_timeout",
-              });
-            }
-          }
-        }, 3500); // Increased from 2.5s to 3.5s — gives tools more time before flagging as stuck
-      }
     } else if (status === "post_tool") {
       effectiveStatus = "running";
+      // The tool finished. Leaving its name set makes the card go on reporting
+      // "Working · Bash" through the model's think time before the next call.
+      nextTool = null;
       session.preToolTime = undefined;
-      if (session.permissionTimeout) {
-        clearTimeout(session.permissionTimeout);
-        session.permissionTimeout = undefined;
-      }
     } else {
-      if (status !== "tool_calling" && status !== "running") {
-        session.currentTool = undefined;
-      }
+      if (status !== "tool_calling" && status !== "running") nextTool = null;
       session.preToolTime = undefined;
-      if (session.permissionTimeout) {
-        clearTimeout(session.permissionTimeout);
-        session.permissionTimeout = undefined;
-      }
     }
 
-    session.status = effectiveStatus;
+    // A subagent finishing is not the turn ending — the parent agent is still
+    // working, and reporting idle here was flipping cards mid-run. hooks.json
+    // now sends "running" directly, so this only catches an already-installed
+    // copy of the plugin still on the old mapping.
+    if (hookEvent === "SubagentStop" && effectiveStatus === "idle") {
+      effectiveStatus = "running";
+    }
+
     session.lastPluginStatusTime = Date.now();
     session.lastHookEvent = hookEvent;
     // Keep pluginReportedStatus true while plugin is actively reporting
@@ -3338,15 +3353,11 @@ apiRoutes.post("/status-update", async (c) => {
       session.pluginReportedStatus = true;
     }
 
-    for (const client of session.clients) {
-      sendTerminalMessage(client, {
-        type: "status",
-        status: session.status,
-        isRestored: session.isRestored,
-        currentTool: session.currentTool,
-        hookEvent,
-      });
-    }
+    applyAgentStatus(session, effectiveStatus, {
+      source: statusSourceForHookEvent(hookEvent, status),
+      hookEvent,
+      currentTool: nextTool,
+    });
 
     if (status === "pre_tool" && session.agentProfileId) saveState(sessions);
     return c.json({ success: true, ...(hookDecision ? { hookDecision } : {}) });

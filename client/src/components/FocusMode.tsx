@@ -31,7 +31,7 @@ import {
   Code2,
   Loader2,
 } from "lucide-react";
-import { useStore, AgentStatus } from "../stores/useStore";
+import { useStore } from "../stores/useStore";
 import { getTerminalTheme } from "../theme/appearance";
 import {
   Terminal,
@@ -42,6 +42,7 @@ import {
 import { ResizableSplit } from "./ResizableSplit";
 import { InPaneMarkdown } from "./InPaneMarkdown";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
+import { AGENT_STATUS, agentStatusStyle } from "../theme/agentStatus";
 import {
   TerminalWorkbenchPanel,
   type TerminalWorkbenchPanelMode,
@@ -55,16 +56,6 @@ import {
   type TerminalWorkspacePaneNode,
   useTerminalWorkspace,
 } from "./useTerminalWorkspace";
-
-const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
-  creating: { label: "Starting", color: "oklch(72% 0.11 280)" },
-  running: { label: "Working", color: "oklch(74% 0.12 145)" },
-  tool_calling: { label: "Working", color: "oklch(74% 0.12 145)" },
-  waiting_input: { label: "Needs input", color: "oklch(72% 0.13 48)" },
-  idle: { label: "Idle", color: "oklch(67% 0.02 260)" },
-  disconnected: { label: "Offline", color: "oklch(58% 0.02 260)" },
-  error: { label: "Error", color: "oklch(70% 0.15 28)" },
-};
 
 const toolDisplayNames: Record<string, string> = {
   Read: "Reading",
@@ -768,7 +759,7 @@ export function FocusMode() {
     );
     const displayName = session.customName || session.agentName;
     const iconId = (node?.data?.icon as string) || "cpu";
-    const status = statusConfig[session.status] || statusConfig.idle;
+    const status = agentStatusStyle(session.status);
     const isActive = activePane === nodeId;
     const isDisconnected = session.status === "disconnected";
     const needsInput = session.status === "waiting_input";
@@ -1111,7 +1102,7 @@ export function FocusMode() {
   const codeWorkspaceEntry = codeWorkspaceSessionId
     ? sessionsBySessionId.get(codeWorkspaceSessionId)
     : undefined;
-  const activeStatus = statusConfig[activeSession.status] || statusConfig.idle;
+  const activeStatus = agentStatusStyle(activeSession.status);
   const synchronizedSourceSessionId = synchronizedInputSourceId || activeWorkspaceTab?.activeSessionId || "";
   const synchronizedEligibilitySummary = synchronizedTargetSessionIds.map((sessionId) =>
     synchronizedPaneEligibility(sessionId, synchronizedSourceSessionId)
@@ -1154,7 +1145,7 @@ export function FocusMode() {
               const tabName = tab.title || firstSession?.customName || firstSession?.agentName || `Tab ${index + 1}`;
               const selected = tab.id === workspace.activeTabId;
               const activeTabSession = sessionsBySessionId.get(tab.activeSessionId)?.session;
-              const status = activeTabSession ? statusConfig[activeTabSession.status] || statusConfig.idle : statusConfig.disconnected;
+              const status = activeTabSession ? agentStatusStyle(activeTabSession.status) : AGENT_STATUS.disconnected;
               const tabSynchronized = synchronizedInputScope !== "none" &&
                 sessionIds.some((sessionId) => synchronizedTargetSessionIds.includes(sessionId));
               return (
@@ -1231,7 +1222,7 @@ export function FocusMode() {
             }) : focusedSessions.map(({ nodeId, session, node }) => {
               if (!session) return null;
               const selected = nodeId === activePane;
-              const status = statusConfig[session.status] || statusConfig.idle;
+              const status = agentStatusStyle(session.status);
               const color = getAgentAccentColor(session.agentId, session.customColor || session.color);
               const name = session.customName || session.agentName;
               const iconId = (node?.data?.icon as string) || "cpu";
@@ -1304,7 +1295,7 @@ export function FocusMode() {
                       const color = getAgentAccentColor(session.agentId, session.customColor || session.color);
                       const name = session.customName || session.agentName;
                       const iconId = (node?.data?.icon as string) || session.agentId;
-                      const status = statusConfig[session.status] || statusConfig.idle;
+                      const status = agentStatusStyle(session.status);
                       return (
                         <button
                           key={nodeId}

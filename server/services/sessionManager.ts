@@ -39,6 +39,14 @@ import { TerminalLifecycle } from "./terminalLifecycle";
 import { terminalFind, type TerminalFindBlockIndexEntry } from "./terminalFind";
 import { sendTerminalMessage } from "./terminalTransport";
 import {
+  applyAgentStatus,
+  disposeAgentStatus,
+  MAX_RECENT_OUTPUT_BYTES,
+  noteAgentOutputActivity,
+  startAgentStatusTicker,
+  stopAgentStatusTicker,
+} from "./agentStatus";
+import {
   decorateTerminalPtyWrite,
   TerminalPtyWriteCoordinator,
   type TerminalPtyWriteOptions,
@@ -622,16 +630,6 @@ function broadcastTerminalState(sessionId: string, session: Session) {
   for (const client of session.clients) sendTerminalMessage(client, message);
 }
 
-function broadcastAgentStatus(session: Session, status: Session["status"]) {
-  for (const client of session.clients) {
-    sendTerminalMessage(client, {
-      type: "status",
-      status,
-      isRestored: session.isRestored,
-    });
-  }
-}
-
 export function getTerminalSnapshot(
   sessionId: string,
   includeOutput = false,
@@ -1071,7 +1069,9 @@ export function attachSessionPty(
     // A late exit from an old PTY must not disconnect a replacement process.
     if (session.pty !== ptyProcess) return;
     log(`[session] ${label} exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
-    session.status = "disconnected";
+    stopAgentStatusTicker(session);
+    session.preToolTime = undefined;
+    applyAgentStatus(session, "disconnected", { source: "authoritative", immediate: true });
     session.pty = null;
     terminalCommandQueue.clear(sessionId);
     disposeTerminalPtyWriter(sessionId, ptyProcess);
@@ -1095,12 +1095,12 @@ export function attachSessionPty(
     if (data) {
       appendOutputBuffer(session, lifecycle.sanitizeForPersistence(result.persistenceData));
       session.lastOutputTime = Date.now();
-      session.recentOutputSize += data.length;
+      session.recentOutputSize = Math.min(
+        MAX_RECENT_OUTPUT_BYTES,
+        session.recentOutputSize + data.length,
+      );
 
-      if (session.status === "idle" && !session.pluginReportedStatus) {
-        session.status = "running";
-        broadcastAgentStatus(session, "running");
-      }
+      noteAgentOutputActivity(session);
 
       for (const client of session.clients) sendTerminalMessage(client, { type: "output", data });
     }
@@ -1992,6 +1992,7 @@ export async function createSession(params: {
     terminalRows: preferredTerminalSize().rows,
     terminalFrameRedrawsInPlace: agentId !== "shell" && agentId !== "test",
     status: "idle",
+    statusChangedAt: now,
     lastOutputTime: now,
     lastInputTime: 0,
     recentOutputSize: 0,
@@ -2025,43 +2026,7 @@ export async function createSession(params: {
   }
   attachSessionPty(sessionId, session, ptyProcess);
 
-  // Output decay + stale status watchdog
-  const resetInterval = setInterval(() => {
-    if (!sessions.has(sessionId) || !session.pty) {
-      clearInterval(resetInterval);
-      return;
-    }
-    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-
-    // Watchdog: if plugin hasn't reported in 30s and session looks stuck, reset the lock
-    // so PTY-based auto-detect can kick back in
-    const now = Date.now();
-    if (session.pluginReportedStatus && session.lastPluginStatusTime) {
-      const silentFor = now - session.lastPluginStatusTime;
-      if (silentFor > 30000) {
-        log(`[watchdog] Plugin silent for ${Math.round(silentFor / 1000)}s on ${sessionId}, resetting pluginReportedStatus`);
-        session.pluginReportedStatus = false;
-      }
-    }
-
-    // Watchdog: if status is "running" or "tool_calling" but no PTY output for 60s,
-    // transition to "idle" so the UI doesn't look frozen
-    if ((session.status === "running" || session.status === "tool_calling") && session.lastOutputTime) {
-      const outputSilent = now - session.lastOutputTime;
-      if (outputSilent > 60000) {
-        log(`[watchdog] No output for ${Math.round(outputSilent / 1000)}s on ${sessionId}, transitioning to idle`);
-        session.status = "idle";
-        session.currentTool = undefined;
-        for (const client of session.clients) {
-          sendTerminalMessage(client, {
-            type: "status",
-            status: "idle",
-            isRestored: session.isRestored,
-          });
-        }
-      }
-    }
-  }, 500);
+  startAgentStatusTicker(sessionId, session, sessions);
 
   // Run the command
   const finalCommand = injectPluginDir(command, agentId);
@@ -2164,6 +2129,10 @@ export function deleteSession(sessionId: string) {
 
   terminalWorkspace.removeSession(sessionId);
 
+  disposeAgentStatus(session);
+  if (session.deleteTimeout) clearTimeout(session.deleteTimeout);
+  session.deleteTimeout = undefined;
+
   const activePty = session.pty;
   const stateTrackerPty = session.stateTrackerPty;
   session.pty = null;
@@ -2244,6 +2213,7 @@ export async function restoreSessions() {
       terminalFrameRedrawsInPlace: node.terminalFrameRedrawsInPlace ??
         (node.agentId !== "shell" && node.agentId !== "test"),
       status: "disconnected",
+      statusChangedAt: Date.now(),
       lastOutputTime: 0,
       lastInputTime: 0,
       recentOutputSize: 0,

@@ -27,6 +27,7 @@ import {
   TERMINAL_WS_MAX_PAYLOAD_BYTES,
 } from "./services/terminalTransport";
 import { startTerminalControl } from "./services/terminalControl";
+import { sendAgentStatus } from "./services/agentStatus";
 
 const PREFERRED_PORT = Number(process.env.PORT) || 6968;
 const QUIET = !!process.env.OPENUI_QUIET;
@@ -229,11 +230,7 @@ export async function startServer(): Promise<number> {
         });
       }
 
-      sendTerminalMessage(ws, {
-        type: "status",
-        status: session.status,
-        isRestored: session.isRestored,
-      });
+      sendAgentStatus(ws, session);
 
       const terminalSnapshot = getTerminalSnapshot(sessionId, false);
       if (terminalSnapshot) {
