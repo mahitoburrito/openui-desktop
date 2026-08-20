@@ -20,6 +20,13 @@ const execFileAsync = promisify(execFile);
 // 2x locally, 4x on CI. The original ceilings (several at 5s) are marginal even on an
 // unloaded laptop — a live terminal-find worker or a real shell startup can lose that race
 // whenever anything else is running — and a shared runner is worse again.
+//
+// Each helper applies this to whatever ceiling it is given, rather than only to its
+// default. Scaling the default alone left every call site that passed its own number
+// — `waitForTerminalBlock(id, predicate, 8_000)` and about fifty others — running at
+// laptop ceilings on CI. That is the real reason the gate kept failing at a different
+// wait on each run: which waits were scaled depended on whether the caller had opted
+// out, so each platform lost whichever unscaled race it happened to be slowest at.
 const TIMEOUT_SCALE =
   Number(process.env.OPENUI_TEST_TIMEOUT_SCALE || (process.env.CI ? 4 : 2)) || 1;
 const patience = (ms) => Math.round(ms * TIMEOUT_SCALE);
@@ -103,7 +110,8 @@ const API_HOST = BASE_URL_PARTS.hostname;
 const API_PORT = Number(BASE_URL_PARTS.port || (BASE_URL_PARTS.protocol === "https:" ? 443 : 80));
 const WS_BASE_URL = `${BASE_URL_PARTS.protocol === "https:" ? "wss:" : "ws:"}//${BASE_URL_PARTS.host}`;
 
-async function waitForServer(url, timeoutMs = patience(10000)) {
+async function waitForServer(url, timeoutMs = 10000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
@@ -117,7 +125,8 @@ async function waitForServer(url, timeoutMs = patience(10000)) {
   throw new Error(`Server did not become ready: ${url}`);
 }
 
-async function waitForFileIncludes(path, expected, timeoutMs = patience(5000)) {
+async function waitForFileIncludes(path, expected, timeoutMs = 5000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
@@ -131,7 +140,8 @@ async function waitForFileIncludes(path, expected, timeoutMs = patience(5000)) {
   throw new Error(`File did not include expected text: ${path}`);
 }
 
-async function waitForTerminalBlock(sessionId, predicate, timeoutMs = patience(5000)) {
+async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   let lastSnapshot;
   while (Date.now() - started < timeoutMs) {
@@ -146,7 +156,8 @@ async function waitForTerminalBlock(sessionId, predicate, timeoutMs = patience(5
   );
 }
 
-async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = patience(8000)) {
+async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = 8000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   let lastQueue;
   while (Date.now() - started < timeoutMs) {
@@ -160,7 +171,8 @@ async function waitForTerminalCommandQueue(sessionId, predicate, timeoutMs = pat
   );
 }
 
-async function waitForTerminalSearch(searchId, predicate, timeoutMs = patience(10000)) {
+async function waitForTerminalSearch(searchId, predicate, timeoutMs = 10000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   let version = -1;
   while (Date.now() - started < timeoutMs) {
@@ -174,7 +186,8 @@ async function waitForTerminalSearch(searchId, predicate, timeoutMs = patience(1
   throw new Error(`Terminal search did not reach expected state: ${searchId}`);
 }
 
-async function waitForExit(child, timeoutMs = patience(3000)) {
+async function waitForExit(child, timeoutMs = 3000) {
+  timeoutMs = patience(timeoutMs);
   if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -347,7 +360,8 @@ async function availablePort() {
   });
 }
 
-async function waitForControlRecords(directory, count, timeoutMs = patience(5000)) {
+async function waitForControlRecords(directory, count, timeoutMs = 5000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
@@ -2400,7 +2414,8 @@ async function runTerminalWorkspaceUnitTests() {
   }
 }
 
-async function waitForFindSnapshot(service, searchId, predicate, description, timeoutMs = patience(5000)) {
+async function waitForFindSnapshot(service, searchId, predicate, description, timeoutMs = 5000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const snapshot = service.get(searchId);
@@ -2735,7 +2750,8 @@ async function existingExecutable(candidates) {
   return null;
 }
 
-async function waitForLifecycleState(lifecycle, predicate, description, timeoutMs = patience(15000)) {
+async function waitForLifecycleState(lifecycle, predicate, description, timeoutMs = 15000) {
+  timeoutMs = patience(timeoutMs);
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const snapshot = lifecycle.snapshot(true);
@@ -6805,20 +6821,26 @@ async function runTerminalSuggestionsUnitTests() {
       shellCapabilities: { autocd: true },
     });
     const autocdValues = autocdCommands.suggestions.map((item) => item.value);
+    // These values come from reading the real local filesystem for a real local
+    // shell, so the resolver terminates them with the host separator — `\` on
+    // Windows. `platform: "linux"` above governs how a PATH *list* is parsed,
+    // not how a local path is spelled, so hardcoding "/" here asserted laptop
+    // behaviour rather than correct behaviour. Same rule as POSIX_PERMISSIONS.
+    const dir = (name) => `${name}${sep}`;
     await assert(
       autocdValues[0] === "alpha" &&
-        autocdValues.includes("alpha-directory/") &&
-        autocdValues.includes("alpha-link/") &&
-        autocdValues.includes("alpha space/") &&
+        autocdValues.includes(dir("alpha-directory")) &&
+        autocdValues.includes(dir("alpha-link")) &&
+        autocdValues.includes(dir("alpha space")) &&
         !autocdValues.includes("alpha-file.txt") &&
-        !autocdValues.includes(".alpha-hidden/") &&
-        autocdCommands.suggestions.find((item) => item.value === "alpha space/")?.metadata?.needsShellQuoting === true &&
+        !autocdValues.includes(dir(".alpha-hidden")) &&
+        autocdCommands.suggestions.find((item) => item.value === dir("alpha space"))?.metadata?.needsShellQuoting === true &&
         autocdCommands.suggestions.filter((item) => item.metadata?.source === "autocd")
           .every((item) => autocdCommands.suggestions.indexOf(item) > 0),
       // Windows-only failure, so report what the resolver returned rather than a boolean.
       `autocd completion lost command-first ordering, directory filtering, symlinks, hidden rules, or quoting metadata: ${JSON.stringify({
         autocdValues,
-        spaceQuoting: autocdCommands.suggestions.find((item) => item.value === "alpha space/")?.metadata?.needsShellQuoting,
+        spaceQuoting: autocdCommands.suggestions.find((item) => item.value === dir("alpha space"))?.metadata?.needsShellQuoting,
         autocdIndexes: autocdCommands.suggestions
           .map((item, index) => (item.metadata?.source === "autocd" ? index : null))
           .filter((index) => index !== null),
