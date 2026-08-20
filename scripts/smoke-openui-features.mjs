@@ -5439,7 +5439,17 @@ async function runContainerShellIntegrationTests() {
       );
       await assert(
         restored.blocks.some((block) => block.command === "exit" && block.shellDepth === 1),
-        "container child exit did not preserve its semantic block or restore the parent launcher",
+        // Deterministic on the macOS runner, intermittent locally, so report the block
+        // ledger: the wait above already proved the parent epoch came back, which means
+        // the question is only which blocks exist and at what depth.
+        `container child exit did not preserve its semantic block or restore the parent launcher: ${JSON.stringify(
+          restored.blocks.map((block) => ({
+            command: block.command,
+            shellDepth: block.shellDepth,
+            status: block.status,
+            exitCode: block.exitCode,
+          })),
+        )}`,
       );
     } finally {
       outputDisposable.dispose();
@@ -6301,7 +6311,24 @@ async function runTerminalArgumentResolverUnitTests() {
         repeatedFile[0]?.value === relFile && repeatedFile[0]?.metadata?.needsShellQuoting === true &&
         terminatedFile[0]?.value === relFile && terminatedFile[0]?.metadata?.needsShellQuoting === true &&
         terminatedFile.every((item) => item.kind === "argument"),
-      "quoted, repeated, or --terminated filesystem completion lost shell encoding or argument cardinality",
+      // Report what the resolver actually produced. This only reproduces on Windows,
+      // where a pass/fail boolean says nothing about which of the eight clauses broke.
+      `quoted, repeated, or --terminated filesystem completion lost shell encoding or argument cardinality: ${JSON.stringify({
+        relFile,
+        doubleQuoted: doubleQuotedFile[0]?.value,
+        singleQuoted: singleQuotedFile[0]?.value,
+        escaped: escapedFile[0]?.value,
+        escapedExpected: relFile.replace(/ /g, "\\ "),
+        concatenated: concatenatedQuotedFile[0]?.value,
+        powerShell: powerShellFile[0]?.value,
+        repeated: repeatedFile[0]?.value,
+        repeatedNeedsQuoting: repeatedFile[0]?.metadata?.needsShellQuoting,
+        terminated: terminatedFile[0]?.value,
+        terminatedNeedsQuoting: terminatedFile[0]?.metadata?.needsShellQuoting,
+        terminatedKinds: terminatedFile.map((item) => item.kind),
+        logicalValues: [doubleQuotedFile, singleQuotedFile, escapedFile, concatenatedQuotedFile, powerShellFile]
+          .map((items) => items[0]?.metadata?.logicalValue),
+      })}`,
     );
 
     if (globalThis.process.platform !== "win32") {
