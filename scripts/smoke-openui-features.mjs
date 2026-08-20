@@ -309,16 +309,22 @@ async function runWithInput(command, args, input, options = {}) {
   });
 }
 
+// Something is usually still writing into these directories as the suite tears them
+// down — fish generates its completion cache in the background, Windows takes its time
+// releasing handles — so a removal that fails once is normally just early. The previous
+// budget was five attempts inside one second, which fish's completion generation
+// outlasts. Back off further, and scale with everything else on a slow machine.
+const REMOVE_TREE_ATTEMPTS = 8;
 async function removeTree(path) {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < REMOVE_TREE_ATTEMPTS; attempt++) {
     try {
       await rm(path, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error.code) || attempt === 4) {
+      if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error.code) || attempt === REMOVE_TREE_ATTEMPTS - 1) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      await new Promise((resolve) => setTimeout(resolve, patience(150) * (attempt + 1)));
     }
   }
 }
@@ -8180,7 +8186,13 @@ async function main() {
       body: JSON.stringify({
         agentId: "shell",
         agentName: "Workspace Source",
-        command: "",
+        // Not empty. PowerShell's adapter emits its prompt markers from the prompt
+        // function, and that does not render again on a session that never runs
+        // anything — so an empty command leaves the shell untracked, the typed cd
+        // unexecuted, and the block stuck in "running" with no output. One trivial
+        // command is enough to get a tracked prompt, and it is deliberately not a
+        // "cd " so the assertion below still matches only the command under test.
+        command: "echo openui-ready",
         cwd: repo,
         nodeId: `node-workspace-source-${Date.now()}`,
       }),
