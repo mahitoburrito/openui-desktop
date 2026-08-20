@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile, readFile, access, chmod, mkdir, readdir, realpath, stat, symlink } from "node:fs/promises";
 import { spawn, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { request as createHttpRequest } from "node:http";
@@ -17,8 +17,11 @@ const execFileAsync = promisify(execFile);
 // dedicated cores. That is why the release gate has been failing at a different wait on
 // each platform (zsh child integration on Linux, agent fallback on macOS) while the same
 // suite is green locally. Scale the ceilings there rather than trim coverage.
+// 2x locally, 4x on CI. The original ceilings (several at 5s) are marginal even on an
+// unloaded laptop — a live terminal-find worker or a real shell startup can lose that race
+// whenever anything else is running — and a shared runner is worse again.
 const TIMEOUT_SCALE =
-  Number(process.env.OPENUI_TEST_TIMEOUT_SCALE || (process.env.CI ? 4 : 1)) || 1;
+  Number(process.env.OPENUI_TEST_TIMEOUT_SCALE || (process.env.CI ? 4 : 2)) || 1;
 const patience = (ms) => Math.round(ms * TIMEOUT_SCALE);
 
 // Node synthesizes st_mode on Windows (0o666 for files, 0o777 for directories) with no
@@ -28,6 +31,66 @@ const patience = (ms) => Math.round(ms * TIMEOUT_SCALE);
 // rule, for the places where permission bits are only one clause of a larger assertion.
 const POSIX_PERMISSIONS = process.platform !== "win32";
 const modeIsPrivate = (mode, expected) => !POSIX_PERMISSIONS || (mode & 0o777) === expected;
+
+// Rolling capture of the most recent raw PTY bytes. A lifecycle timeout otherwise reports
+// a state snapshot and nothing about what the shell actually printed, which is useless for
+// a failure that only reproduces on a CI runner: you cannot tell whether the shell never
+// started, printed an error, or integrated a moment too late.
+let ptyTranscript = null;
+const PTY_TRANSCRIPT_BYTES = 16_000;
+
+function beginPtyTranscript(label) {
+  ptyTranscript = { label, chunks: [], bytes: 0 };
+}
+
+function notePtyTranscript(data) {
+  if (!ptyTranscript) return;
+  ptyTranscript.chunks.push(data);
+  ptyTranscript.bytes += data.length;
+  while (ptyTranscript.bytes > PTY_TRANSCRIPT_BYTES && ptyTranscript.chunks.length > 1) {
+    ptyTranscript.bytes -= ptyTranscript.chunks.shift().length;
+  }
+}
+
+function endPtyTranscript() {
+  ptyTranscript = null;
+}
+
+function ptyTranscriptText() {
+  if (!ptyTranscript || ptyTranscript.chunks.length === 0) return "";
+  const text = ptyTranscript.chunks.join("");
+  return `\n--- last ${Math.min(text.length, 8000)} bytes of ${ptyTranscript.label} PTY output ---\n` +
+    JSON.stringify(text.slice(-8000));
+}
+
+// The live shell scenarios drive real interactive shells through a PTY and assert on
+// lifecycle transitions. On a contended runner they fail nondeterministically and at a
+// different point on each platform. Retry them a bounded number of times so timing noise
+// does not gate a release, while a genuinely broken change still fails every attempt.
+// Local runs keep a single attempt so a real regression surfaces immediately.
+const SCENARIO_ATTEMPTS =
+  Number(process.env.OPENUI_TEST_SCENARIO_ATTEMPTS || (process.env.CI ? 3 : 1)) || 1;
+
+async function retryScenario(label, run) {
+  let lastError;
+  for (let attempt = 1; attempt <= SCENARIO_ATTEMPTS; attempt++) {
+    try {
+      await run();
+      if (attempt > 1) console.log(`[retry] ${label}: passed on attempt ${attempt}/${SCENARIO_ATTEMPTS}`);
+      return;
+    } catch (error) {
+      // The transcript is already interpolated into the thrown message, so dropping it
+      // here only prevents one scenario's output leaking into the next one's diagnostics.
+      lastError = error;
+      if (attempt >= SCENARIO_ATTEMPTS) break;
+      console.log(`[retry] ${label}: attempt ${attempt}/${SCENARIO_ATTEMPTS} failed — ${String(error.message).split("\n")[0]}`);
+      await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+    } finally {
+      endPtyTranscript();
+    }
+  }
+  throw lastError;
+}
 
 // fileURLToPath, not .pathname: on Windows the latter yields "/D:/a/repo/", and
 // join() then produces "\\D:\\a\\repo\\..." which resolves against the current drive
@@ -2679,7 +2742,7 @@ async function waitForLifecycleState(lifecycle, predicate, description, timeoutM
     if (predicate(snapshot)) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`Timed out waiting for nested shell state: ${description}\n${JSON.stringify(lifecycle.snapshot(true), null, 2)}`);
+  throw new Error(`Timed out waiting for nested shell state: ${description}\n${JSON.stringify(lifecycle.snapshot(true), null, 2)}${ptyTranscriptText()}`);
 }
 
 async function runPreferredTerminalSizeUnitTests() {
@@ -3838,7 +3901,9 @@ async function runNestedShellIntegrationLiveTest({
   let environmentMarkerCount = 0;
   let capabilityMarkerCarry = "";
   let capabilityMarkerCount = 0;
+  beginPtyTranscript(name);
   const outputDisposable = process.onData((data) => {
+    notePtyTranscript(data);
     const searchable = completionMarkerCarry + data;
     for (
       let index = searchable.indexOf(completionMarkerNeedle);
@@ -6195,18 +6260,22 @@ async function runTerminalArgumentResolverUnitTests() {
       cwd: project,
       shell: "/bin/zsh",
     });
+    // The resolver renders paths with the NATIVE separator (terminalArgumentResolvers
+    // builds `.${sep}${displayPath}`), so these expectations have to follow suit
+    // rather than hardcoding "./" — that mismatch is what failed on Windows.
+    const relFile = `.${sep}My File.txt`;
     await assert(
-      doubleQuotedFile[0]?.value === '"./My File.txt"' &&
-        singleQuotedFile[0]?.value === "'./My File.txt'" &&
-        escapedFile[0]?.value === "./My\\ File.txt" &&
-        concatenatedQuotedFile[0]?.value === '"./My File.txt"' &&
-        powerShellFile[0]?.value === '"./My File.txt"' &&
+      doubleQuotedFile[0]?.value === `"${relFile}"` &&
+        singleQuotedFile[0]?.value === `'${relFile}'` &&
+        escapedFile[0]?.value === relFile.replace(/ /g, "\\ ") &&
+        concatenatedQuotedFile[0]?.value === `"${relFile}"` &&
+        powerShellFile[0]?.value === `"${relFile}"` &&
         [doubleQuotedFile, singleQuotedFile, escapedFile, concatenatedQuotedFile, powerShellFile].every((items) =>
           items[0]?.metadata?.needsShellQuoting === false &&
-          items[0]?.metadata?.logicalValue === "./My File.txt"
+          items[0]?.metadata?.logicalValue === relFile
         ) &&
-        repeatedFile[0]?.value === "./My File.txt" && repeatedFile[0]?.metadata?.needsShellQuoting === true &&
-        terminatedFile[0]?.value === "./My File.txt" && terminatedFile[0]?.metadata?.needsShellQuoting === true &&
+        repeatedFile[0]?.value === relFile && repeatedFile[0]?.metadata?.needsShellQuoting === true &&
+        terminatedFile[0]?.value === relFile && terminatedFile[0]?.metadata?.needsShellQuoting === true &&
         terminatedFile.every((item) => item.kind === "argument"),
       "quoted, repeated, or --terminated filesystem completion lost shell encoding or argument cardinality",
     );
@@ -7702,9 +7771,9 @@ async function main() {
   await runTerminalGitUnitTests();
   await runTerminalRemoteUnitTests();
   await runInteractiveShellPathUnitTests();
-  await runNestedShellIntegrationLiveTests();
-  await runContainerShellIntegrationTests();
-  await runEnvironmentSubshellIntegrationTests();
+  await retryScenario("nested shell integration", runNestedShellIntegrationLiveTests);
+  await retryScenario("container shell integration", runContainerShellIntegrationTests);
+  await retryScenario("environment subshell integration", runEnvironmentSubshellIntegrationTests);
   await runTerminalSharingUnitTests();
   await runAgentProfileRuntimeUnitTests();
   await runPersistenceRestorationUnitTests();
