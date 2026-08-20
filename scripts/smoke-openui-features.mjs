@@ -36,6 +36,22 @@ const patience = (ms) => Math.round(ms * TIMEOUT_SCALE);
 // tests nothing and fails for a reason unrelated to the code under test. The restoration
 // test already guards its mode check with an explicit platform test; this is that same
 // rule, for the places where permission bits are only one clause of a larger assertion.
+// Windows hands back 8.3 short names in places POSIX never would — os.tmpdir() on the
+// runner is "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp" — and it is case-insensitive
+// besides. Two strings that differ in either way can still be the same directory, so
+// compare paths as paths: resolve both through realpath and fold case where the
+// filesystem does.
+async function samePath(a, b) {
+  if (!a || !b) return false;
+  const resolveOne = async (value) => {
+    try { return await realpath(value); } catch { return value; }
+  };
+  const [left, right] = await Promise.all([resolveOne(a), resolveOne(b)]);
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
 const POSIX_PERMISSIONS = process.platform !== "win32";
 const modeIsPrivate = (mode, expected) => !POSIX_PERMISSIONS || (mode & 0o777) === expected;
 
@@ -4111,7 +4127,6 @@ async function runNestedShellIntegrationLiveTest({
         // Homebrew build this was written against supplied 1. What the test is actually
         // about is that a syntax error completes through fish_posterror and lands as a
         // failed block, so assert that and only that the status is not a success.
-        // Deliberately not requiring phase "at_prompt". On the fish 3.7 Ubuntu ships the
         // The phase clause that used to be here was dropped when fish's posterror path
         // was found not to emit the prompt-start marker. That is fixed at the source
         // now — openui.fish closes the prompt on posterror — so the phase is no longer
@@ -4126,6 +4141,20 @@ async function runNestedShellIntegrationLiveTest({
       await assert(
         posterrorOutput.includes(`posterror:${syntaxErrorCommand}`),
         `Fish user fish_posterror hook was clobbered: ${posterrorOutput}`,
+      );
+      // fish keeps a syntactically invalid command in the line editor so it can be
+      // fixed, so the buffer still holds "echo )" at this point. Whatever the next
+      // test types lands on the end of it: on the runner the following command
+      // arrived as "echo )printf '...'" and went through posterror a second time.
+      // Cancel the line so the next case starts from an empty prompt. Written
+      // straight to the PTY rather than through write(), which appends a carriage
+      // return and tells the lifecycle to expect a submitted command — this is a
+      // keystroke, and neither of those is true of it.
+      process.write("\x03");
+      await waitForLifecycleState(
+        lifecycle,
+        (snapshot) => snapshot.phase === "at_prompt",
+        "fish returned to a prompt after the rejected line was cancelled",
       );
     }
     const repaintOutput = `openui-prompt-repaint-${name}-${Date.now()}`;
@@ -8008,7 +8037,7 @@ async function main() {
     const codeTree = await api(`/api/sessions/${fileApiSession.sessionId}/files/tree`);
     const codeTreeFile = codeTree.files.find((entry) => entry.path === "My API File.txt");
     await assert(
-      codeTree.root === await realpath(repo) && codeTreeFile?.editable === true,
+      (await samePath(codeTree.root, repo)) && codeTreeFile?.editable === true,
       `session code workspace tree omitted an editable file: ${JSON.stringify(codeTree)}`,
     );
     const codeSave = await api(`/api/sessions/${fileApiSession.sessionId}/files/write`, {
