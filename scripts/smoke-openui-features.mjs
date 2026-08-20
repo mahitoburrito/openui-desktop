@@ -3824,6 +3824,12 @@ async function runNestedShellIntegrationLiveTest({
     ...globalThis.process.env,
     HOME: cwd,
     PATH: `${executableDirectory}${delimiter}${globalThis.process.env.PATH || "/usr/bin:/bin"}`,
+      // Ubuntu's /etc/zsh/zshrc runs compinit, which stops on an interactive
+    // "insecure directories ... [y] or abort [n]?" prompt whenever anything in fpath is
+    // group-writable — true on GitHub runners. A nested child zsh then blocks on that
+    // prompt forever, never reaching its own prompt or emitting integration markers, so
+    // the test hangs until it times out. Debian documents this variable for exactly this.
+    skip_global_compinit: "1",
   };
   // Reproduce real user startup files that prepend system paths after OpenUI
   // creates the PTY environment. The adapter must restore the session-private
@@ -4553,6 +4559,12 @@ async function runNestedPowerShellIntegrationLiveTest(executable) {
     ...globalThis.process.env,
     HOME: cwd,
     PATH: `${executableDirectory}:${globalThis.process.env.PATH || ""}`,
+      // Ubuntu's /etc/zsh/zshrc runs compinit, which stops on an interactive
+    // "insecure directories ... [y] or abort [n]?" prompt whenever anything in fpath is
+    // group-writable — true on GitHub runners. A nested child zsh then blocks on that
+    // prompt forever, never reaching its own prompt or emitting integration markers, so
+    // the test hangs until it times out. Debian documents this variable for exactly this.
+    skip_global_compinit: "1",
   };
   const shimEnvironment = loadedSessionManager.prepareShellShimEnvironment(lifecycleSessionId, baseEnvironment);
   await assert(shimEnvironment.OPENUI_SHELL_SHIM_DIR, "PowerShell automatic shell shim was not created");
@@ -4955,6 +4967,12 @@ async function runCrossShellPowerShellShimLiveTest(zshExecutable, powerShellExec
     ...globalThis.process.env,
     HOME: cwd,
     PATH: `${powerShellDirectory}:${globalThis.process.env.PATH || ""}`,
+      // Ubuntu's /etc/zsh/zshrc runs compinit, which stops on an interactive
+    // "insecure directories ... [y] or abort [n]?" prompt whenever anything in fpath is
+    // group-writable — true on GitHub runners. A nested child zsh then blocks on that
+    // prompt forever, never reaching its own prompt or emitting integration markers, so
+    // the test hangs until it times out. Debian documents this variable for exactly this.
+    skip_global_compinit: "1",
   };
   const shimEnvironment = loadedSessionManager.prepareShellShimEnvironment(lifecycleSessionId, baseEnvironment);
   const blocks = [];
@@ -5346,6 +5364,12 @@ async function runContainerShellIntegrationTests() {
       ...globalThis.process.env,
       HOME: root,
       PATH: `${fakeBin}${delimiter}${globalThis.process.env.PATH || "/usr/bin:/bin"}`,
+          // Ubuntu's /etc/zsh/zshrc runs compinit, which stops on an interactive
+      // "insecure directories ... [y] or abort [n]?" prompt whenever anything in fpath is
+      // group-writable — true on GitHub runners. A nested child zsh then blocks on that
+      // prompt forever, never reaching its own prompt or emitting integration markers, so
+      // the test hangs until it times out. Debian documents this variable for exactly this.
+      skip_global_compinit: "1",
     };
     const shimEnvironment = sessionManager.prepareShellShimEnvironment(lifecycleSessionId, baseEnvironment);
     for (const tool of ["docker", "podman", "kubectl"]) {
