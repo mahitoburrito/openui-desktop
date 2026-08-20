@@ -199,21 +199,28 @@ async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
   );
 }
 
-// Typing into a shell that has not reached its first prompt loses the input: the bytes
-// land in the middle of startup and the command never becomes a block. A fixed sleep was
-// standing in for this, which is fine on a laptop and not fine on a runner — PowerShell
-// takes far longer to come up than bash or zsh, and 500ms of it is nowhere near enough.
-async function waitForShellPrompt(sessionId, timeoutMs = 10000) {
+// Typing into a shell that has not finished starting loses the input: the bytes land in
+// the middle of startup and the command never becomes a block. A fixed sleep was standing
+// in for this, which is fine on a laptop and not fine on a runner — PowerShell takes far
+// longer to come up than bash or zsh, and 500ms of it is nowhere near enough.
+//
+// The signal is shellIntegration, not phase "at_prompt". Reaching a prompt is the wrong
+// bar for PowerShell: its adapter announces itself when the profile is sourced but only
+// emits the prompt marker from its prompt function, which does not render again until
+// something runs. A session opened with an empty command therefore sits at "unknown"
+// forever. shellIntegration being set is the fact that matters anyway — the shell has
+// executed our install, so it is ready to receive and to be tracked.
+async function waitForShellReady(sessionId, timeoutMs = 10000) {
   timeoutMs = patience(timeoutMs);
   const started = Date.now();
   let snapshot;
   while (Date.now() - started < timeoutMs) {
     snapshot = await api(`/api/sessions/${sessionId}/blocks`);
-    if (snapshot?.phase === "at_prompt") return snapshot;
+    if (snapshot?.shellIntegration || snapshot?.phase === "at_prompt") return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(
-    `Shell never reached its first prompt: ${sessionId}\n` +
+    `Shell never finished starting: ${sessionId}\n` +
       JSON.stringify({ phase: snapshot?.phase, shellIntegration: snapshot?.shellIntegration }, null, 2),
   );
 }
@@ -8157,7 +8164,7 @@ async function main() {
       workspaceSocket.once("open", resolve);
       workspaceSocket.once("error", reject);
     });
-    await waitForShellPrompt(workspaceSource.sessionId);
+    await waitForShellReady(workspaceSource.sessionId);
     workspaceSocket.send(JSON.stringify({
       type: "input",
       data: `cd '${workspaceLatestCwd.replace(/'/g, `'\\''`)}'\r`,
@@ -8540,7 +8547,7 @@ async function main() {
         livePathSocket.once("open", resolve);
         livePathSocket.once("error", reject);
       });
-      await waitForShellPrompt(livePathSession.sessionId);
+      await waitForShellReady(livePathSession.sessionId);
       livePathSocket.send(JSON.stringify({
         type: "input",
         data: `export PATH='${livePathBin.replace(/'/g, `'\\''`)}':"$PATH"\r`,
