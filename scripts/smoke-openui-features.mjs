@@ -214,6 +214,26 @@ async function waitForTerminalBlock(sessionId, predicate, timeoutMs = 5000) {
 // fair chance to arrive. Taking it immediately is too early for bash and zsh: they
 // announce integration while still starting up, and input sent at that moment is
 // swallowed, which is a slower and more confusing failure than the sleep this replaced.
+// Even a ready-looking shell can swallow the first thing it is sent — PowerShell on a
+// loaded runner reports its integration while still initialising, and the block then
+// sits in "running" with no output because nothing ever executed it. Re-send rather
+// than wait longer: the block predicate is the proof that the shell actually ran it.
+async function sendInputUntilBlock(socket, sessionId, data, predicate, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    socket.send(JSON.stringify({ type: "input", data }));
+    try {
+      return await waitForTerminalBlock(sessionId, predicate, attempt === attempts ? 8000 : 4000);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        console.log(`[retry] shell input attempt ${attempt}/${attempts} produced no completed block`);
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function waitForShellReady(sessionId, timeoutMs = 10000) {
   timeoutMs = patience(timeoutMs);
   const fallbackAfter = patience(2000);
@@ -8171,14 +8191,11 @@ async function main() {
       workspaceSocket.once("error", reject);
     });
     await waitForShellReady(workspaceSource.sessionId);
-    workspaceSocket.send(JSON.stringify({
-      type: "input",
-      data: `cd '${workspaceLatestCwd.replace(/'/g, `'\\''`)}'\r`,
-    }));
-    await waitForTerminalBlock(
+    await sendInputUntilBlock(
+      workspaceSocket,
       workspaceSource.sessionId,
+      `cd '${workspaceLatestCwd.replace(/'/g, `'\\''`)}'\r`,
       (block) => block.command.startsWith("cd ") && block.status === "succeeded",
-      8_000,
     );
     let workspaceSourceState;
     const cwdWaitStarted = Date.now();
