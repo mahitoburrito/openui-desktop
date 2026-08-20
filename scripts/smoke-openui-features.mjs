@@ -4057,14 +4057,14 @@ async function runNestedShellIntegrationLiveTest({
       write(syntaxErrorCommand);
       await waitForLifecycleState(
         lifecycle,
-        // fish's status for a parse error is version-specific — 127 on fish 3.7 as
-        // shipped by Ubuntu, something else on the Homebrew build this was written
-        // against. What the test is actually about is that the syntax error completes
-        // through fish_posterror and lands as a failed block, so assert that and not a
-        // particular number.
+        // fish's reporting for a parse error varies by version: on the fish 3.7 Ubuntu
+        // ships the block comes back failed with no exitCode field at all, while the
+        // Homebrew build this was written against supplied 1. What the test is actually
+        // about is that a syntax error completes through fish_posterror and lands as a
+        // failed block, so assert that and only that the status is not a success.
         (snapshot) => snapshot.phase === "at_prompt" && snapshot.blocks.some((block) =>
           block.command === syntaxErrorCommand && block.status === "failed" &&
-          typeof block.exitCode === "number" && block.exitCode !== 0
+          block.exitCode !== 0
         ),
         "Fish syntax error completed through fish_posterror",
       );
@@ -6709,11 +6709,18 @@ async function runTerminalSuggestionsUnitTests() {
 
     const pathValue = `${first}${delimiter}${second}`;
     const scanned = loaded.scanTerminalPathCommands({ pathValue, platform: "linux" });
+    const discovered = scanned.map((item) => item.name);
+    // Precedence and deduplication hold everywhere. The executable filter cannot be
+    // exercised on Windows: there is no executable bit there — Node's chmod only toggles
+    // the read-only flag — so "not-executable" is indistinguishable from a real command
+    // on that filesystem, however the resolver is asked to reason.
     await assert(
-      scanned.map((item) => item.name).join(",") === "alpha,gamma" &&
-        scanned[0].directory === first &&
-        !scanned.some((item) => item.name === "not-executable"),
-      "PATH command discovery lost precedence, deduplication, or executable filtering",
+      discovered.filter((name) => name === "alpha").length === 1 &&
+        discovered.includes("gamma") &&
+        discovered.indexOf("alpha") < discovered.indexOf("gamma") &&
+        scanned.find((item) => item.name === "alpha")?.directory === first &&
+        (!POSIX_PERMISSIONS || !discovered.includes("not-executable")),
+      `PATH command discovery lost precedence, deduplication, or executable filtering: ${JSON.stringify(discovered)}`,
     );
     const bounded = loaded.scanTerminalPathCommands({
       pathValue,
@@ -8496,54 +8503,64 @@ async function main() {
       );
       const enableAutocdCommand = 'if [ -n "$ZSH_VERSION" ]; then setopt autocd; elif [ -n "$BASH_VERSION" ]; then shopt -s autocd; fi';
       livePathSocket.send(JSON.stringify({ type: "input", data: `${enableAutocdCommand}\r` }));
-      await waitForTerminalBlock(
+      // bash only gained `shopt -s autocd` in 4.0 and macOS still ships bash 3.2, so on a
+      // macOS runner the session shell cannot enable autocd at all and the command comes
+      // back with status 1. Probe the capability instead of assuming it, and skip the
+      // autocd assertions where the shell genuinely cannot do it — asserting a capability
+      // the shell does not have tests the shell, not this code.
+      const autocdEnableBlock = await waitForTerminalBlock(
         livePathSession.sessionId,
-        (block) => block.command === enableAutocdCommand && block.status === "succeeded",
+        (block) => block.command === enableAutocdCommand &&
+          (block.status === "succeeded" || block.status === "failed"),
         8_000,
       );
-      let enabledAutocdApiSuggestions;
-      const enabledAutocdStarted = Date.now();
-      while (Date.now() - enabledAutocdStarted < 8_000) {
-        enabledAutocdApiSuggestions = await api(
-          `/api/terminal/suggestions?query=${encodeURIComponent("commands: openui-api-live-")}&sessionId=${encodeURIComponent(livePathSession.sessionId)}`,
-        );
-        if (enabledAutocdApiSuggestions.suggestions.some(
+      if (autocdEnableBlock.status !== "succeeded") {
+        console.log("[skip] active shell cannot enable autocd (bash < 4.0); skipping autocd suggestion assertions");
+      } else {
+        let enabledAutocdApiSuggestions;
+        const enabledAutocdStarted = Date.now();
+        while (Date.now() - enabledAutocdStarted < 8_000) {
+          enabledAutocdApiSuggestions = await api(
+            `/api/terminal/suggestions?query=${encodeURIComponent("commands: openui-api-live-")}&sessionId=${encodeURIComponent(livePathSession.sessionId)}`,
+          );
+          if (enabledAutocdApiSuggestions.suggestions.some(
+            (entry) => entry.value === `${liveAutocdDirectory}/` && entry.metadata?.source === "autocd",
+          )) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        const liveExecutableIndex = enabledAutocdApiSuggestions?.suggestions.findIndex(
+          (entry) => entry.value === livePathCommand && entry.metadata?.source === "path",
+        ) ?? -1;
+        const liveAutocdIndex = enabledAutocdApiSuggestions?.suggestions.findIndex(
           (entry) => entry.value === `${liveAutocdDirectory}/` && entry.metadata?.source === "autocd",
-        )) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      const liveExecutableIndex = enabledAutocdApiSuggestions?.suggestions.findIndex(
-        (entry) => entry.value === livePathCommand && entry.metadata?.source === "path",
-      ) ?? -1;
-      const liveAutocdIndex = enabledAutocdApiSuggestions?.suggestions.findIndex(
-        (entry) => entry.value === `${liveAutocdDirectory}/` && entry.metadata?.source === "autocd",
-      ) ?? -1;
-      await assert(
-        liveExecutableIndex >= 0 && liveAutocdIndex > liveExecutableIndex &&
-          !enabledAutocdApiSuggestions.suggestions.some((entry) => entry.value === liveAutocdFile),
-        "live shell autocd capability did not reach the API with command-first, directory-only ordering",
-      );
-      const disableAutocdCommand = 'if [ -n "$ZSH_VERSION" ]; then unsetopt autocd; elif [ -n "$BASH_VERSION" ]; then shopt -u autocd; fi';
-      livePathSocket.send(JSON.stringify({ type: "input", data: `${disableAutocdCommand}\r` }));
-      await waitForTerminalBlock(
-        livePathSession.sessionId,
-        (block) => block.command === disableAutocdCommand && block.status === "succeeded",
-        8_000,
-      );
-      let removedAutocdApiSuggestions;
-      const removedAutocdStarted = Date.now();
-      while (Date.now() - removedAutocdStarted < 8_000) {
-        removedAutocdApiSuggestions = await api(
-          `/api/terminal/suggestions?query=${encodeURIComponent(`commands: ${liveAutocdDirectory}`)}&sessionId=${encodeURIComponent(livePathSession.sessionId)}`,
+        ) ?? -1;
+        await assert(
+          liveExecutableIndex >= 0 && liveAutocdIndex > liveExecutableIndex &&
+            !enabledAutocdApiSuggestions.suggestions.some((entry) => entry.value === liveAutocdFile),
+          "live shell autocd capability did not reach the API with command-first, directory-only ordering",
         );
-        if (!removedAutocdApiSuggestions.suggestions.some((entry) => entry.metadata?.source === "autocd")) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        const disableAutocdCommand = 'if [ -n "$ZSH_VERSION" ]; then unsetopt autocd; elif [ -n "$BASH_VERSION" ]; then shopt -u autocd; fi';
+        livePathSocket.send(JSON.stringify({ type: "input", data: `${disableAutocdCommand}\r` }));
+        await waitForTerminalBlock(
+          livePathSession.sessionId,
+          (block) => block.command === disableAutocdCommand && block.status === "succeeded",
+          8_000,
+        );
+        let removedAutocdApiSuggestions;
+        const removedAutocdStarted = Date.now();
+        while (Date.now() - removedAutocdStarted < 8_000) {
+          removedAutocdApiSuggestions = await api(
+            `/api/terminal/suggestions?query=${encodeURIComponent(`commands: ${liveAutocdDirectory}`)}&sessionId=${encodeURIComponent(livePathSession.sessionId)}`,
+          );
+          if (!removedAutocdApiSuggestions.suggestions.some((entry) => entry.metadata?.source === "autocd")) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        await assert(
+          removedAutocdApiSuggestions &&
+            !removedAutocdApiSuggestions.suggestions.some((entry) => entry.metadata?.source === "autocd"),
+          "terminal suggestion API retained autocd directories after the shell option was disabled",
+        );
       }
-      await assert(
-        removedAutocdApiSuggestions &&
-          !removedAutocdApiSuggestions.suggestions.some((entry) => entry.metadata?.source === "autocd"),
-        "terminal suggestion API retained autocd directories after the shell option was disabled",
-      );
       livePathSocket.send(JSON.stringify({
         type: "input",
         data: `export CDPATH='${liveCdPathRoot.replace(/'/g, `'\\''`)}'\r`,
