@@ -43,6 +43,7 @@ interface TerminalProps {
     text: string;
   };
   workbench?: boolean;
+  compact?: boolean;
 }
 
 export interface TerminalInputSyncState extends InlineTerminalInputSnapshot {
@@ -800,6 +801,7 @@ export function Terminal({
   onUserInput,
   synchronizedPreview,
   workbench = false,
+  compact = false,
 }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
   const terminalThemeId = useStore((state) => state.terminalTheme);
@@ -1496,7 +1498,7 @@ export function Terminal({
       onDrop={handleDrop}
       className="relative w-full h-full"
       style={{
-        minHeight: "200px",
+        minHeight: compact ? 0 : "200px",
         backgroundColor: workbench ? terminalTheme.background : terminalTheme.surface,
       }}
     >
@@ -1504,11 +1506,11 @@ export function Terminal({
         ref={containerRef}
         className="w-full h-full"
         style={{
-          padding: workbench ? "16px 18px 20px" : "14px",
+          padding: workbench ? "16px 18px 20px" : compact ? "8px 10px 10px" : "14px",
           backgroundColor: terminalTheme.background,
-          border: workbench ? "none" : `1px solid ${terminalTheme.border}`,
+          border: workbench || compact ? "none" : `1px solid ${terminalTheme.border}`,
           boxShadow: workbench ? "none" : `inset 0 1px 0 ${terminalTheme.foreground}0f`,
-          minHeight: "200px",
+          minHeight: compact ? 0 : "200px",
           overflow: "hidden",
         }}
       />

@@ -1,4 +1,4 @@
-import { Folder, Maximize2, MousePointer2, Network, Search } from "lucide-react";
+import { Folder, Grid3X3, Maximize2, MousePointer2, Network, Search } from "lucide-react";
 import { useStore } from "../stores/useStore";
 import { usePRBEStore } from "../stores/usePRBEStore";
 
@@ -28,6 +28,12 @@ export function Header() {
     setViewMode("focus");
   };
 
+  const toggleOverview = () => {
+    if (sessions.size === 0) return;
+    setSidebarOpen(false);
+    setViewMode(viewMode === "overview" ? "canvas" : "overview");
+  };
+
   const commandButton =
     "flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-surface-active hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-zinc-500";
 
@@ -50,6 +56,19 @@ export function Header() {
           aria-label="Open workspace coordinator"
         >
           <Network className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={toggleOverview}
+          disabled={sessions.size === 0}
+          className={`${commandButton} ${
+            viewMode === "overview" ? "bg-surface-active text-zinc-100" : ""
+          }`}
+          title={sessions.size > 0 ? "Session overview (Cmd+Shift+O)" : "Start a session first"}
+          aria-label="Open session overview"
+          aria-pressed={viewMode === "overview"}
+        >
+          <Grid3X3 className="h-4 w-4" />
         </button>
         <button
           type="button"

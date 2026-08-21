@@ -25,6 +25,9 @@ export function useKeyboardShortcuts() {
         setActivityCenterOpen,
         browserPanelOpen,
         setBrowserPanelOpen,
+        overviewExpandedNodeId,
+        setOverviewExpandedNodeId,
+        overviewVisibleNodeIds,
         selectionModeActive,
         setSelectionModeActive,
       } = useStore.getState();
@@ -99,6 +102,18 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Escape steps out of a zoomed overview terminal before leaving the
+      // overview itself, mirroring the visual zoom hierarchy.
+      if (e.key === "Escape" && viewMode === "overview") {
+        e.preventDefault();
+        if (overviewExpandedNodeId) {
+          setOverviewExpandedNodeId(null);
+        } else {
+          setViewMode("canvas");
+        }
+        return;
+      }
+
       // Escape — exit focus / diff mode
       if (
         e.key === "Escape" &&
@@ -114,6 +129,15 @@ export function useKeyboardShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
         setViewMode(viewMode === "diff" ? "canvas" : "diff");
+        return;
+      }
+
+      // Cmd+Shift+O — toggle the live session overview.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "o" || e.key === "O")) {
+        if (sessions.size === 0) return;
+        e.preventDefault();
+        setSidebarOpen(false);
+        setViewMode(viewMode === "overview" ? "canvas" : "overview");
         return;
       }
 
@@ -157,6 +181,15 @@ export function useKeyboardShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
         if (selectionModeActive && viewMode === "canvas") return;
         const index = parseInt(e.key) - 1;
+        if (viewMode === "overview") {
+          e.preventDefault();
+          const nodeId = overviewVisibleNodeIds[index];
+          if (nodeId) {
+            setSelectedNodeId(nodeId);
+            setOverviewExpandedNodeId(nodeId);
+          }
+          return;
+        }
         const sessionEntries = Array.from(sessions.entries());
         if (index < sessionEntries.length) {
           e.preventDefault();
