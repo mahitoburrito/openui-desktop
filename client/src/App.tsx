@@ -21,6 +21,7 @@ import { CategoryNode } from "./components/CategoryNode";
 import { Sidebar } from "./components/Sidebar";
 import { SessionListPanel } from "./components/SessionListPanel";
 import { FocusMode } from "./components/FocusMode";
+import { SessionOverview } from "./components/SessionOverview";
 import { MarkdownView } from "./components/MarkdownView";
 import { DiffView } from "./components/DiffView";
 import { BrowserView } from "./components/BrowserView";
@@ -740,6 +741,9 @@ function AppContent() {
 
           {/* Focus Mode overlay */}
           <FocusMode />
+
+          {/* Live terminal grid; separate from the advanced focus workspace. */}
+          <SessionOverview />
 
           {/* Markdown viewer overlay */}
           <MarkdownView />

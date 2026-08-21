@@ -119,7 +119,7 @@ export interface DeleteToast {
   timeout: ReturnType<typeof setTimeout>;
 }
 
-export type ViewMode = "canvas" | "focus" | "markdown" | "diff";
+export type ViewMode = "canvas" | "overview" | "focus" | "markdown" | "diff";
 export type StatusFilter = AgentStatus | "all";
 
 export interface AgentActivityEvent {
@@ -234,9 +234,13 @@ interface AppState {
   collapsedSessionGroups: string[];
   toggleSessionGroup: (groupKey: string) => void;
 
-  // Focus Mode (multi-terminal view)
+  // Full-screen terminal views
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
+  overviewExpandedNodeId: string | null;
+  setOverviewExpandedNodeId: (nodeId: string | null) => void;
+  overviewVisibleNodeIds: string[];
+  setOverviewVisibleNodeIds: (nodeIds: string[]) => void;
   focusedSessionIds: string[]; // nodeIds pinned in focus mode
   addFocusedSession: (nodeId: string) => void;
   removeFocusedSession: (nodeId: string) => void;
@@ -309,6 +313,7 @@ function loadPersistedUIState(): Partial<AppState> {
     if (raw) {
       const parsed = JSON.parse(raw);
       const persistedViewMode =
+        parsed.viewMode === "overview" ||
         parsed.viewMode === "focus" ||
         parsed.viewMode === "diff"
           ? parsed.viewMode
@@ -522,6 +527,10 @@ export const useStore = create<AppState>((set) => ({
       const leavingCanvasSelection = mode !== "canvas" && state.selectionModeActive;
       return {
         viewMode: mode,
+        overviewExpandedNodeId:
+          mode === "overview" ? state.overviewExpandedNodeId : null,
+        overviewVisibleNodeIds:
+          mode === "overview" ? state.overviewVisibleNodeIds : [],
         // The browser dock only renders in focus mode. Close it when leaving
         // so it does not reopen unexpectedly on the next focused session.
         browserPanelOpen: mode === "focus" ? state.browserPanelOpen : false,
@@ -539,6 +548,10 @@ export const useStore = create<AppState>((set) => ({
           : {}),
       };
     }),
+  overviewExpandedNodeId: null,
+  setOverviewExpandedNodeId: (nodeId) => set({ overviewExpandedNodeId: nodeId }),
+  overviewVisibleNodeIds: [],
+  setOverviewVisibleNodeIds: (nodeIds) => set({ overviewVisibleNodeIds: nodeIds.slice(0, 9) }),
   focusedSessionIds: persisted.focusedSessionIds ?? [],
   addFocusedSession: (nodeId) =>
     set((state) => ({
