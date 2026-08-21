@@ -16,6 +16,8 @@ let agent: PRBEAgent | null = null;
 let mainWindowRef: BrowserWindow | null = null;
 let serverPortRef: number = 6968;
 
+const COORDINATOR_PREAMBLE = `You are the OpenUI workspace Coordinator. Monitor coding-agent sessions and help the user keep their work consistent. Inspect current coordination state before acting. Use exact session IDs for every mutation. Record durable decisions when multiple agents need the same conclusion. Send concise directives only when they are necessary, and explain queued or unconfirmed delivery honestly. Never infer that terminal submission means an agent understood the directive. Do not answer permission prompts, perform destructive lifecycle actions, ship, deploy, merge, or broaden scope without the user's explicit instruction.`;
+
 // Pending interaction resolvers (interaction id → resolve function)
 const pendingInteractions = new Map<string, (response: InteractionResponse) => void>();
 
@@ -23,6 +25,21 @@ function send(channel: string, ...args: any[]) {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
     mainWindowRef.webContents.send(channel, ...args);
   }
+}
+
+async function coordinatorRequest(path: string, init?: RequestInit): Promise<string> {
+  const response = await fetch(`http://localhost:${serverPortRef}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
+  });
+  const body: any = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+  if (!response.ok) {
+    throw new Error(typeof body?.error === "string" ? body.error : `HTTP ${response.status}`);
+  }
+  return JSON.stringify(body, null, 2);
 }
 
 function createAgent(apiKey: string): PRBEAgent {
@@ -152,6 +169,118 @@ function registerCustomTools(agent: PRBEAgent) {
       }
     },
   );
+
+  agent.registerTool(
+    "get_session_activity",
+    "Read recent structured command activity for one exact OpenUI session. Prefer this over raw terminal output when coordinating work.",
+    [
+      {
+        name: "sessionId",
+        type: ToolParamType.STRING,
+        description: "Exact session ID returned by list_active_sessions",
+        required: true,
+      },
+    ],
+    async (args) => {
+      try {
+        const sessionId = encodeURIComponent(args.sessionId as string);
+        return await coordinatorRequest(`/api/sessions/${sessionId}/blocks?limit=12`);
+      } catch (e: any) {
+        return `Error reading session activity: ${e.message}`;
+      }
+    },
+  );
+
+  agent.registerTool(
+    "get_coordination_state",
+    "Get the authoritative Coordinator snapshot: session readiness, active decisions, directive queues, and recent coordination events.",
+    [],
+    async () => {
+      try {
+        return await coordinatorRequest("/api/coordinator/snapshot");
+      } catch (e: any) {
+        return `Error fetching coordination state: ${e.message}`;
+      }
+    },
+  );
+
+  agent.registerTool(
+    "record_decision",
+    "Record a durable, versioned decision shared across the workspace. If the topic already has an active decision, pass its exact ID as supersedes.",
+    [
+      { name: "topic", type: ToolParamType.STRING, description: "Stable decision topic", required: true },
+      { name: "choice", type: ToolParamType.STRING, description: "The chosen direction", required: true },
+      { name: "rationale", type: ToolParamType.STRING, description: "Why this choice was made", required: true },
+      { name: "sessionIds", type: ToolParamType.STRING, description: "Optional comma-separated exact session IDs; omit for workspace scope", required: false },
+      { name: "supersedes", type: ToolParamType.STRING, description: "Exact active decision ID this replaces", required: false },
+    ],
+    async (args) => {
+      try {
+        const sessionIds = typeof args.sessionIds === "string"
+          ? args.sessionIds.split(",").map((item) => item.trim()).filter(Boolean)
+          : [];
+        return await coordinatorRequest("/api/coordinator/decisions", {
+          method: "POST",
+          body: JSON.stringify({
+            topic: args.topic,
+            choice: args.choice,
+            rationale: args.rationale,
+            scope: sessionIds.length > 0 ? { kind: "sessions", sessionIds } : { kind: "workspace" },
+            supersedes: args.supersedes || undefined,
+            author: "coordinator",
+          }),
+        });
+      } catch (e: any) {
+        return `Decision was not recorded: ${e.message}`;
+      }
+    },
+  );
+
+  agent.registerTool(
+    "send_directive",
+    "Queue a directive for one exact OpenUI session. Delivery is idle-only and remains unconfirmed until acknowledged. Never use a display title as the target.",
+    [
+      { name: "sessionId", type: ToolParamType.STRING, description: "Exact target session ID", required: true },
+      { name: "text", type: ToolParamType.STRING, description: "Concise directive for the worker agent", required: true },
+      { name: "decisionId", type: ToolParamType.STRING, description: "Optional active decision ID supporting the directive", required: false },
+      { name: "clientRequestId", type: ToolParamType.STRING, description: "Optional stable idempotency key for retry safety", required: false },
+    ],
+    async (args) => {
+      try {
+        return await coordinatorRequest("/api/coordinator/directives", {
+          method: "POST",
+          body: JSON.stringify({
+            sessionId: args.sessionId,
+            text: args.text,
+            decisionId: args.decisionId || undefined,
+            clientRequestId: args.clientRequestId || undefined,
+            author: "coordinator",
+          }),
+        });
+      } catch (e: any) {
+        return `Directive was not queued: ${e.message}`;
+      }
+    },
+  );
+
+  agent.registerTool(
+    "acknowledge_directive",
+    "Explicitly acknowledge a submitted directive after its target agent has confirmed incorporating it. Do not call this from terminal submission alone.",
+    [
+      { name: "directiveId", type: ToolParamType.STRING, description: "Exact directive ID", required: true },
+    ],
+    async (args) => {
+      try {
+        const directiveId = encodeURIComponent(args.directiveId as string);
+        return await coordinatorRequest(`/api/coordinator/directives/${directiveId}/acknowledge`, {
+          method: "POST",
+          body: "{}",
+        });
+      } catch (e: any) {
+        return `Directive was not acknowledged: ${e.message}`;
+      }
+    },
+  );
 }
 
 export function initPRBE(mainWindow: BrowserWindow, serverPort: number) {
@@ -180,7 +309,7 @@ export function initPRBE(mainWindow: BrowserWindow, serverPort: number) {
     }
     try {
       // Run investigation (non-blocking — we don't await it)
-      agent.investigate(query).catch((err) => {
+      agent.investigate(`${COORDINATOR_PREAMBLE}\n\nUser directive:\n${query}`).catch((err) => {
         // Probe Agent Error Log Trigger
         console.error("[PRBE_ERROR_2LceT6] [prbe] Investigation error:", err);
       });

@@ -13,6 +13,7 @@ import {
   createSession,
   deleteSession,
   injectPluginDir,
+  resolveAgentLaunchCommand,
   scanReposInDirectory,
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
@@ -3098,6 +3099,9 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
 
   session.pty = ptyProcess;
   session.isRestored = false;
+  // Existing clients will receive this PTY epoch live. If none are attached,
+  // let the first future renderer reconstruct it from the bounded raw buffer.
+  session.terminalClientConnected = session.clients.size > 0;
   session.lastOutputTime = Date.now();
   session.cwd = cwd;
   session.shellLaunch = { shell, args: [...shellArgs] };
@@ -3124,7 +3128,10 @@ apiRoutes.post("/sessions/:sessionId/restart", async (c) => {
 
   attachSessionPty(sessionId, session, ptyProcess, "Restarted PTY");
 
-  const finalCommand = injectPluginDir(session.command, session.agentId);
+  const finalCommand = injectPluginDir(
+    resolveAgentLaunchCommand(session.command, session.agentId),
+    session.agentId,
+  );
   setTimeout(() => {
     if (session.pty === ptyProcess) installShellIntegration(sessionId, session, ptyProcess, shell);
   }, 150);
@@ -3573,7 +3580,7 @@ apiRoutes.get("/linear/config", (c) => {
     hasApiKey: !!config.apiKey,
     defaultTeamId: config.defaultTeamId,
     defaultBaseBranch: config.defaultBaseBranch || "main",
-    createWorktree: config.createWorktree ?? true,
+    createWorktree: config.createWorktree ?? false,
     autoCareful: config.autoCareful ?? true,
     ticketPromptTemplate: config.ticketPromptTemplate || DEFAULT_TICKET_PROMPT,
   });

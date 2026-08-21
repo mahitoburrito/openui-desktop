@@ -81,12 +81,12 @@ export function PRBEInteractionDialog() {
               </div>
               <div>
                 <h3 className="text-sm font-medium text-white">
-                  {pendingInteraction.type === InteractionType.ASK_QUESTION && "PRBE Agent Question"}
+                  {pendingInteraction.type === InteractionType.ASK_QUESTION && "Coordinator Question"}
                   {pendingInteraction.type === InteractionType.REQUEST_PERMISSION && "Permission Request"}
                   {pendingInteraction.type === InteractionType.REQUEST_PATH_ACCESS && "Path Access Request"}
                   {pendingInteraction.type === InteractionType.REVIEW_SANITIZED_OUTPUT && "Review Output"}
                 </h3>
-                <p className="text-[10px] text-zinc-500">PRBE Debugger needs your input</p>
+                <p className="text-[10px] text-zinc-500">Workspace Coordinator needs your input</p>
               </div>
             </div>
 

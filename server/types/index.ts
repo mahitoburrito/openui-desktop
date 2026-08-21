@@ -350,6 +350,8 @@ export interface Session {
   stashRefs?: Record<string, string>;       // repo name → stash ref
   createdAt: string;
   clients: Set<WebSocket>;
+  /** True after a renderer has received this live PTY epoch's initial output. */
+  terminalClientConnected?: boolean;
   outputBuffer: string[];
   outputBufferChars: number;
   outputBufferTruncated?: boolean;

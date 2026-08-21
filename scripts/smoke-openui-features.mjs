@@ -1066,7 +1066,7 @@ async function runTerminalWorkbenchUiSourceTests() {
     return;
   }
 
-  const [appSource, focusSource, codeWorkspaceSource, commandPaletteSource, terminalSource, panelSource, commandSearchSource, blockViewSource, shareSheetSource, workspaceSource, launchLibrarySource, workflowLibrarySource, splitSource, suggestionSource, agentProfileSource, newSessionSource, electronMainSource, clipboardSource] = await Promise.all([
+  const [appSource, focusSource, codeWorkspaceSource, commandPaletteSource, terminalSource, panelSource, commandSearchSource, blockViewSource, shareSheetSource, workspaceSource, launchLibrarySource, workflowLibrarySource, splitSource, suggestionSource, agentProfileSource, newSessionSource, electronMainSource, clipboardSource, settingsSource, apiSource] = await Promise.all([
     readFile(join(ROOT, "client", "src", "App.tsx"), "utf8"),
     readFile(join(ROOT, "client", "src", "components", "FocusMode.tsx"), "utf8"),
     readFile(join(ROOT, "client", "src", "components", "CodeWorkspace.tsx"), "utf8"),
@@ -1085,7 +1085,18 @@ async function runTerminalWorkbenchUiSourceTests() {
     readFile(join(ROOT, "client", "src", "components", "NewSessionModal.tsx"), "utf8"),
     readFile(join(ROOT, "electron", "main.ts"), "utf8"),
     readFile(join(ROOT, "electron", "clipboard.ts"), "utf8"),
+    readFile(join(ROOT, "client", "src", "components", "SettingsModal.tsx"), "utf8"),
+    readFile(join(ROOT, "server", "routes", "api.ts"), "utf8"),
   ]);
+
+  await assert(
+    newSessionSource.includes("const [createWorktree, setCreateWorktree] = useState(false);") &&
+      newSessionSource.includes("setCreateWorktree(config.createWorktree ?? false);") &&
+      settingsSource.includes("const [createWorktree, setCreateWorktree] = useState(false);") &&
+      settingsSource.includes("setCreateWorktree(config.createWorktree ?? false);") &&
+      apiSource.includes("createWorktree: config.createWorktree ?? false,"),
+    "new sessions no longer default the worktree setting off consistently",
+  );
 
   await assert(
     appSource.includes('viewMode !== "focus" && <Header />') &&
@@ -2959,9 +2970,11 @@ async function runShellLaunchUnitTests() {
     const preferred = join(root, "custom-shell");
     const fallback = join(root, "bash");
     const portableSh = join(root, "sh");
+    const codex = join(root, "codex");
     await writeFile(preferred, "#!/bin/sh\n", { mode: 0o700 });
     await writeFile(fallback, "#!/bin/sh\n", { mode: 0o700 });
     await writeFile(portableSh, "#!/bin/sh\n", { mode: 0o700 });
+    await writeFile(codex, "#!/bin/sh\n", { mode: 0o700 });
 
     const preferredLaunch = loaded.resolvePosixShellLaunch(preferred, "", [fallback]);
     await assert(
@@ -2980,6 +2993,14 @@ async function runShellLaunchUnitTests() {
     await assert(
       loaded.resolvePosixShellLaunch(join(root, "missing-shell"), "", [join(root, "also-missing")]) === null,
       "shell resolution fabricated an unavailable executable",
+    );
+    await assert(
+      loaded.resolveAgentLaunchCommand("codex --model test", "codex", root) === `'${codex}' --model test`,
+      "agent launch did not pin a standard command to the parent PATH executable",
+    );
+    await assert(
+      loaded.resolveAgentLaunchCommand("custom-codex", "codex", root) === "custom-codex",
+      "agent launch rewrote a custom command",
     );
   } finally {
     await removeTree(root);

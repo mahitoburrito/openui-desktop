@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
-  Search,
   Square,
   Loader2,
   ChevronDown,
@@ -13,10 +12,102 @@ import {
   CheckCircle2,
   MessageSquare,
   Send,
+  Network,
+  ShieldCheck,
+  Clock3,
 } from "lucide-react";
 import { usePRBEStore } from "../stores/usePRBEStore";
 import { useStore } from "../stores/useStore";
+import { useCoordinatorStore } from "../stores/useCoordinatorStore";
 import type { PRBEStatusEvent } from "../types/prbe";
+
+const terminalDirectiveStates = new Set([
+  "completed_unconfirmed", "acknowledged", "rejected", "failed", "expired", "cancelled",
+]);
+
+function CoordinatorOverview() {
+  const { snapshot, loading, error, refresh, setMode, acknowledgeDirective, cancelDirective } = useCoordinatorStore();
+
+  if (loading && !snapshot) {
+    return <div className="px-4 py-3 text-xs text-zinc-500">Loading workspace state…</div>;
+  }
+  if (error && !snapshot) {
+    return <div className="px-4 py-3 text-xs text-red-400">Coordinator monitor unavailable: {error}</div>;
+  }
+  if (!snapshot) return null;
+
+  const needsInput = snapshot.sessions.filter((session) => session.status === "waiting_input").length;
+  const queued = snapshot.directives.filter((directive) => directive.state === "queued").length;
+  const recentDirectives = snapshot.directives.slice(-4).reverse();
+
+  return (
+    <div className="flex-shrink-0 border-b border-border bg-surface/20">
+      <div className="flex items-center gap-2 px-4 py-2">
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500">Authority</span>
+        <select
+          value={snapshot.mode}
+          onChange={(event) => setMode(event.target.value as typeof snapshot.mode)}
+          className="rounded border border-border bg-canvas px-1.5 py-1 text-[11px] text-zinc-300 focus:outline-none"
+          aria-label="Coordinator authority mode"
+        >
+          <option value="observe">Observe</option>
+          <option value="coordinate">Coordinate</option>
+          <option value="control">Control (reserved)</option>
+        </select>
+        <button onClick={refresh} className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-300">Refresh</button>
+      </div>
+      <div className="grid grid-cols-4 gap-px border-y border-border bg-border">
+        {[
+          [snapshot.sessions.length, "sessions"],
+          [needsInput, "need input"],
+          [snapshot.activeDecisions.length, "decisions"],
+          [queued, "queued"],
+        ].map(([value, label]) => (
+          <div key={label} className="bg-canvas-dark px-2 py-2 text-center">
+            <div className="text-sm font-medium text-zinc-200">{value}</div>
+            <div className="text-[9px] uppercase tracking-wide text-zinc-600">{label}</div>
+          </div>
+        ))}
+      </div>
+      {(snapshot.activeDecisions.length > 0 || recentDirectives.length > 0) && (
+        <div className="max-h-36 overflow-y-auto px-4 py-2 space-y-2">
+          {snapshot.activeDecisions.slice(-2).reverse().map((decision) => (
+            <div key={decision.id} className="flex items-start gap-2 text-[11px]">
+              <ShieldCheck className="mt-0.5 h-3 w-3 flex-shrink-0 text-emerald-400" />
+              <div className="min-w-0">
+                <span className="text-zinc-400">{decision.topic}: </span>
+                <span className="text-zinc-200">{decision.choice}</span>
+                <span className="ml-1 text-zinc-600">r{decision.revision}</span>
+              </div>
+            </div>
+          ))}
+          {recentDirectives.map((directive) => {
+            const target = snapshot.sessions.find((session) => session.sessionId === directive.sessionId);
+            const canAcknowledge = ["submitted", "observed_working", "completed_unconfirmed"].includes(directive.state);
+            return (
+              <div key={directive.id} className="flex items-start gap-2 text-[11px]">
+                <Clock3 className={`mt-0.5 h-3 w-3 flex-shrink-0 ${terminalDirectiveStates.has(directive.state) ? "text-zinc-500" : "text-amber-400"}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-zinc-300" title={directive.text}>{target?.displayName || directive.sessionId}: {directive.text}</div>
+                  <div className="flex items-center gap-2 text-[10px] text-zinc-600">
+                    <span>{directive.state.replaceAll("_", " ")}</span>
+                    {canAcknowledge && (
+                      <button onClick={() => acknowledgeDirective(directive.id)} className="hover:text-emerald-400">acknowledge</button>
+                    )}
+                    {directive.state === "queued" && (
+                      <button onClick={() => cancelDirective(directive.id)} className="hover:text-red-400">cancel</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {error && <div className="px-4 pb-2 text-[10px] text-red-400">{error}</div>}
+    </div>
+  );
+}
 
 function EventItem({ event }: { event: PRBEStatusEvent }) {
   const [expanded, setExpanded] = useState(event.isExpanded);
@@ -91,6 +182,13 @@ export function PRBEPanel() {
     }
   }, [events, agentMessage]);
 
+  useEffect(() => {
+    if (!panelOpen) return;
+    useCoordinatorStore.getState().refresh();
+    const timer = window.setInterval(() => useCoordinatorStore.getState().refresh(), 1_500);
+    return () => window.clearInterval(timer);
+  }, [panelOpen]);
+
   const handleSubmit = () => {
     const trimmed = query.trim();
     if (!trimmed || isInvestigating) return;
@@ -129,12 +227,12 @@ export function PRBEPanel() {
           {/* Header */}
           <div className="flex-shrink-0 px-4 py-3 border-b border-border flex items-center gap-3">
             <div className="w-6 h-6 rounded bg-orange-500/20 flex items-center justify-center">
-              <Search className="w-3.5 h-3.5 text-orange-400" />
+              <Network className="w-3.5 h-3.5 text-orange-400" />
             </div>
             <div className="flex-1">
-              <h2 className="text-sm font-medium text-white">PRBE Debugger</h2>
+              <h2 className="text-sm font-medium text-white">Workspace Coordinator</h2>
               <span className="text-[10px] text-zinc-500">
-                {isInvestigating ? "Investigating..." : hasReport ? "Investigation complete" : "AI-powered debugging"}
+                {isInvestigating ? "Coordinating…" : hasReport ? "Coordinator turn complete" : "Monitor and align agent sessions"}
               </span>
             </div>
             <button
@@ -153,7 +251,7 @@ export function PRBEPanel() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Describe the issue to investigate..."
+                placeholder="Give the coordinator a directive…"
                 disabled={isInvestigating}
                 className="flex-1 px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors disabled:opacity-50"
               />
@@ -171,12 +269,14 @@ export function PRBEPanel() {
                   disabled={!query.trim()}
                   className="px-3 py-2 rounded-md bg-orange-600 text-white text-sm font-medium hover:bg-orange-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
                 >
-                  <Search className="w-3.5 h-3.5" />
-                  Investigate
+                  <Network className="w-3.5 h-3.5" />
+                  Coordinate
                 </button>
               )}
             </div>
           </div>
+
+          <CoordinatorOverview />
 
           {/* Content area */}
           <div className="flex-1 min-h-0 flex flex-col">
@@ -187,7 +287,7 @@ export function PRBEPanel() {
                 {currentQuery && (
                   <div className="flex-shrink-0 px-4 py-2 bg-surface/50 border-b border-border">
                     <p className="text-xs text-zinc-400">
-                      <span className="text-zinc-500">Query: </span>
+                      <span className="text-zinc-500">Directive: </span>
                       {currentQuery}
                     </p>
                   </div>
@@ -218,7 +318,7 @@ export function PRBEPanel() {
                       <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-red-500/10 border border-red-500/20">
                         <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
                         <div>
-                          <p className="text-xs font-medium text-red-400">Investigation Error</p>
+                          <p className="text-xs font-medium text-red-400">Coordinator Error</p>
                           <p className="text-xs text-red-400/70 mt-0.5">{investigationError}</p>
                         </div>
                       </div>
@@ -231,7 +331,7 @@ export function PRBEPanel() {
                       <div className="rounded-md bg-surface border border-border p-3">
                         <div className="flex items-center gap-2 mb-2">
                           <CheckCircle2 className="w-4 h-4 text-green-400" />
-                          <span className="text-xs font-medium text-green-400">Investigation Report</span>
+                          <span className="text-xs font-medium text-green-400">Coordinator Report</span>
                         </div>
                         {summary && (
                           <p className="text-xs text-zinc-400 mb-2 pb-2 border-b border-border">{summary}</p>
@@ -247,7 +347,7 @@ export function PRBEPanel() {
                   {isInvestigating && events.length === 0 && (
                     <div className="px-4 py-6 flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 text-orange-400 animate-spin" />
-                      <span className="text-xs text-zinc-500">Starting investigation...</span>
+                      <span className="text-xs text-zinc-500">Starting coordinator turn…</span>
                     </div>
                   )}
                 </div>
@@ -266,7 +366,7 @@ export function PRBEPanel() {
                             handleSendFollowUp();
                           }
                         }}
-                        placeholder="Send a message to the agent..."
+                        placeholder="Send a follow-up to the coordinator…"
                         className="flex-1 px-3 py-1.5 rounded-md bg-canvas border border-border text-white text-xs placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
                       />
                       <button
@@ -286,7 +386,7 @@ export function PRBEPanel() {
                 {completedInvestigations.length > 0 ? (
                   <div className="flex-1 overflow-y-auto">
                     <div className="px-4 py-2">
-                      <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Recent Investigations</span>
+                      <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Recent Coordinator Turns</span>
                     </div>
                     {completedInvestigations.map((inv) => (
                       <button
@@ -306,10 +406,10 @@ export function PRBEPanel() {
                 ) : (
                   <div className="flex-1 flex items-center justify-center">
                     <div className="text-center px-8">
-                      <Search className="w-8 h-8 text-zinc-700 mx-auto mb-3" />
-                      <p className="text-sm text-zinc-400 mb-1">No investigations yet</p>
+                      <Network className="w-8 h-8 text-zinc-700 mx-auto mb-3" />
+                      <p className="text-sm text-zinc-400 mb-1">Coordinator ready</p>
                       <p className="text-xs text-zinc-600">
-                        Describe an issue and PRBE will investigate your agent sessions, logs, and files to find the root cause.
+                        Ask it to inspect sessions, record a shared decision, or route a directive to an exact agent. Terminal submissions remain unconfirmed until acknowledged.
                       </p>
                     </div>
                   </div>
