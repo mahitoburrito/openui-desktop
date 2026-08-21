@@ -117,12 +117,22 @@ end
 # Fish does not emit fish_preexec, fish_postexec, or fish_prompt for a parser
 # error. fish_posterror supplies the rejected command, so synthesize the one
 # missing command lifecycle with Fish's documented generic syntax-error status.
+#
+# The prompt markers matter as much as the command ones. fish_prompt does not
+# fire on this path either, so without them the parser is left in
+# awaiting_prompt forever: it never learns the shell is ready again, and every
+# later keystroke accretes onto the rejected command instead of starting a new
+# block. On the runner that turned `echo )` followed by `printf ...` into a
+# single block named "echo )printf ...". Close the prompt the way
+# __openui_prompt does, so a syntax error costs a block and nothing more.
 function __openui_posterror --on-event fish_posterror
     if test $__OPENUI_READY -eq 1
         set -l command (__openui_sanitize_command "$argv" | string collect)
         printf '\e]633;E;%s\a' "$command"
         printf '\e]633;C;%s\a' $__OPENUI_EPOCH_ID
         printf '\e]633;D;1;%s\a' $__OPENUI_EPOCH_ID
+        printf '\e]633;Q;%s;%s\a' $__OPENUI_EPOCH_ID (__openui_sanitize_osc_value "$PWD")
+        printf '\e]633;A;%s\a' $__OPENUI_EPOCH_ID
     end
 end
 

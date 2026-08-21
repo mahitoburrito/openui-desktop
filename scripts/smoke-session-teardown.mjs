@@ -10,9 +10,13 @@ import { mkdtemp, rm, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// fileURLToPath, not .pathname: on Windows the latter yields "/D:/a/repo/", and
+// join() then produces "\\D:\\a\\repo\\..." which resolves against the current drive
+// as "D:\\D:\\a\\repo\\...". Every readFile against ROOT fails with ENOENT.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = Number(process.env.OPENUI_TEARDOWN_TEST_PORT || 7261);
 const BASE_URL = `http://localhost:${PORT}`;
 

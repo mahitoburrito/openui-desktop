@@ -47,7 +47,7 @@
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "prepublishOnly": "npm run build",
-    "postinstall": "npm ci --prefix client",
+    "postinstall": "npm ci --prefix client && node scripts/fix-node-pty-permissions.mjs",
     "test:teardown": "npm run build:electron && node scripts/smoke-session-teardown.mjs"
   },
   "dependencies": {
