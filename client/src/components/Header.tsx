@@ -1,7 +1,9 @@
-import { Folder, Maximize2, MousePointer2, Search } from "lucide-react";
+import { Folder, Maximize2, MousePointer2, Network, Search } from "lucide-react";
 import { useStore } from "../stores/useStore";
+import { usePRBEStore } from "../stores/usePRBEStore";
 
 export function Header() {
+  const setCoordinatorOpen = usePRBEStore((state) => state.setPanelOpen);
   const {
     sessions,
     launchCwd,
@@ -40,6 +42,15 @@ export function Header() {
       </div>
 
       <div className="titlebar-no-drag flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => setCoordinatorOpen(true)}
+          className={commandButton}
+          title="Open workspace coordinator"
+          aria-label="Open workspace coordinator"
+        >
+          <Network className="h-4 w-4" />
+        </button>
         <button
           type="button"
           onClick={() => setSelectionModeActive(!selectionModeActive)}

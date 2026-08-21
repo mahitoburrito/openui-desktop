@@ -234,7 +234,7 @@ function getPluginDir(): string | null {
 
 // Inject --plugin-dir flag for Claude commands if plugin is available
 export function injectPluginDir(command: string, agentId: string): string {
-  const commandName = command.trim().split(/\s+/)[0];
+  const commandName = commandExecutableName(command);
   if (agentId !== "claude" && commandName !== "claude") return command;
 
   const pluginDir = getPluginDir();
@@ -242,15 +242,43 @@ export function injectPluginDir(command: string, agentId: string): string {
 
   if (command.includes("--plugin-dir")) return command;
 
-  const parts = command.split(/\s+/);
-  if (parts[0] === "claude") {
-    parts.splice(1, 0, `--plugin-dir`, pluginDir);
+  const parts = command.trim().split(/\s+/);
+  if (commandName === "claude") {
+    parts.splice(1, 0, `--plugin-dir`, quotePosix(pluginDir));
     const finalCmd = parts.join(" ");
     log(`[plugin] Injecting plugin-dir: ${pluginDir}`);
     return finalCmd;
   }
 
   return command;
+}
+
+function commandExecutableName(command: string): string {
+  const token = command.trim().split(/\s+/)[0] || "";
+  const unquoted = (
+    (token.startsWith("'") && token.endsWith("'")) ||
+    (token.startsWith('"') && token.endsWith('"'))
+  ) ? token.slice(1, -1) : token;
+  return basename(unquoted);
+}
+
+/**
+ * Agent CLIs are often installed beside the Node binary that launched Electron
+ * (for example through nvm). A login shell may replace PATH before the startup
+ * command runs, so pin known agent executables while the parent PATH is intact.
+ */
+export function resolveAgentLaunchCommand(
+  command: string,
+  agentId: string,
+  pathValue = process.env.PATH || "",
+): string {
+  const trimmed = command.trim();
+  const token = trimmed.split(/\s+/)[0] || "";
+  const expected = agentId === "claude" || agentId === "codex" ? agentId : "";
+  if (!expected || token !== expected) return command;
+  const executable = executableOnPath(expected, pathValue);
+  if (!executable) return command;
+  return `${quotePosix(executable)}${trimmed.slice(token.length)}`;
 }
 
 // Get git branch for a directory
@@ -1035,9 +1063,10 @@ function maybeStartAgentFallback(
   if (!fallback) return;
   session.agentFallbackIndex = fallbackIndex + 1;
   const previousCommand = session.agentAttemptCommand || attempt.command;
+  const fallbackAgentId = fallback.trim().split(/\s+/)[0] === "claude" ? "claude" : session.agentId;
   const finalFallback = injectPluginDir(
-    fallback,
-    fallback.trim().split(/\s+/)[0] === "claude" ? "claude" : session.agentId,
+    resolveAgentLaunchCommand(fallback, fallbackAgentId),
+    fallbackAgentId,
   );
 
   for (const client of session.clients) {
@@ -2029,8 +2058,8 @@ export async function createSession(params: {
   startAgentStatusTicker(sessionId, session, sessions);
 
   // Run the command
-  const finalCommand = injectPluginDir(command, agentId);
-  const isClaudeCommand = finalCommand.trim().split(/\s+/)[0] === "claude";
+  const finalCommand = injectPluginDir(resolveAgentLaunchCommand(command, agentId), agentId);
+  const isClaudeCommand = commandExecutableName(finalCommand) === "claude";
   const ownsCurrentPty = () =>
     sessions.get(sessionId) === session && session.pty === ptyProcess;
   if (finalCommand) log(`[pty-write] Writing command: ${finalCommand}`);

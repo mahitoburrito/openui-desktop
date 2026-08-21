@@ -113,7 +113,13 @@ export const usePRBEStore = create<PRBEStore>((set) => ({
       conversationHistory: [],
     });
     try {
-      await window.electronAPI.invoke("prbe:start-investigation", { query });
+      const result = await window.electronAPI.invoke("prbe:start-investigation", { query });
+      if (!result?.success) {
+        set({
+          isInvestigating: false,
+          investigationError: result?.error || "Configure a PRBE API key in Settings to use the coordinator agent",
+        });
+      }
     } catch (e) {
       console.error("[prbe] Failed to start investigation:", e);
       set({ isInvestigating: false, investigationError: "Failed to start investigation" });

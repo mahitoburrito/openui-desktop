@@ -91,7 +91,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     error?: string;
   } | null>(null);
   const [defaultBaseBranch, setDefaultBaseBranch] = useState("main");
-  const [createWorktree, setCreateWorktree] = useState(true);
+  const [createWorktree, setCreateWorktree] = useState(false);
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
   const [autoCareful, setAutoCareful] = useState(true);
   const [agentRules, setAgentRules] = useState("");
@@ -132,7 +132,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         .then((config) => {
           setHasExistingKey(config.hasApiKey);
           setDefaultBaseBranch(config.defaultBaseBranch || "main");
-          setCreateWorktree(config.createWorktree ?? true);
+          setCreateWorktree(config.createWorktree ?? false);
           setAutoCareful(config.autoCareful ?? true);
           setTicketPromptTemplate(config.ticketPromptTemplate || "");
         })
@@ -942,21 +942,21 @@ function IntegrationsTab({
         </div>
       </div>
 
-      {/* PRBE Debugger */}
-      <SectionHeader title="Debugging" />
+      {/* PRBE-backed Coordinator */}
+      <SectionHeader title="Coordination" />
       <div className="rounded-lg border border-border bg-canvas/40">
         <div className="px-4 py-3.5 space-y-3">
           <div className="flex items-center gap-2">
             <div className="w-5 h-5 rounded bg-orange-500/20 flex items-center justify-center">
               <Bug className="w-3.5 h-3.5 text-orange-400" />
             </div>
-            <span className="text-sm text-zinc-200">PRBE Debugger</span>
+            <span className="text-sm text-zinc-200">Workspace Coordinator Agent</span>
           </div>
 
           {!window.electronAPI?.isElectron && (
             <div className="px-3 py-2 rounded-md bg-zinc-800/50 border border-border">
               <p className="text-xs text-zinc-500">
-                PRBE debugging requires the OpenUI Desktop app. The browser version does not support this feature.
+                The AI coordinator requires the OpenUI Desktop app. The local session monitor remains available in the browser.
               </p>
             </div>
           )}
@@ -967,10 +967,10 @@ function IntegrationsTab({
                 <>
                   <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-green-500/10 border border-green-500/20">
                     <Check className="w-4 h-4 text-green-500" />
-                    <span className="text-sm text-green-400">PRBE debugger active</span>
+                    <span className="text-sm text-green-400">Coordinator agent active</span>
                   </div>
                   <p className="text-xs text-zinc-500">
-                    Built-in debugging is enabled. You can investigate issues with your agents.
+                    Built-in coordination is enabled. You can monitor sessions, record shared decisions, and route guarded directives.
                   </p>
                 </>
               ) : hasPrbeKey ? (
@@ -986,13 +986,13 @@ function IntegrationsTab({
                     </button>
                   </div>
                   <p className="text-xs text-zinc-500">
-                    Using a custom API key. You can use the PRBE debugger to investigate issues with your agents.
+                    Using a custom API key for the workspace coordinator agent.
                   </p>
                 </>
               ) : (
                 <>
                   <p className="text-xs text-zinc-500">
-                    Connect PRBE for AI-powered debugging of your agent sessions.
+                    Connect PRBE to add natural-language coordination to the local session monitor.
                   </p>
                   <div className="flex gap-2">
                     <div className="relative flex-1">

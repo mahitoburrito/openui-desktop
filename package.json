@@ -43,6 +43,7 @@
     "build": "npm run build:client && npm run build:electron",
     "test:features": "npm run build && node scripts/smoke-openui-features.mjs",
     "test:status": "npm run build:electron && node scripts/test-agent-status.mjs",
+    "test:coordinator": "npm run build:electron && node scripts/test-coordinator.mjs",
     "start": "node bin/openui-desktop.js",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
