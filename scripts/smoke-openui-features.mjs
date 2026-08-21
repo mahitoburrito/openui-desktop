@@ -8703,11 +8703,11 @@ async function main() {
           "live shell autocd capability did not reach the API with command-first, directory-only ordering",
         );
         const disableAutocdCommand = 'if [ -n "$ZSH_VERSION" ]; then unsetopt autocd; elif [ -n "$BASH_VERSION" ]; then shopt -u autocd; fi';
-        livePathSocket.send(JSON.stringify({ type: "input", data: `${disableAutocdCommand}\r` }));
-        await waitForTerminalBlock(
+        await sendInputUntilBlock(
+          livePathSocket,
           livePathSession.sessionId,
+          `${disableAutocdCommand}\r`,
           (block) => block.command === disableAutocdCommand && block.status === "succeeded",
-          8_000,
         );
         let removedAutocdApiSuggestions;
         const removedAutocdStarted = Date.now();
@@ -8724,14 +8724,11 @@ async function main() {
           "terminal suggestion API retained autocd directories after the shell option was disabled",
         );
       }
-      livePathSocket.send(JSON.stringify({
-        type: "input",
-        data: `export CDPATH='${liveCdPathRoot.replace(/'/g, `'\\''`)}'\r`,
-      }));
-      await waitForTerminalBlock(
+      await sendInputUntilBlock(
+        livePathSocket,
         livePathSession.sessionId,
+        `export CDPATH='${liveCdPathRoot.replace(/'/g, `'\\''`)}'\r`,
         (block) => block.command.includes("export CDPATH=") && block.status === "succeeded",
-        8_000,
       );
       let liveCdPathSuggestions;
       const liveCdPathStarted = Date.now();
@@ -8749,11 +8746,11 @@ async function main() {
         liveCdPathSuggestion?.metadata?.argumentSource === "cdpath",
         "live session CDPATH did not reach the terminal suggestion API",
       );
-      livePathSocket.send(JSON.stringify({ type: "input", data: "unset CDPATH\r" }));
-      await waitForTerminalBlock(
+      await sendInputUntilBlock(
+        livePathSocket,
         livePathSession.sessionId,
+        "unset CDPATH\r",
         (block) => block.command === "unset CDPATH" && block.status === "succeeded",
-        8_000,
       );
       let removedCdPathSuggestions;
       const removedCdPathStarted = Date.now();
@@ -8769,11 +8766,11 @@ async function main() {
           !removedCdPathSuggestions.suggestions.some((entry) => entry.value === `${liveCdPathTarget}/`),
         "terminal suggestion API retained a directory removed from live CDPATH",
       );
-      livePathSocket.send(JSON.stringify({ type: "input", data: 'export PATH="${PATH#*:}"\r' }));
-      await waitForTerminalBlock(
+      await sendInputUntilBlock(
+        livePathSocket,
         livePathSession.sessionId,
+        'export PATH="${PATH#*:}"\r',
         (block) => block.command === 'export PATH="${PATH#*:}"' && block.status === "succeeded",
-        8_000,
       );
       let removedExecutableSuggestions;
       const removedPathStarted = Date.now();
