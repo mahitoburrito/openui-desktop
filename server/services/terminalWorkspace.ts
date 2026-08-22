@@ -181,6 +181,9 @@ function validateState(raw: any): TerminalWorkspaceState {
     return {
       id,
       title: cleanTitle(rawTab.title),
+      // Existing persisted tabs predate provenance. Preserve their titles as
+      // user-owned rather than unexpectedly overwriting them after an upgrade.
+      titleSource: rawTab.titleSource === "session" ? "session" : rawTab.title ? "custom" : undefined,
       root,
       activeSessionId,
       zoomedSessionId,
@@ -397,7 +400,12 @@ export class TerminalWorkspaceService {
 
   addTab(
     sessionIdValue: unknown,
-    options: { title?: unknown; activate?: boolean; expectedRevision?: number } = {},
+    options: {
+      title?: unknown;
+      titleSource?: "session" | "custom";
+      activate?: boolean;
+      expectedRevision?: number;
+    } = {},
   ): TerminalWorkspaceSnapshot {
     const sessionId = cleanId(sessionIdValue, "Session ID");
     return this.update(options.expectedRevision, (state) => {
@@ -405,6 +413,7 @@ export class TerminalWorkspaceService {
       const tab: TerminalWorkspaceTab = {
         id: newTabId(),
         title: cleanTitle(options.title),
+        titleSource: options.titleSource,
         root: { id: newNodeId("pane"), type: "pane", sessionId },
         activeSessionId: sessionId,
       };
@@ -458,6 +467,7 @@ export class TerminalWorkspaceService {
       const tab: TerminalWorkspaceTab = {
         id: newTabId(),
         title: cleanTitle(input.title),
+        titleSource: input.title ? "custom" : undefined,
         root,
         activeSessionId,
       };
@@ -492,6 +502,7 @@ export class TerminalWorkspaceService {
       } else if (!insertAdjacent(tab.root, targetSessionId, newPane, direction)) {
         throw new TerminalWorkspaceError("Target pane was not found", 404);
       }
+      if (tab.titleSource === "session") tab.titleSource = tab.title ? "custom" : undefined;
       tab.activeSessionId = newSessionId;
       tab.zoomedSessionId = undefined;
       state.activeTabId = tab.id;
@@ -538,6 +549,9 @@ export class TerminalWorkspaceService {
         };
       } else if (!insertAdjacent(currentTargetTab.root, targetSessionId, removed.removed, direction)) {
         throw new TerminalWorkspaceError("Target pane was not found", 404);
+      }
+      if (currentTargetTab.titleSource === "session") {
+        currentTargetTab.titleSource = currentTargetTab.title ? "custom" : undefined;
       }
       currentTargetTab.activeSessionId = sessionId;
       currentTargetTab.zoomedSessionId = undefined;
@@ -719,6 +733,19 @@ export class TerminalWorkspaceService {
     return this.update(expectedRevision, (state) => {
       const tab = state.tabs.find((item) => item.id === tabId);
       if (!tab) throw new TerminalWorkspaceError("Tab was not found", 404);
+      if (tab.title === clean && tab.titleSource === "custom") return false;
+      tab.title = clean;
+      tab.titleSource = clean ? "custom" : undefined;
+      return true;
+    });
+  }
+
+  updateInheritedSessionTitle(sessionIdValue: unknown, title: unknown): TerminalWorkspaceSnapshot {
+    const sessionId = cleanId(sessionIdValue, "Session ID");
+    const clean = cleanTitle(title);
+    return this.update(undefined, (state) => {
+      const tab = state.tabs.find((item) => collectSessionIds(item.root).includes(sessionId));
+      if (!tab || tab.titleSource !== "session" || tab.root.type !== "pane") return false;
       if (tab.title === clean) return false;
       tab.title = clean;
       return true;

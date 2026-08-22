@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useStore, AgentStatus } from "../stores/useStore";
+import { sessionDisplayTitle } from "../utils/sessionTitle";
 
 const NOTIFY_STATUSES: Set<AgentStatus> = new Set([
   "waiting_input",
@@ -41,7 +42,7 @@ export function useDesktopNotifications() {
       if (prev === undefined || prev === session.status) continue;
       if (!NOTIFY_STATUSES.has(session.status)) continue;
 
-      const name = session.customName || session.agentName || session.sessionId;
+      const name = sessionDisplayTitle(session, session.sessionId);
       const body = getNotificationBody(session.status, name);
       addAgentActivityEvent({
         nodeId,

@@ -43,6 +43,7 @@ import { ResizableSplit } from "./ResizableSplit";
 import { InPaneMarkdown } from "./InPaneMarkdown";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { AGENT_STATUS, agentStatusStyle } from "../theme/agentStatus";
+import { sessionDisplayTitle } from "../utils/sessionTitle";
 import {
   TerminalWorkbenchPanel,
   type TerminalWorkbenchPanelMode,
@@ -585,7 +586,7 @@ export function FocusMode() {
     (nodeId: string) => {
       const session = sessions.get(nodeId);
       if (workspace && session) {
-        void terminalWorkspace.addTab(session.sessionId, session.customName || session.agentName);
+        void terminalWorkspace.addTab(session.sessionId);
         setSessionPickerOpen(false);
         return;
       }
@@ -711,7 +712,7 @@ export function FocusMode() {
                   onClick={() => handleAddFocusedSession(nodeId)}
                   className="h-8 rounded-md border border-[oklch(27%_0.008_260)] px-3 text-[10px] text-zinc-400 transition-colors hover:bg-[oklch(17%_0.007_260)] hover:text-zinc-200"
                 >
-                  Open {session.customName || session.agentName}
+                  Open {sessionDisplayTitle(session)}
                 </button>
               ))}
             </div>
@@ -757,7 +758,7 @@ export function FocusMode() {
       session.agentId,
       session.customColor || session.color,
     );
-    const displayName = session.customName || session.agentName;
+    const displayName = sessionDisplayTitle(session);
     const iconId = (node?.data?.icon as string) || "cpu";
     const status = agentStatusStyle(session.status);
     const isActive = activePane === nodeId;
@@ -774,8 +775,10 @@ export function FocusMode() {
     const synchronizedSourceState = synchronizedSourceSessionId
       ? readSynchronizedInputState(synchronizedSourceSessionId)
       : null;
-    const synchronizedSourceName = sessionsBySessionId.get(synchronizedSourceSessionId)?.session.customName ||
-      sessionsBySessionId.get(synchronizedSourceSessionId)?.session.agentName || "source pane";
+    const synchronizedSource = sessionsBySessionId.get(synchronizedSourceSessionId)?.session;
+    const synchronizedSourceName = synchronizedSource
+      ? sessionDisplayTitle(synchronizedSource)
+      : "source pane";
     const synchronizedPreview = synchronizedEligibility?.state === "ready" &&
       session.sessionId !== synchronizedSourceSessionId &&
       synchronizedSourceState?.phase === "at_prompt" &&
@@ -1098,7 +1101,7 @@ export function FocusMode() {
   }
 
   const activeSession = activeFocusSession.session!;
-  const activeSessionName = activeSession.customName || activeSession.agentName;
+  const activeSessionName = sessionDisplayTitle(activeSession);
   const codeWorkspaceEntry = codeWorkspaceSessionId
     ? sessionsBySessionId.get(codeWorkspaceSessionId)
     : undefined;
@@ -1142,7 +1145,7 @@ export function FocusMode() {
             {workspace ? workspace.tabs.map((tab, index) => {
               const sessionIds = collectWorkspaceSessionIds(tab.root);
               const firstSession = sessionsBySessionId.get(sessionIds[0])?.session;
-              const tabName = tab.title || firstSession?.customName || firstSession?.agentName || `Tab ${index + 1}`;
+              const tabName = tab.title || (firstSession ? sessionDisplayTitle(firstSession) : `Tab ${index + 1}`);
               const selected = tab.id === workspace.activeTabId;
               const activeTabSession = sessionsBySessionId.get(tab.activeSessionId)?.session;
               const status = activeTabSession ? agentStatusStyle(activeTabSession.status) : AGENT_STATUS.disconnected;
@@ -1224,7 +1227,7 @@ export function FocusMode() {
               const selected = nodeId === activePane;
               const status = agentStatusStyle(session.status);
               const color = getAgentAccentColor(session.agentId, session.customColor || session.color);
-              const name = session.customName || session.agentName;
+              const name = sessionDisplayTitle(session);
               const iconId = (node?.data?.icon as string) || "cpu";
               return (
                 <button
@@ -1293,7 +1296,7 @@ export function FocusMode() {
                   <div className="max-h-80 overflow-y-auto p-1">
                     {availableSessions.map(({ nodeId, session, node }) => {
                       const color = getAgentAccentColor(session.agentId, session.customColor || session.color);
-                      const name = session.customName || session.agentName;
+                      const name = sessionDisplayTitle(session);
                       const iconId = (node?.data?.icon as string) || session.agentId;
                       const status = agentStatusStyle(session.status);
                       return (
@@ -1720,7 +1723,7 @@ export function FocusMode() {
               >
                 <CodeWorkspace
                   sessionId={codeWorkspaceEntry.session.sessionId}
-                  sessionName={codeWorkspaceEntry.session.customName || codeWorkspaceEntry.session.agentName}
+                  sessionName={sessionDisplayTitle(codeWorkspaceEntry.session)}
                   cwd={codeWorkspaceEntry.session.cwd || ""}
                   onDirtyChange={setCodeWorkspaceDirty}
                 />

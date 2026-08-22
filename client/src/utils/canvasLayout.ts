@@ -1,5 +1,6 @@
 import type { Node } from "@xyflow/react";
 import type { AgentSession, AgentStatus } from "../stores/useStore";
+import { sessionTaskTitle } from "./sessionTitle";
 
 const GRID_SIZE = 24;
 const NODE_WIDTH = 220;
@@ -57,15 +58,8 @@ function nodeCreatedAt(nodeId: string, sessions: Map<string, AgentSession>): num
 }
 
 function sessionTitle(session: AgentSession | undefined, node: Node): string {
-  const label = typeof node.data?.label === "string" ? node.data.label.trim() : "";
-  const agentName = session?.agentName?.trim() || "";
-  const customName = session?.customName?.trim();
-  const ticketTitle = session?.ticketTitle?.trim();
-
-  if (customName) return customName;
-  if (ticketTitle) return ticketTitle;
-  if (label && label !== agentName && label !== session?.agentId) return label;
-  return "";
+  if (session) return sessionTaskTitle(session) || "";
+  return typeof node.data?.label === "string" ? node.data.label.trim() : "";
 }
 
 function titleClusterId(title: string): string {

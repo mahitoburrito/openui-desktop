@@ -7,6 +7,7 @@ import { AgentNodeCard } from "./AgentNodeCard";
 import { AgentNodeContextMenu } from "./AgentNodeContextMenu";
 import { useAgentNodeState } from "./useAgentNodeState";
 import { getAgentAccentColor } from "../AgentIcon";
+import { sessionDisplayTitle } from "../../utils/sessionTitle";
 
 interface AgentNodeData {
   label: string;
@@ -43,7 +44,7 @@ export const AgentNode = ({ id, data, selected }: NodeProps) => {
     session?.agentId || nodeData.agentId,
     session?.customColor || session?.color || nodeData.color,
   );
-  const displayName = session?.customName || session?.agentName || nodeData.label || "Agent";
+  const displayName = session ? sessionDisplayTitle(session, "Agent") : nodeData.label || "Agent";
 
   const handleDoubleClick = useCallback(() => {
     if (useStore.getState().selectionModeActive) return;

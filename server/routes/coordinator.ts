@@ -11,6 +11,7 @@ import {
   coordinatorDeliveryReadiness,
   coordinatorRuntime,
 } from "../services/coordinatorRuntime";
+import { sessionDisplayTitle } from "../../shared/sessionTitle";
 
 export const coordinatorRoutes = new Hono();
 
@@ -37,7 +38,7 @@ function sessionSummary(sessionId: string, session: Session) {
   return {
     sessionId,
     nodeId: session.nodeId,
-    displayName: session.customName || session.generatedTitle || session.agentName,
+    displayName: sessionDisplayTitle(session),
     agentId: session.agentId,
     agentName: session.agentName,
     status: session.status,

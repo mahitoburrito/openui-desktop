@@ -26,6 +26,7 @@ import type {
   TerminalLaunchSession,
   TerminalPaneLayout,
 } from "./useTerminalWorkspace";
+import { sessionDisplayTitle } from "../utils/sessionTitle";
 
 type LaunchPayload = Omit<TerminalLaunchConfiguration, "id" | "version" | "createdAt" | "updatedAt">;
 
@@ -273,7 +274,7 @@ function LayoutNode({
         <button type="button" onClick={() => onFocus(node.sessionRef)} className={`min-w-0 flex-1 text-left ${focusRing}`} title="Set initial focus">
           <span className="flex items-center gap-1 text-[8px] text-zinc-300">
             {focused ? <Check className="h-2.5 w-2.5 text-[oklch(78%_0.10_48)]" /> : <TerminalSquare className="h-2.5 w-2.5 text-zinc-600" />}
-            <span className="truncate">{session?.customName || session?.agentName || node.sessionRef}</span>
+            <span className="truncate">{session ? sessionDisplayTitle(session, node.sessionRef) : node.sessionRef}</span>
           </span>
           <code className="mt-0.5 block truncate text-[7px] text-zinc-700">{node.sessionRef}</code>
         </button>
@@ -623,7 +624,7 @@ export function TerminalLaunchLibrary({
                   <span className="text-zinc-800">·</span>
                   {configuration.launchMode === "atomic" ? "atomic" : "best effort"}
                 </span>
-                <span className="mt-1 block truncate text-[8px] text-zinc-700">{configuration.sessions.map((session) => session.customName || session.agentName).join(" · ")}</span>
+                <span className="mt-1 block truncate text-[8px] text-zinc-700">{configuration.sessions.map((session) => sessionDisplayTitle(session)).join(" · ")}</span>
               </button>
             );
           })}
@@ -703,7 +704,7 @@ export function TerminalLaunchLibrary({
                             <button type="button" onClick={() => setExpandedSessions((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next; })} className={`flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left hover:bg-[oklch(14%_0.005_260)] ${focusRing}`} aria-expanded={expanded}>
                               {expanded ? <ChevronDown className="h-3 w-3 text-zinc-600" /> : <ChevronRight className="h-3 w-3 text-zinc-600" />}
                               <span className={`flex h-5 w-5 items-center justify-center rounded ${focused ? "bg-[oklch(22%_0.03_48)] text-[oklch(78%_0.10_48)]" : "bg-zinc-900 text-zinc-600"}`}><TerminalSquare className="h-3 w-3" /></span>
-                              <span className="min-w-0"><span className="block truncate text-[9px] font-medium text-zinc-300">{session.customName || session.agentName || session.ref || `Pane ${index + 1}`}</span><span className="mt-0.5 block truncate font-mono text-[7px] text-zinc-700">{session.cwd || "Directory required"}{session.command ? ` · ${session.command}` : ""}</span></span>
+                              <span className="min-w-0"><span className="block truncate text-[9px] font-medium text-zinc-300">{sessionDisplayTitle(session, session.ref || `Pane ${index + 1}`)}</span><span className="mt-0.5 block truncate font-mono text-[7px] text-zinc-700">{session.cwd || "Directory required"}{session.command ? ` · ${session.command}` : ""}</span></span>
                             </button>
                             <button type="button" onClick={() => setDraft((current) => ({ ...current, activeSessionRef: session.ref }))} className={`h-6 rounded px-1.5 text-[7px] ${focusRing} ${focused ? "bg-[oklch(20%_0.025_48)] text-[oklch(78%_0.10_48)]" : "text-zinc-700 hover:text-zinc-300"}`} aria-pressed={focused}>{focused ? "Focused" : "Focus"}</button>
                             <button type="button" onClick={() => moveSession(index, -1)} disabled={index === 0} className={`flex h-6 w-6 items-center justify-center rounded text-zinc-700 hover:text-zinc-300 disabled:opacity-20 ${focusRing}`} aria-label={`Move ${session.ref} up`}><ArrowUp className="h-3 w-3" /></button>
@@ -713,7 +714,7 @@ export function TerminalLaunchLibrary({
                           {expanded && (
                             <div className="mt-2 grid grid-cols-2 gap-2 pl-8">
                               <label><span className={labelClass}>Reference</span><input value={session.ref} onChange={(event) => renameSession(index, event.target.value)} className={`${inputClass} h-8 font-mono`} placeholder="server" /></label>
-                              <label><span className={labelClass}>Display name</span><input value={session.customName || ""} onChange={(event) => updateSession(index, { customName: event.target.value })} className={`${inputClass} h-8`} placeholder={session.agentName || "Server"} /></label>
+                              <label><span className={labelClass}>Display name</span><input value={session.customName || ""} onChange={(event) => updateSession(index, { customName: event.target.value })} maxLength={120} className={`${inputClass} h-8`} placeholder={session.agentName || "Server"} /></label>
                               <label><span className={labelClass}>Agent type</span><input value={session.agentId} onChange={(event) => updateSession(index, { agentId: event.target.value })} className={`${inputClass} h-8 font-mono`} placeholder="shell or task" /></label>
                               <label><span className={labelClass}>Agent name</span><input value={session.agentName} onChange={(event) => updateSession(index, { agentName: event.target.value })} className={`${inputClass} h-8`} placeholder="Shell" /></label>
                               <label className="col-span-2"><span className={labelClass}>Working directory</span><div className="relative"><Folder className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-700" /><input value={session.cwd} onChange={(event) => updateSession(index, { cwd: event.target.value })} className={`${inputClass} h-8 pl-7 font-mono`} placeholder="/absolute/project/path" /></div></label>

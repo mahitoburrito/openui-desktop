@@ -760,7 +760,7 @@ function connectWs(
         if (next.revision !== before) entry.onInlineInputChange?.(next);
         entry.onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
       } else if (msg.type === "nameGenerated") {
-        entry.updateSession(entry.nodeId, { customName: msg.name });
+        entry.updateSession(entry.nodeId, { generatedTitle: msg.name });
       }
     } catch {
       if (typeof event.data === "string") {

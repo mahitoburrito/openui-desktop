@@ -21,8 +21,10 @@ import { classifyTerminalFailureKind } from "./terminalExit";
 import { homedir } from "os";
 import { redactTerminalText } from "./terminalRedaction";
 import { terminalOutputToPlainText } from "./terminalSharing";
+import { sanitizeTitlePrompt } from "./titleGenerator";
+import { migrateLegacySessionTitles, normalizeSessionTitle } from "../../shared/sessionTitle";
 
-const PERSISTENCE_VERSION = 2 as const;
+const PERSISTENCE_VERSION = 3 as const;
 const MAX_PERSISTED_SESSIONS = 100;
 const MAX_PERSISTED_CATEGORIES = 100;
 const MAX_REPLAY_CHARS = 2_000_000;
@@ -142,14 +144,14 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-type SupportedPersistenceVersion = 0 | 1 | typeof PERSISTENCE_VERSION;
+type SupportedPersistenceVersion = 0 | 1 | 2 | typeof PERSISTENCE_VERSION;
 
 /** Missing versions are the original OpenUI JSON shape. */
 function persistenceEnvelopeVersion(value: unknown): SupportedPersistenceVersion | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (!Object.prototype.hasOwnProperty.call(value, "version") || (value as any).version === undefined) return 0;
   const version = (value as any).version;
-  return version === 1 || version === PERSISTENCE_VERSION ? version : null;
+  return version === 1 || version === 2 || version === PERSISTENCE_VERSION ? version : null;
 }
 
 function hasUnsupportedExplicitVersion(value: unknown): boolean {
@@ -434,7 +436,10 @@ function validatePermissionEvents(value: unknown): PersistedState["nodes"][numbe
   });
 }
 
-function validatePersistedNode(value: unknown): PersistedState["nodes"][number] | null {
+function validatePersistedNode(
+  value: unknown,
+  migrateLegacyTitles: boolean,
+): PersistedState["nodes"][number] | null {
   if (!value || typeof value !== "object") return null;
   const node = value as any;
   const nodeId = boundedIdentifier(node.nodeId);
@@ -450,6 +455,21 @@ function validatePersistedNode(value: unknown): PersistedState["nodes"][number] 
   if (!Number.isFinite(Date.parse(createdAt)) || x === undefined || y === undefined) return null;
   const terminalCols = finiteNumber(node.terminalCols);
   const terminalRows = finiteNumber(node.terminalRows);
+  const storedCustomName = boundedString(node.customName, 1_024);
+  const storedGeneratedTitle = boundedString(node.generatedTitle, 1_024);
+  // Before v3, generated titles were duplicated into customName. Apply that
+  // equality heuristic only at the schema boundary: in v3 a user may
+  // deliberately lock the current automatic title with the exact same text.
+  const { customName, generatedTitle } = migrateLegacyTitles
+    ? migrateLegacySessionTitles(storedCustomName, storedGeneratedTitle)
+    : {
+        customName: normalizeSessionTitle(storedCustomName),
+        generatedTitle: normalizeSessionTitle(storedGeneratedTitle),
+      };
+  const rawOrdinal = finiteNumber(node.sessionOrdinal);
+  const rawGroupSize = finiteNumber(node.sessionGroupSize);
+  const hasValidGroup = Number.isSafeInteger(rawOrdinal) && Number(rawOrdinal) >= 1 &&
+    Number.isSafeInteger(rawGroupSize) && Number(rawGroupSize) > 1 && Number(rawOrdinal) <= Number(rawGroupSize);
   return {
     nodeId,
     sessionId,
@@ -459,14 +479,18 @@ function validatePersistedNode(value: unknown): PersistedState["nodes"][number] 
     cwd,
     originalCwd: boundedString(node.originalCwd, MAX_CWD_CHARS),
     createdAt,
-    customName: boundedString(node.customName, 1_024),
-    generatedTitle: boundedString(node.generatedTitle, 1_024),
+    customName,
+    generatedTitle,
     titlePromptHistory: Array.isArray(node.titlePromptHistory)
       ? node.titlePromptHistory.slice(-8).flatMap((item: unknown) => {
           const parsed = boundedString(item, 12_000);
-          return parsed === undefined ? [] : [parsed];
+          if (parsed === undefined) return [];
+          const safe = sanitizeTitlePrompt(parsed);
+          return safe ? [safe] : [];
         })
       : undefined,
+    sessionOrdinal: hasValidGroup ? rawOrdinal : undefined,
+    sessionGroupSize: hasValidGroup ? rawGroupSize : undefined,
     customColor: boundedString(node.customColor, 128),
     notes: boundedString(node.notes, 20_000),
     icon: boundedString(node.icon, 512),
@@ -503,8 +527,9 @@ function validatePersistedNode(value: unknown): PersistedState["nodes"][number] 
 }
 
 function validatePersistedState(value: unknown): PersistedState | null {
+  const sourceVersion = persistenceEnvelopeVersion(value);
   if (
-    persistenceEnvelopeVersion(value) === null ||
+    sourceVersion === null ||
     !value ||
     typeof value !== "object" ||
     !Array.isArray((value as any).nodes)
@@ -513,7 +538,7 @@ function validatePersistedState(value: unknown): PersistedState | null {
   const seenNodes = new Set<string>();
   const seenCategories = new Set<string>();
   const nodes = (value as any).nodes.slice(0, MAX_PERSISTED_SESSIONS).flatMap((raw: unknown) => {
-    const node = validatePersistedNode(raw);
+    const node = validatePersistedNode(raw, sourceVersion < 3);
     if (!node || seenSessions.has(node.sessionId) || seenNodes.has(node.nodeId)) return [];
     seenSessions.add(node.sessionId);
     seenNodes.add(node.nodeId);
@@ -603,6 +628,8 @@ export function saveState(sessions: Map<string, Session>) {
       customName: session.customName,
       generatedTitle: session.generatedTitle,
       titlePromptHistory: session.titlePromptHistory,
+      sessionOrdinal: session.sessionOrdinal,
+      sessionGroupSize: session.sessionGroupSize,
       customColor: session.customColor,
       notes: session.notes,
       icon: session.icon,

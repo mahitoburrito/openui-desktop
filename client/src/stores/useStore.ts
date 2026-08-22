@@ -90,7 +90,11 @@ export interface AgentSession {
   status: AgentStatus;
   /** Server timestamp of the last real status change, for "waiting a while". */
   statusChangedAt?: number;
+  /** Explicit user override. Generated titles live in `generatedTitle`. */
   customName?: string;
+  generatedTitle?: string;
+  sessionOrdinal?: number;
+  sessionGroupSize?: number;
   customColor?: string;
   notes?: string;
   isRestored?: boolean;

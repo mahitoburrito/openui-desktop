@@ -1,5 +1,6 @@
 import { useStore } from "../stores/useStore";
 import { destroyCachedTerminal } from "../components/Terminal";
+import { sessionDisplayTitle } from "./sessionTitle";
 
 // Soft-deletes the given canvas sessions with a single confirm and a single
 // undo toast. Used by the header trash button, the selection action bar, and
@@ -14,7 +15,7 @@ export async function bulkDeleteSessions(nodeIds: string[]): Promise<boolean> {
 
   const label =
     targets.length === 1
-      ? `"${targets[0].session.customName || targets[0].session.agentName || "Session"}"`
+      ? `"${sessionDisplayTitle(targets[0].session)}"`
       : `${targets.length} sessions`;
   const confirmed = window.confirm(`Delete ${label}? You'll have 5 seconds to undo.`);
   if (!confirmed) return false;
@@ -38,7 +39,7 @@ export async function bulkDeleteSessions(nodeIds: string[]): Promise<boolean> {
       deleted.push({
         sessionId: session.sessionId,
         nodeId,
-        sessionName: session.customName || session.agentName || "Session",
+        sessionName: sessionDisplayTitle(session),
       });
     }),
   );

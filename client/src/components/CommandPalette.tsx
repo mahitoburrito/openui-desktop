@@ -22,6 +22,7 @@ import {
 import { useReactFlow } from "@xyflow/react";
 import { useStore } from "../stores/useStore";
 import { AGENT_STATUS, agentStatusStyle } from "../theme/agentStatus";
+import { sessionDisplayTitle } from "../utils/sessionTitle";
 import {
   TERMINAL_THEMES,
   WORKSPACE_BACKGROUNDS,
@@ -521,7 +522,7 @@ export function CommandPalette() {
     }));
 
     const sessionCommands = Array.from(sessions.entries()).map(([nodeId, session]) => {
-      const name = session.customName || session.agentName;
+      const name = sessionDisplayTitle(session);
       const dir = session.cwd?.split("/").pop() || session.cwd || "";
       return {
         id: `session-${nodeId}`,
@@ -534,7 +535,7 @@ export function CommandPalette() {
     });
 
     const focusCommands = Array.from(sessions.entries()).map(([nodeId, session]) => {
-      const name = session.customName || session.agentName;
+      const name = sessionDisplayTitle(session);
       return {
         id: `focus-session-${nodeId}`,
         title: `Focus session: ${name}`,

@@ -9,6 +9,7 @@ import type {
   TerminalShellCompletionEntry,
   TerminalWorkflow,
 } from "../types";
+import { sessionDisplayTitle } from "../../shared/sessionTitle";
 import {
   getTerminalSignatureSuggestions,
   getTerminalSignatureSuggestionsAsync,
@@ -264,7 +265,7 @@ function historySuggestions(
 function sessionSuggestions(query: string, sessions: Array<[string, Session]>): TerminalSuggestion[] {
   return sessions.flatMap(([sessionId, session]) => {
     if (session.pendingDelete) return [];
-    const title = session.customName || session.ticketTitle || session.agentName;
+    const title = sessionDisplayTitle(session);
     const score = fuzzyScore(query, title, session.cwd, session.gitBranch || "", session.agentName);
     if (score < 0) return [];
     return [{

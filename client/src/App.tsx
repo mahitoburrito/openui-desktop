@@ -15,6 +15,7 @@ import "@xyflow/react/dist/style.css";
 import { Plus } from "lucide-react";
 
 import { useStore, type AgentSession } from "./stores/useStore";
+import { sessionDisplayTitle } from "./utils/sessionTitle";
 import { getWorkspaceBackground } from "./theme/appearance";
 import { AgentNode } from "./components/AgentNode/index";
 import { CategoryNode } from "./components/CategoryNode";
@@ -116,6 +117,9 @@ function restoreServerSessionToCanvas(sessionData: any) {
     status: sessionData.status || "idle",
     statusChangedAt: sessionData.statusChangedAt,
     customName: sessionData.customName,
+    generatedTitle: sessionData.generatedTitle,
+    sessionOrdinal: sessionData.sessionOrdinal,
+    sessionGroupSize: sessionData.sessionGroupSize,
     customColor: sessionData.customColor,
     notes: sessionData.notes,
     isRestored: sessionData.isRestored,
@@ -142,7 +146,7 @@ function restoreServerSessionToCanvas(sessionData: any) {
       y: 120 + Math.floor(index / 5) * 160,
     },
     data: {
-      label: sessionData.customName || sessionData.agentName,
+      label: sessionDisplayTitle(sessionData),
       agentId: sessionData.agentId,
       color,
       icon: agent?.icon || "cpu",
@@ -313,9 +317,16 @@ function AppContent() {
                 if (existing.isRestored !== sessionData.isRestored) {
                   sessionUpdates.isRestored = sessionData.isRestored;
                 }
+                const titleChanged = existing.customName !== sessionData.customName ||
+                  existing.generatedTitle !== sessionData.generatedTitle;
                 if (existing.customName !== sessionData.customName) {
                   sessionUpdates.customName = sessionData.customName;
-                  const title = sessionData.customName || existing.agentName;
+                }
+                if (existing.generatedTitle !== sessionData.generatedTitle) {
+                  sessionUpdates.generatedTitle = sessionData.generatedTitle;
+                }
+                if (titleChanged) {
+                  const title = sessionDisplayTitle(sessionData);
                   const node = useStore.getState().nodes.find((item) => item.id === sessionData.nodeId);
                   if (node) {
                     useStore.getState().updateNode(sessionData.nodeId, {
@@ -450,6 +461,9 @@ function AppContent() {
             status: session.status || "idle",
             statusChangedAt: session.statusChangedAt,
             customName: session.customName,
+            generatedTitle: session.generatedTitle,
+            sessionOrdinal: session.sessionOrdinal,
+            sessionGroupSize: session.sessionGroupSize,
             customColor: session.customColor,
             notes: session.notes,
             isRestored: session.isRestored,
@@ -465,7 +479,7 @@ function AppContent() {
             type: "agent",
             position,
             data: {
-              label: session.customName || session.agentName,
+              label: sessionDisplayTitle(session),
               agentId: session.agentId,
               color: getAgentAccentColor(session.agentId, session.customColor || agent?.color),
               icon: agent?.icon || "cpu",

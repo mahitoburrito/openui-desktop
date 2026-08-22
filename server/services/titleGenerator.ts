@@ -5,11 +5,11 @@ import { homedir } from "os";
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_MODEL = "gemini-2.5-flash";
 const TITLE_MAX_INPUT_CHARS = 5000;
-const TITLE_MAX_WORDS = 12;
-const TITLE_MAX_CHARS = 140;
+const TITLE_MAX_WORDS = 8;
+const TITLE_MAX_CHARS = 80;
 const GEMINI_TITLE_SYSTEM_PROMPT = [
   "Name an OpenUI desktop agent session from the user's prompt history over time.",
-  "Return only a useful descriptive session title. Use as many words as needed, but stay under 12 words and 140 characters.",
+  "Return only a useful descriptive session title, ideally 4-8 words and always under 80 characters.",
   "Prefer a concrete product plus feature, bug plus surface, or objective plus repo.",
   "Do not simply summarize the latest prompt. Infer the durable work thread from the whole prompt history.",
   "Treat short follow-ups, status checks, confirmations, and meta questions as weak signal unless they introduce a concrete new product, feature, bug, repo, or workflow.",
@@ -177,12 +177,14 @@ function redactSecrets(value: string): string {
     .replace(/\b[A-Za-z0-9_-]{72,}\b/g, "[redacted-token]");
 }
 
-function cleanPrompt(input: string): string {
+export function sanitizeTitlePrompt(input: string): string {
   return redactSecrets(stripAnsi(input))
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, TITLE_MAX_INPUT_CHARS);
 }
+
+const cleanPrompt = sanitizeTitlePrompt;
 
 function normalizeTitle(value: string): string {
   const title = value
@@ -203,64 +205,153 @@ function normalizeTitle(value: string): string {
 }
 
 const FALLBACK_TITLE_STOP_WORDS = new Set([
+  "a",
   "about",
   "actually",
+  "add",
+  "ahead",
+  "all",
   "also",
+  "an",
   "and",
+  "any",
+  "anything",
   "are",
+  "as",
   "asking",
+  "at",
+  "be",
+  "been",
+  "being",
+  "but",
+  "by",
   "can",
   "change",
+  "check",
   "code",
   "configured",
+  "continue",
+  "couple",
   "could",
+  "create",
   "directory",
+  "did",
+  "do",
   "does",
+  "done",
   "easiest",
+  "else",
+  "everything",
+  "explain",
   "for",
   "from",
   "get",
   "give",
+  "go",
+  "good",
+  "had",
+  "has",
+  "have",
+  "he",
   "help",
+  "her",
+  "here",
+  "him",
+  "his",
+  "i",
+  "if",
   "im",
+  "implement",
+  "implementation",
+  "include",
   "in",
   "how",
   "into",
   "is",
+  "it",
+  "its",
   "just",
   "last",
+  "less",
+  "lets",
   "like",
   "look",
   "looks",
+  "make",
+  "merge",
   "mean",
   "me",
+  "more",
+  "much",
+  "my",
+  "maybe",
   "need",
   "no",
   "noi",
+  "not",
   "now",
+  "of",
+  "on",
   "okay",
   "open",
+  "or",
+  "our",
+  "ours",
   "per",
   "please",
+  "proceed",
+  "push",
+  "ready",
+  "restate",
   "right",
+  "run",
+  "she",
+  "show",
   "simple",
+  "sounds",
   "something",
+  "so",
+  "some",
+  "start",
+  "still",
+  "ship",
   "take",
   "tell",
+  "test",
   "terms",
   "that",
+  "than",
   "the",
+  "their",
+  "them",
+  "then",
+  "there",
+  "they",
   "this",
+  "things",
   "through",
   "to",
+  "try",
   "understand",
+  "update",
   "use",
   "using",
+  "was",
   "way",
+  "we",
+  "were",
   "what",
   "whats",
+  "when",
+  "where",
+  "which",
+  "while",
   "why",
+  "will",
   "with",
+  "work",
+  "working",
+  "would",
   "you",
   "your",
 ]);
@@ -269,18 +360,31 @@ function titleTokens(value: string): string[] {
   return cleanPrompt(value)
     .toLowerCase()
     .replace(/\bhttps?:\/\/[^\s]+/g, " local-url ")
-    .replace(/[^a-z0-9-]+/g, " ")
+    .replace(/[^\p{L}\p{N}_-]+/gu, " ")
     .split(/\s+/)
     .filter((word) => word.length > 1 && !FALLBACK_TITLE_STOP_WORDS.has(word));
 }
 
 function titleCaseToken(token: string): string {
   const acronym = {
+    a2a: "A2A",
+    ai: "AI",
     api: "API",
     cli: "CLI",
+    llm: "LLM",
+    mcp: "MCP",
+    openui: "OpenUI",
+    "openui-desktop": "OpenUI Desktop",
     pr: "PR",
+    pty: "PTY",
+    rl: "RL",
+    rls: "RLS",
     sdk: "SDK",
+    soc2: "SOC 2",
+    ssh: "SSH",
+    tui: "TUI",
     ui: "UI",
+    ux: "UX",
     yc: "YC",
   }[token];
   if (acronym) return acronym;
@@ -331,18 +435,31 @@ export function slashCommandSessionTitle(promptHistory: string[]): string | null
   return normalizeTitle(intents.slice(0, 2).join(" & ")) || null;
 }
 
+const LOW_INFORMATION_PROMPT = /^(?:ok(?:ay)?|sure|yes|yep|yeah|sounds good|continue|keep going|go ahead|proceed|do it|ship it|merge it|push it|restate|try again|what(?: else)?(?: is|'s) next|anything else|everything good|are we good|status|any updates?|lmk)[.!?\s]*$/i;
+const LOW_INFORMATION_TITLE_START = /^(?:so|is|are|was|were|did|do|does|can|could|would|should|what|why|how|when|where|continue|go ahead|restate)\b/i;
+
+export function isLowInformationTitlePrompt(input: string): boolean {
+  const prompt = cleanPrompt(input);
+  if (!prompt) return true;
+  if (LOW_INFORMATION_PROMPT.test(prompt)) return true;
+  const tokens = titleTokens(prompt);
+  return tokens.length === 0;
+}
+
+export function isUsefulGeneratedTitle(input: string): boolean {
+  const title = normalizeTitle(input);
+  if (!title || /^untitled session$/i.test(title)) return false;
+  if (LOW_INFORMATION_PROMPT.test(title) || LOW_INFORMATION_TITLE_START.test(title)) return false;
+  if (/\b(?:and|or|the|a|an|to|for|with|of|in|on)$/i.test(title)) return false;
+  return titleTokens(title).length > 0;
+}
+
 export function fallbackSessionTitle(input: string): string {
   const prompt = cleanPrompt(input);
-  if (!prompt) return "Untitled session";
+  if (!prompt || isLowInformationTitlePrompt(prompt)) return "";
   const commandTitle = slashCommandSessionTitle([prompt]);
   if (commandTitle) return commandTitle;
-  const compact = prompt
-    .replace(/^(please|can you|could you|hey|mate|hi|hello)\b[\s,:-]*/i, "")
-    .replace(/\b(use|using)\s+(codex|claude|gemini)\b/gi, "")
-    .trim();
-  const title = normalizeTitle(compact);
-  if (!title) return "Untitled session";
-  return title.charAt(0).toUpperCase() + title.slice(1);
+  return fallbackSessionTitleFromHistory(prompt, [prompt]);
 }
 
 export function fallbackSessionTitleFromHistory(input: string, promptHistory?: string[]): string {
@@ -353,25 +470,28 @@ export function fallbackSessionTitleFromHistory(input: string, promptHistory?: s
   const commandTitle = slashCommandSessionTitle(history);
   if (commandTitle) return commandTitle;
   // Mixed sessions: slash commands are IDE plumbing, not the work thread.
-  const workPrompts = history.filter((prompt) => !slashCommandName(prompt));
+  const workPrompts = history.filter(
+    (prompt) => !slashCommandName(prompt) && !isLowInformationTitlePrompt(prompt),
+  );
   if (workPrompts.length > 0) history = workPrompts;
-  if (history.length <= 1) return fallbackSessionTitle(history[0] || input);
+  else return "";
 
   const tokenStats = new Map<string, { score: number; firstSeen: number }>();
-  const start = Math.max(0, history.length - 3);
-  let recentHistory = history.slice(start).filter((prompt) => {
+  let recentHistory = history.filter((prompt) => {
     const tokens = titleTokens(prompt);
     const isWeakQuestion = /^(is|are|do|does|did|no|yes)\b/i.test(prompt);
     return tokens.length > 0 && !(isWeakQuestion && tokens.length <= 2);
   });
-  if (recentHistory.length === 0) recentHistory = history.slice(start);
+  if (recentHistory.length === 0) recentHistory = history;
 
   recentHistory.forEach((prompt, index) => {
     const tokens = Array.from(new Set(titleTokens(prompt))).slice(0, 16);
-    const recencyWeight = 1 + index / Math.max(1, recentHistory.length - 1) * 0.35;
+    const recencyWeight = 1 + index / Math.max(1, recentHistory.length - 1) * 0.2;
+    const anchorWeight = index === 0 ? 0.4 : 0;
     tokens.forEach((token, tokenIndex) => {
       const existing = tokenStats.get(token);
-      const score = recencyWeight + Math.max(0, 0.25 - tokenIndex * 0.02);
+      const identifierWeight = token.includes("-") || /\d/.test(token) ? 0.65 : 0;
+      const score = recencyWeight + anchorWeight + identifierWeight + Math.max(0, 0.2 - tokenIndex * 0.015);
       if (existing) {
         existing.score += score;
       } else {
@@ -388,12 +508,12 @@ export function fallbackSessionTitleFromHistory(input: string, promptHistory?: s
       if (b[1].score !== a[1].score) return b[1].score - a[1].score;
       return a[1].firstSeen - b[1].firstSeen;
     })
-    .slice(0, 5)
+    .slice(0, 6)
     .sort((a, b) => a[1].firstSeen - b[1].firstSeen)
     .map(([token]) => titleCaseToken(token));
 
   const title = normalizeTitle(titleWords.join(" "));
-  return title || fallbackSessionTitle(history[0] || input);
+  return title;
 }
 
 export async function generateSessionTitle({
@@ -483,7 +603,7 @@ export async function generateSessionTitle({
         ?.map((part: { text?: string }) => part.text || "")
         .join(" ") || "";
     const title = normalizeTitle(raw);
-    return title || fallback;
+    return isUsefulGeneratedTitle(title) ? title : fallback;
   } catch {
     return fallback;
   }

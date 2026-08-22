@@ -7197,7 +7197,7 @@ async function runPersistenceRestorationUnitTests() {
     const migratedLegacyStateFile = JSON.parse(await readFile(statePath, "utf8"));
     await assert(
       migratedLegacyState.nodes[0]?.customName === "legacy-unversioned" &&
-        migratedLegacyStateFile.version === 2 && Number.isFinite(migratedLegacyStateFile.savedAt),
+        migratedLegacyStateFile.version === 3 && Number.isFinite(migratedLegacyStateFile.savedAt),
       "unversioned application state did not migrate to the current envelope",
     );
 
@@ -7207,21 +7207,21 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(statePath, JSON.stringify(v1State), "utf8");
     await assert(
       persistence.loadState().nodes[0]?.customName === "legacy-version-one" &&
-        JSON.parse(await readFile(statePath, "utf8")).version === 2,
+        JSON.parse(await readFile(statePath, "utf8")).version === 3,
       "version-1 application state did not migrate forward",
     );
 
     const fallbackState = JSON.parse(await readFile(statePath, "utf8"));
     fallbackState.nodes[0].customName = "compatible-state-backup";
     const futureState = JSON.parse(JSON.stringify(fallbackState));
-    futureState.version = 3;
+    futureState.version = 4;
     futureState.nodes[0].customName = "unsupported-future-state";
     await writeFile(stateBackupPath, JSON.stringify(fallbackState), "utf8");
     await writeFile(statePath, JSON.stringify(futureState), "utf8");
     const futureStateFallback = persistence.loadState();
     await assert(
       futureStateFallback.nodes[0]?.customName === "compatible-state-backup" &&
-        JSON.parse(await readFile(statePath, "utf8")).version === 3,
+        JSON.parse(await readFile(statePath, "utf8")).version === 4,
       "future application state was accepted or destructively rewritten instead of using its compatible backup",
     );
     let futureStateWriteRejected = false;
@@ -7231,14 +7231,14 @@ async function runPersistenceRestorationUnitTests() {
       futureStateWriteRejected = true;
     }
     await assert(
-      futureStateWriteRejected && JSON.parse(await readFile(statePath, "utf8")).version === 3 &&
+      futureStateWriteRejected && JSON.parse(await readFile(statePath, "utf8")).version === 4 &&
         JSON.parse(await readFile(stateBackupPath, "utf8")).nodes[0]?.customName === "compatible-state-backup",
       "autosave could overwrite unsupported future state or its last compatible backup",
     );
     await rm(statePath, { force: true });
     persistence.savePersistedState(futureStateFallback);
     await assert(
-      JSON.parse(await readFile(statePath, "utf8")).version === 2,
+      JSON.parse(await readFile(statePath, "utf8")).version === 3,
       "explicit removal of incompatible state did not release the version write guard",
     );
 
@@ -7268,13 +7268,13 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(versionBufferPath, JSON.stringify({ data: "legacy-json-buffer", truncated: false }), "utf8");
     await assert(
       persistence.loadBuffer(versionBufferId).chunks.join("") === "legacy-json-buffer" &&
-        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 2,
+        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 3,
       "unversioned scrollback did not migrate to the current envelope",
     );
     await writeFile(versionBufferPath, JSON.stringify({ version: 1, data: "version-one-buffer", truncated: false }), "utf8");
     await assert(
       persistence.loadBuffer(versionBufferId).chunks.join("") === "version-one-buffer" &&
-        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 2,
+        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 3,
       "version-1 scrollback did not migrate forward",
     );
     await writeFile(`${versionBufferPath}.bak`, JSON.stringify({
@@ -7306,7 +7306,7 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(legacyTextPath, "legacy-text-buffer", "utf8");
     await assert(
       persistence.loadBuffer(legacyTextBufferId).chunks.join("") === "legacy-text-buffer" &&
-        JSON.parse(await readFile(migratedTextPath, "utf8")).version === 2 &&
+        JSON.parse(await readFile(migratedTextPath, "utf8")).version === 3 &&
         !(await access(legacyTextPath).then(() => true).catch(() => false)),
       "legacy text scrollback did not migrate atomically to JSON",
     );
@@ -7330,7 +7330,7 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(versionBlocksPath, JSON.stringify([versionBlock]), "utf8");
     await assert(
       persistence.loadTerminalBlocks(versionBlocksId)[0]?.command === "printf legacy-block" &&
-        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 2,
+        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3,
       "legacy block array did not migrate to the current envelope",
     );
     await writeFile(versionBlocksPath, JSON.stringify({
@@ -7339,7 +7339,7 @@ async function runPersistenceRestorationUnitTests() {
     }), "utf8");
     await assert(
       persistence.loadTerminalBlocks(versionBlocksId)[0]?.command === "printf version-one-block" &&
-        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 2,
+        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3,
       "version-1 terminal blocks did not migrate forward",
     );
     await writeFile(`${versionBlocksPath}.bak`, JSON.stringify({
@@ -7348,17 +7348,17 @@ async function runPersistenceRestorationUnitTests() {
       blocks: [{ ...versionBlock, command: "printf compatible-block-backup" }],
     }), "utf8");
     await writeFile(versionBlocksPath, JSON.stringify({
-      version: 3,
+      version: 4,
       blocks: [{ ...versionBlock, command: "printf unsupported-future-block" }],
     }), "utf8");
     await assert(
       persistence.loadTerminalBlocks(versionBlocksId)[0]?.command === "printf compatible-block-backup" &&
-        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3,
+        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 4,
       "future terminal-block state was accepted or destructively rewritten instead of using its compatible backup",
     );
     persistence.saveTerminalBlocks(versionBlocksId, [{ ...versionBlock, command: "printf older-build-overwrite" }]);
     await assert(
-      JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3 &&
+      JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 4 &&
         JSON.parse(await readFile(versionBlocksPath, "utf8")).blocks[0]?.command ===
           "printf unsupported-future-block",
       "periodic terminal-block save overwrote an unsupported future envelope",

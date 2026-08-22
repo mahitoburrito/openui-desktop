@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useStore, AgentSession } from "../../stores/useStore";
 import { destroyCachedTerminal } from "../Terminal";
+import { sessionDisplayTitle } from "../../utils/sessionTitle";
 
 interface AgentNodeData {
   sessionId: string;
@@ -41,7 +42,7 @@ export function useAgentNodeState(
 
   const handleDelete = async () => {
     const sessionId = session?.sessionId || nodeData.sessionId;
-    const sessionName = session?.customName || session?.agentName || "Session";
+    const sessionName = session ? sessionDisplayTitle(session) : "Session";
 
     // Confirmation dialog
     const confirmed = window.confirm(`Delete "${sessionName}"? You'll have 5 seconds to undo.`);
