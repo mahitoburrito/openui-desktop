@@ -1,7 +1,7 @@
 {
   "name": "@mahitoburrito/openui-desktop",
   "version": "1.0.9",
-  "description": "AI Agent Command Center — Desktop App",
+  "description": "AI Agent Command Center \u2014 Desktop App",
   "main": "dist/electron/electron/main.js",
   "author": "mahitoburrito <mahitraj@gmail.com>",
   "license": "MIT",
@@ -42,11 +42,14 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:client && npm run build:electron",
     "test:features": "npm run build && node scripts/smoke-openui-features.mjs",
+    "test:status": "npm run build:electron && node scripts/test-agent-status.mjs",
+    "test:coordinator": "npm run build:electron && node scripts/test-coordinator.mjs",
     "start": "node bin/openui-desktop.js",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
     "prepublishOnly": "npm run build",
-    "postinstall": "npm ci --prefix client"
+    "postinstall": "npm ci --prefix client && node scripts/fix-node-pty-permissions.mjs",
+    "test:teardown": "npm run build:electron && node scripts/smoke-session-teardown.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.8",

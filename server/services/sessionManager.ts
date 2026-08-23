@@ -34,9 +34,18 @@ import {
   saveTerminalBlocks,
 } from "./persistence";
 import { generateSessionTitle } from "./titleGenerator";
+import { reapProcessTreeDetached } from "./processTree";
 import { TerminalLifecycle } from "./terminalLifecycle";
 import { terminalFind, type TerminalFindBlockIndexEntry } from "./terminalFind";
 import { sendTerminalMessage } from "./terminalTransport";
+import {
+  applyAgentStatus,
+  disposeAgentStatus,
+  MAX_RECENT_OUTPUT_BYTES,
+  noteAgentOutputActivity,
+  startAgentStatusTicker,
+  stopAgentStatusTicker,
+} from "./agentStatus";
 import {
   decorateTerminalPtyWrite,
   TerminalPtyWriteCoordinator,
@@ -58,6 +67,49 @@ const logError = QUIET ? (..._args: any[]) => {} : console.error.bind(console);
 
 export const DEFAULT_PTY_COLS = 80;
 export const DEFAULT_PTY_ROWS = 24;
+
+// A PTY spawned at 80x24 hard-wraps everything the shell prints before the client's
+// first resize lands — startup banners, the first prompt, an agent's opening TUI
+// frame — and that wrapping is baked into the scrollback for good. Remember the
+// geometry clients report so later sessions start closer to the size they will be
+// read at.
+//
+// High-water mark, not last-writer-wins, for two reasons. A client sends its
+// pre-fit 80x24 the moment its socket opens, so tracking the latest report would
+// reset the preference on every terminal that opens. And spawning too WIDE is
+// cheap — the client's first resize narrows it and the emulator re-wraps — while
+// spawning too narrow bakes hard line breaks into the buffer permanently.
+//
+// Process-global, and seeded at startup from persisted session geometry so the first
+// session of a launch is not stuck at the default. It only grows and never decays, so
+// a single session opened on a large external display keeps raising the floor for
+// every later session, including across restarts. That is tolerable because spawning
+// wide only costs a re-wrap once a client attaches, but it is why the ceiling here is
+// a plausible-terminal size rather than the transport's much looser 1000-cell clamp:
+// one outlier should not be able to set the default forever.
+const MAX_REPORTED_PTY_DIMENSION = 300;
+let preferredPtyCols = DEFAULT_PTY_COLS;
+let preferredPtyRows = DEFAULT_PTY_ROWS;
+
+export function notePreferredTerminalSize(cols: number, rows: number) {
+  if (Number.isFinite(cols) && cols > preferredPtyCols && cols <= MAX_REPORTED_PTY_DIMENSION) {
+    preferredPtyCols = Math.floor(cols);
+  }
+  if (Number.isFinite(rows) && rows > preferredPtyRows && rows <= MAX_REPORTED_PTY_DIMENSION) {
+    preferredPtyRows = Math.floor(rows);
+  }
+}
+
+export function preferredTerminalSize(): { cols: number; rows: number } {
+  return { cols: preferredPtyCols, rows: preferredPtyRows };
+}
+
+// Test seam: the preference only ever grows, so a test that raises it would leak
+// into every later session created in the same process.
+export function resetPreferredTerminalSize() {
+  preferredPtyCols = DEFAULT_PTY_COLS;
+  preferredPtyRows = DEFAULT_PTY_ROWS;
+}
 
 const POSIX_FALLBACK_SHELLS = ["/bin/zsh", "/bin/bash", "/bin/fish", "/bin/sh"] as const;
 
@@ -182,7 +234,7 @@ function getPluginDir(): string | null {
 
 // Inject --plugin-dir flag for Claude commands if plugin is available
 export function injectPluginDir(command: string, agentId: string): string {
-  const commandName = command.trim().split(/\s+/)[0];
+  const commandName = commandExecutableName(command);
   if (agentId !== "claude" && commandName !== "claude") return command;
 
   const pluginDir = getPluginDir();
@@ -190,15 +242,43 @@ export function injectPluginDir(command: string, agentId: string): string {
 
   if (command.includes("--plugin-dir")) return command;
 
-  const parts = command.split(/\s+/);
-  if (parts[0] === "claude") {
-    parts.splice(1, 0, `--plugin-dir`, pluginDir);
+  const parts = command.trim().split(/\s+/);
+  if (commandName === "claude") {
+    parts.splice(1, 0, `--plugin-dir`, quotePosix(pluginDir));
     const finalCmd = parts.join(" ");
     log(`[plugin] Injecting plugin-dir: ${pluginDir}`);
     return finalCmd;
   }
 
   return command;
+}
+
+function commandExecutableName(command: string): string {
+  const token = command.trim().split(/\s+/)[0] || "";
+  const unquoted = (
+    (token.startsWith("'") && token.endsWith("'")) ||
+    (token.startsWith('"') && token.endsWith('"'))
+  ) ? token.slice(1, -1) : token;
+  return basename(unquoted);
+}
+
+/**
+ * Agent CLIs are often installed beside the Node binary that launched Electron
+ * (for example through nvm). A login shell may replace PATH before the startup
+ * command runs, so pin known agent executables while the parent PATH is intact.
+ */
+export function resolveAgentLaunchCommand(
+  command: string,
+  agentId: string,
+  pathValue = process.env.PATH || "",
+): string {
+  const trimmed = command.trim();
+  const token = trimmed.split(/\s+/)[0] || "";
+  const expected = agentId === "claude" || agentId === "codex" ? agentId : "";
+  if (!expected || token !== expected) return command;
+  const executable = executableOnPath(expected, pathValue);
+  if (!executable) return command;
+  return `${quotePosix(executable)}${trimmed.slice(token.length)}`;
 }
 
 // Get git branch for a directory
@@ -523,6 +603,7 @@ export function getTerminalWriteQueueState(sessionId: string): { bytes: number; 
 
 function appendOutputBuffer(session: Session, data: string) {
   if (!data) return;
+  session.outputBufferRev = (session.outputBufferRev || 0) + 1;
   if (!Number.isFinite(session.outputBufferChars)) {
     session.outputBufferChars = session.outputBuffer.reduce((total, chunk) => total + chunk.length, 0);
   }
@@ -575,16 +656,6 @@ function broadcastTerminalState(sessionId: string, session: Session) {
     ...terminalBlockSummary(lifecycle.snapshot(false)),
   };
   for (const client of session.clients) sendTerminalMessage(client, message);
-}
-
-function broadcastAgentStatus(session: Session, status: Session["status"]) {
-  for (const client of session.clients) {
-    sendTerminalMessage(client, {
-      type: "status",
-      status,
-      isRestored: session.isRestored,
-    });
-  }
 }
 
 export function getTerminalSnapshot(
@@ -931,6 +1002,10 @@ export function updateTerminalBlock(
     block.note = updates.note.trim().slice(0, 2000) || undefined;
     terminalFind.invalidateBlock(sessionId, block.id);
   }
+  // Persist immediately rather than waiting for the periodic save. These are
+  // user-authored annotations on a block that may be far from the tail, and a
+  // crash between here and the next tick would lose them.
+  saveTerminalBlocks(sessionId, session.terminalBlocks);
   broadcastTerminalState(sessionId, session);
   return { ok: true, block };
 }
@@ -988,9 +1063,10 @@ function maybeStartAgentFallback(
   if (!fallback) return;
   session.agentFallbackIndex = fallbackIndex + 1;
   const previousCommand = session.agentAttemptCommand || attempt.command;
+  const fallbackAgentId = fallback.trim().split(/\s+/)[0] === "claude" ? "claude" : session.agentId;
   const finalFallback = injectPluginDir(
-    fallback,
-    fallback.trim().split(/\s+/)[0] === "claude" ? "claude" : session.agentId,
+    resolveAgentLaunchCommand(fallback, fallbackAgentId),
+    fallbackAgentId,
   );
 
   for (const client of session.clients) {
@@ -1022,7 +1098,9 @@ export function attachSessionPty(
     // A late exit from an old PTY must not disconnect a replacement process.
     if (session.pty !== ptyProcess) return;
     log(`[session] ${label} exited for ${sessionId} (code=${exitCode}, signal=${signal})`);
-    session.status = "disconnected";
+    stopAgentStatusTicker(session);
+    session.preToolTime = undefined;
+    applyAgentStatus(session, "disconnected", { source: "authoritative", immediate: true });
     session.pty = null;
     terminalCommandQueue.clear(sessionId);
     disposeTerminalPtyWriter(sessionId, ptyProcess);
@@ -1046,12 +1124,12 @@ export function attachSessionPty(
     if (data) {
       appendOutputBuffer(session, lifecycle.sanitizeForPersistence(result.persistenceData));
       session.lastOutputTime = Date.now();
-      session.recentOutputSize += data.length;
+      session.recentOutputSize = Math.min(
+        MAX_RECENT_OUTPUT_BYTES,
+        session.recentOutputSize + data.length,
+      );
 
-      if (session.status === "idle" && !session.pluginReportedStatus) {
-        session.status = "running";
-        broadcastAgentStatus(session, "running");
-      }
+      noteAgentOutputActivity(session);
 
       for (const client of session.clients) sendTerminalMessage(client, { type: "output", data });
     }
@@ -1911,8 +1989,8 @@ export async function createSession(params: {
         manifestPath: agentRuntimeManifestPath,
         model: agentModel,
       }),
-      cols: DEFAULT_PTY_COLS,
-      rows: DEFAULT_PTY_ROWS,
+      cols: preferredTerminalSize().cols,
+      rows: preferredTerminalSize().rows,
     });
   } catch (e: any) {
     // Probe Agent Error Log Trigger
@@ -1939,10 +2017,11 @@ export async function createSession(params: {
     outputBufferChars: 0,
     outputBufferTruncated: false,
     shellLaunch: { shell, args: [...shellArgs] },
-    terminalCols: DEFAULT_PTY_COLS,
-    terminalRows: DEFAULT_PTY_ROWS,
+    terminalCols: preferredTerminalSize().cols,
+    terminalRows: preferredTerminalSize().rows,
     terminalFrameRedrawsInPlace: agentId !== "shell" && agentId !== "test",
     status: "idle",
+    statusChangedAt: now,
     lastOutputTime: now,
     lastInputTime: 0,
     recentOutputSize: 0,
@@ -1976,47 +2055,11 @@ export async function createSession(params: {
   }
   attachSessionPty(sessionId, session, ptyProcess);
 
-  // Output decay + stale status watchdog
-  const resetInterval = setInterval(() => {
-    if (!sessions.has(sessionId) || !session.pty) {
-      clearInterval(resetInterval);
-      return;
-    }
-    session.recentOutputSize = Math.max(0, session.recentOutputSize - 50);
-
-    // Watchdog: if plugin hasn't reported in 30s and session looks stuck, reset the lock
-    // so PTY-based auto-detect can kick back in
-    const now = Date.now();
-    if (session.pluginReportedStatus && session.lastPluginStatusTime) {
-      const silentFor = now - session.lastPluginStatusTime;
-      if (silentFor > 30000) {
-        log(`[watchdog] Plugin silent for ${Math.round(silentFor / 1000)}s on ${sessionId}, resetting pluginReportedStatus`);
-        session.pluginReportedStatus = false;
-      }
-    }
-
-    // Watchdog: if status is "running" or "tool_calling" but no PTY output for 60s,
-    // transition to "idle" so the UI doesn't look frozen
-    if ((session.status === "running" || session.status === "tool_calling") && session.lastOutputTime) {
-      const outputSilent = now - session.lastOutputTime;
-      if (outputSilent > 60000) {
-        log(`[watchdog] No output for ${Math.round(outputSilent / 1000)}s on ${sessionId}, transitioning to idle`);
-        session.status = "idle";
-        session.currentTool = undefined;
-        for (const client of session.clients) {
-          sendTerminalMessage(client, {
-            type: "status",
-            status: "idle",
-            isRestored: session.isRestored,
-          });
-        }
-      }
-    }
-  }, 500);
+  startAgentStatusTicker(sessionId, session, sessions);
 
   // Run the command
-  const finalCommand = injectPluginDir(command, agentId);
-  const isClaudeCommand = finalCommand.trim().split(/\s+/)[0] === "claude";
+  const finalCommand = injectPluginDir(resolveAgentLaunchCommand(command, agentId), agentId);
+  const isClaudeCommand = commandExecutableName(finalCommand) === "claude";
   const ownsCurrentPty = () =>
     sessions.get(sessionId) === session && session.pty === ptyProcess;
   if (finalCommand) log(`[pty-write] Writing command: ${finalCommand}`);
@@ -2115,12 +2158,40 @@ export function deleteSession(sessionId: string) {
 
   terminalWorkspace.removeSession(sessionId);
 
+  disposeAgentStatus(session);
+  if (session.deleteTimeout) clearTimeout(session.deleteTimeout);
+  session.deleteTimeout = undefined;
+
   const activePty = session.pty;
   const stateTrackerPty = session.stateTrackerPty;
   session.pty = null;
   session.stateTrackerPty = null;
   terminalLifecycles.get(sessionId)?.terminate(undefined);
   terminalCommandQueue.clear(sessionId);
+  // Reap before the pty dies. `pty.kill()` SIGHUPs the shell only; the agent
+  // CLI sits in its own process group and anything it daemonized sits in its
+  // own session, so once the shell exits those are reparented to init with
+  // nothing left to identify them by. The pty still owns the root kill so its
+  // onExit handler fires as usual.
+  //
+  // Gated on there being a LIVE pty, which matters beyond the obvious. A
+  // session restored from disk has pty === null, so a second instance pointed
+  // at the same LAUNCH_CWD (a dev build defaulting to the same home directory)
+  // reaps nothing for sessions it did not itself spawn, and cannot tear down
+  // the trees belonging to the app that actually owns them.
+  if (activePty) {
+    reapProcessTreeDetached(activePty.pid, {
+      label: sessionId,
+      killRoot: false,
+      sessionMarker: sessionId,
+    });
+  }
+  if (stateTrackerPty) {
+    reapProcessTreeDetached(stateTrackerPty.pid, {
+      label: `${sessionId}:state-tracker`,
+      killRoot: false,
+    });
+  }
   if (activePty) activePty.kill();
   if (stateTrackerPty) stateTrackerPty.kill();
 
@@ -2138,6 +2209,15 @@ export async function restoreSessions() {
   const state = loadState();
 
   log(`[restore] Found ${state.nodes.length} saved sessions`);
+
+  // Carry the remembered spawn geometry across the restart, so the first session of
+  // a launch spawns at the size the user reads terminals at rather than at 80x24.
+  for (const node of state.nodes) {
+    notePreferredTerminalSize(
+      node.terminalCols || DEFAULT_PTY_COLS,
+      node.terminalRows || DEFAULT_PTY_ROWS,
+    );
+  }
 
   for (const node of state.nodes) {
     const buffer = loadBuffer(node.sessionId);
@@ -2162,6 +2242,7 @@ export async function restoreSessions() {
       terminalFrameRedrawsInPlace: node.terminalFrameRedrawsInPlace ??
         (node.agentId !== "shell" && node.agentId !== "test"),
       status: "disconnected",
+      statusChangedAt: Date.now(),
       lastOutputTime: 0,
       lastInputTime: 0,
       recentOutputSize: 0,

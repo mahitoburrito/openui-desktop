@@ -21,21 +21,12 @@ import {
   Copy,
   Check,
 } from "lucide-react";
-import { useStore, AgentStatus } from "../stores/useStore";
+import { useStore } from "../stores/useStore";
 import { getTerminalTheme } from "../theme/appearance";
+import { AGENT_STATUS, agentStatusStyle } from "../theme/agentStatus";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { Terminal } from "./Terminal";
 import { InPaneMarkdown } from "./InPaneMarkdown";
-
-const statusConfig: Record<AgentStatus, { label: string; color: string }> = {
-  creating: { label: "Creating...", color: "#818CF8" },
-  running: { label: "Running", color: "#22C55E" },
-  waiting_input: { label: "Waiting for input", color: "#FBBF24" },
-  tool_calling: { label: "Tool Calling", color: "#8B5CF6" },
-  idle: { label: "Idle", color: "#6B7280" },
-  disconnected: { label: "Disconnected", color: "#EF4444" },
-  error: { label: "Error", color: "#EF4444" },
-};
 
 const presetColors = [
   "#D97652", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"
@@ -240,7 +231,7 @@ export function Sidebar() {
     session?.agentId,
     editColor || session?.customColor || session?.color || undefined,
   );
-  const statusInfo = statusConfig[session?.status || "idle"];
+  const statusInfo = agentStatusStyle(session?.status);
   const isDisconnected = session?.status === "disconnected";
   const terminalPalette = getTerminalTheme(terminalTheme);
   const headerIconId = (node?.data?.icon as string) || session?.agentId;
@@ -291,7 +282,7 @@ export function Sidebar() {
                     className="w-1.5 h-1.5 rounded-full flex-shrink-0"
                     style={{
                       backgroundColor: statusInfo.color,
-                      boxShadow: `0 0 0 3px ${statusInfo.color}18`,
+                      boxShadow: `0 0 0 3px ${statusInfo.bg}`,
                     }}
                   />
                   <span className="text-[10px]" style={{ color: statusInfo.color }}>
@@ -323,15 +314,27 @@ export function Sidebar() {
 
           {/* Disconnected banner */}
           {isDisconnected && (
-            <div className="flex-shrink-0 px-4 py-3 bg-red-500/10 border-b border-red-500/20">
+            <div
+              className="flex-shrink-0 px-4 py-3 border-b"
+              style={{
+                backgroundColor: AGENT_STATUS.disconnected.bg,
+                borderBottomColor: AGENT_STATUS.disconnected.border,
+              }}
+            >
               <div className="space-y-3">
                 <div>
-                  <p className="text-sm text-red-400 font-medium">Session Disconnected</p>
-                  <p className="text-xs text-red-400/70 mt-0.5">The agent was stopped. Start a new session.</p>
+                  <p className="text-sm font-medium" style={{ color: AGENT_STATUS.disconnected.color }}>
+                    Session {AGENT_STATUS.disconnected.label}
+                  </p>
+                  <p className="text-xs text-zinc-400 mt-0.5">The agent was stopped. Start a new session.</p>
                 </div>
                 <button
                   onClick={handleNewSession}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors"
+                  className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium text-zinc-100 transition-colors hover:brightness-125"
+                  style={{
+                    backgroundColor: AGENT_STATUS.disconnected.bg,
+                    borderColor: AGENT_STATUS.disconnected.border,
+                  }}
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   New Session

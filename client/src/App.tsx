@@ -21,6 +21,7 @@ import { CategoryNode } from "./components/CategoryNode";
 import { Sidebar } from "./components/Sidebar";
 import { SessionListPanel } from "./components/SessionListPanel";
 import { FocusMode } from "./components/FocusMode";
+import { SessionOverview } from "./components/SessionOverview";
 import { MarkdownView } from "./components/MarkdownView";
 import { DiffView } from "./components/DiffView";
 import { BrowserView } from "./components/BrowserView";
@@ -113,6 +114,7 @@ function restoreServerSessionToCanvas(sessionData: any) {
     originalCwd: sessionData.originalCwd,
     gitBranch: sessionData.gitBranch,
     status: sessionData.status || "idle",
+    statusChangedAt: sessionData.statusChangedAt,
     customName: sessionData.customName,
     customColor: sessionData.customColor,
     notes: sessionData.notes,
@@ -290,9 +292,26 @@ function AppContent() {
               }
               if (existing) {
                 const sessionUpdates: Partial<AgentSession> = {};
-                if (existing.status !== sessionData.status) {
+                // The poll response was serialized before it got here, so a
+                // websocket status that landed mid-flight is newer than this.
+                // Without the timestamp check the poll rolls it back for up to
+                // a second, which reads as the card flickering.
+                const polledAt = typeof sessionData.statusChangedAt === "number"
+                  ? sessionData.statusChangedAt
+                  : 0;
+                const isStale = polledAt > 0 && polledAt < (existing.statusChangedAt ?? 0);
+
+                if (!isStale && existing.status !== sessionData.status) {
                   sessionUpdates.status = sessionData.status;
                   console.log(`[poll] Updating ${sessionData.nodeId} status: ${existing.status} -> ${sessionData.status}`);
+                }
+                if (polledAt > 0 && !isStale && existing.statusChangedAt !== polledAt) {
+                  sessionUpdates.statusChangedAt = polledAt;
+                }
+                // Only the websocket used to carry this, so a card whose
+                // terminal was never mounted stayed flagged as restored.
+                if (existing.isRestored !== sessionData.isRestored) {
+                  sessionUpdates.isRestored = sessionData.isRestored;
                 }
                 if (existing.customName !== sessionData.customName) {
                   sessionUpdates.customName = sessionData.customName;
@@ -429,6 +448,7 @@ function AppContent() {
             originalCwd: session.originalCwd,
             gitBranch: session.gitBranch,
             status: session.status || "idle",
+            statusChangedAt: session.statusChangedAt,
             customName: session.customName,
             customColor: session.customColor,
             notes: session.notes,
@@ -721,6 +741,9 @@ function AppContent() {
 
           {/* Focus Mode overlay */}
           <FocusMode />
+
+          {/* Live terminal grid; separate from the advanced focus workspace. */}
+          <SessionOverview />
 
           {/* Markdown viewer overlay */}
           <MarkdownView />

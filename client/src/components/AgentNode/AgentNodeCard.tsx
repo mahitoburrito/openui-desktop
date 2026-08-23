@@ -1,17 +1,39 @@
+import { useEffect, useState } from "react";
 import { GitBranch, Folder, Wrench, Layers, Loader2, RotateCcw, FileDiff } from "lucide-react";
 import { AgentStatus, type AgentChangeSummary, type CheckpointSummary } from "../../stores/useStore";
+import { agentStatusStyle } from "../../theme/agentStatus";
 import { AgentIcon } from "../AgentIcon";
 
-// Status config with visual priority levels
-const statusConfig: Record<AgentStatus, { label: string; color: string; bgColor: string; isActive?: boolean; needsAttention?: boolean }> = {
-  creating: { label: "Starting", color: "#8B93FF", bgColor: "#8B93FF12", isActive: true },
-  running: { label: "Working", color: "#79C68B", bgColor: "#79C68B12", isActive: true },
-  tool_calling: { label: "Working", color: "#79C68B", bgColor: "#79C68B12", isActive: true },
-  waiting_input: { label: "Needs input", color: "#D6A64B", bgColor: "#D6A64B14", needsAttention: true },
-  idle: { label: "Idle", color: "#8A8F98", bgColor: "#8A8F9812" },
-  disconnected: { label: "Offline", color: "#6B7280", bgColor: "#6B728015" },
-  error: { label: "Error", color: "#E06464", bgColor: "#E0646414", needsAttention: true },
-};
+// How long a card has to sit waiting before it starts pulsing. Short enough
+// that you notice an agent you walked away from, long enough that a prompt you
+// answer straight away never pulses at all.
+const SUSTAINED_ATTENTION_MS = 20_000;
+
+/**
+ * True once the card has been asking for input long enough to be worth
+ * catching your eye. Arms a single timer for the remaining wait rather than
+ * ticking, so a canvas of idle agents costs nothing.
+ */
+function useSustainedAttention(active: boolean, since: number | undefined): boolean {
+  const [sustained, setSustained] = useState(false);
+
+  useEffect(() => {
+    if (!active) {
+      setSustained(false);
+      return;
+    }
+    const waitedFor = Date.now() - (since ?? Date.now());
+    if (waitedFor >= SUSTAINED_ATTENTION_MS) {
+      setSustained(true);
+      return;
+    }
+    setSustained(false);
+    const timer = setTimeout(() => setSustained(true), SUSTAINED_ATTENTION_MS - waitedFor);
+    return () => clearTimeout(timer);
+  }, [active, since]);
+
+  return sustained;
+}
 
 // Tool name display mapping
 const toolDisplayNames: Record<string, string> = {
@@ -35,6 +57,7 @@ interface AgentNodeCardProps {
   displayName: string;
   agentId: string;
   status: AgentStatus;
+  statusChangedAt?: number;
   currentTool?: string;
   cwd?: string;
   originalCwd?: string; // Mother repo path when using worktrees
@@ -56,6 +79,7 @@ export function AgentNodeCard({
   displayName,
   agentId,
   status,
+  statusChangedAt,
   currentTool,
   cwd,
   originalCwd,
@@ -69,10 +93,12 @@ export function AgentNodeCard({
   onRestoreLaunchCheckpoint,
   onReviewChanges,
 }: AgentNodeCardProps) {
-  const statusInfo = statusConfig[status] || statusConfig.idle;
+  const statusInfo = agentStatusStyle(status);
   const isActive = statusInfo.isActive;
   const isToolCalling = status === "tool_calling";
   const needsAttention = statusInfo.needsAttention;
+  const awaitingUser = status === "waiting_input";
+  const pulsing = useSustainedAttention(awaitingUser, statusChangedAt);
 
   // Extract directory name - use originalCwd (mother repo) if available, otherwise cwd
   const displayCwd = originalCwd || cwd;
@@ -94,15 +120,22 @@ export function AgentNodeCard({
         borderColor: inSelectionSet
           ? "#60A5FA"
           : needsAttention
-            ? `${statusInfo.color}99`
+            ? statusInfo.borderStrong
             : selected
               ? "#52525b"
               : isActive
-                ? `${statusInfo.color}4d`
+                ? statusInfo.border
                 : "#2a2d2c",
         boxShadow: selected ? "0 8px 22px rgba(0, 0, 0, 0.35)" : "0 2px 8px rgba(0, 0, 0, 0.26)",
       }}
     >
+      {pulsing && (
+        <span
+          aria-hidden
+          className="agent-attention-pulse pointer-events-none absolute -inset-px rounded-lg"
+          style={{ boxShadow: `0 0 0 2px ${statusInfo.color}, 0 0 16px 1px ${statusInfo.color}` }}
+        />
+      )}
       <div className="p-3">
         <div className="flex items-start gap-2.5">
           <div
@@ -121,7 +154,10 @@ export function AgentNodeCard({
                 {displayName}
               </h3>
               <span className="flex flex-shrink-0 items-center gap-1 text-[10px]" style={{ color: statusInfo.color }}>
-                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: statusInfo.color }} />
+                <span
+                  className={`w-1.5 h-1.5 rounded-full${pulsing ? " agent-attention-dot" : ""}`}
+                  style={{ backgroundColor: statusInfo.color }}
+                />
                 {statusInfo.label}
               </span>
             </div>

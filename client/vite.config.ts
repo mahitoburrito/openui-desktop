@@ -16,6 +16,10 @@ export default defineConfig({
       "/ws": {
         target: `ws://localhost:${serverPort}`,
         ws: true,
+        // The terminal server validates that Host names its bound loopback
+        // port. Preserve the Vite Origin for the dev allowlist, but rewrite
+        // Host to the proxied server so the upgrade is not rejected.
+        changeOrigin: true,
       },
     },
   },

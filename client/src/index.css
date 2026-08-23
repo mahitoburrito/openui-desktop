@@ -154,7 +154,8 @@ html, body {
 .xterm {
   padding: 0;
   height: 100%;
-  font-family: "SF Mono", ui-monospace, Menlo, Monaco, "Cascadia Code", monospace;
+  /* No font-family here: xterm derives cell metrics from its own fontFamily
+     option, and a CSS override desynchronizes measurement from rendering. */
 }
 
 .xterm-screen {
@@ -311,3 +312,34 @@ html, body {
   margin: 0.5em 0;
 }
 .markdown-body details summary { cursor: pointer; font-weight: 500; color: #fafafa; }
+
+/* An agent that has been waiting on you for a while. Slow and low-contrast on
+   purpose — it should read as "still here" from across the canvas without
+   competing with whatever you are actually looking at. */
+@keyframes agent-attention-pulse {
+  0%, 100% { opacity: 0.18; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes agent-attention-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+
+.agent-attention-pulse {
+  animation: agent-attention-pulse 2.4s ease-in-out infinite;
+}
+
+.agent-attention-dot {
+  animation: agent-attention-dot 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-attention-pulse {
+    animation: none;
+    opacity: 0.45;
+  }
+  .agent-attention-dot {
+    animation: none;
+  }
+}
