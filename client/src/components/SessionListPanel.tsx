@@ -17,6 +17,7 @@ import { useStore, type AgentSession } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { destroyCachedTerminal } from "./Terminal";
 import { agentStatusStyle } from "../theme/agentStatus";
+import { sessionDisplayTitle } from "../utils/sessionTitle";
 
 type SessionEntry = {
   nodeId: string;
@@ -25,15 +26,7 @@ type SessionEntry = {
 };
 
 function getSessionTitle(entry: SessionEntry): string {
-  const label = typeof entry.node?.data?.label === "string" ? entry.node.data.label.trim() : "";
-  const agentName = entry.session.agentName?.trim() || "";
-  const customName = entry.session.customName?.trim();
-  const ticketTitle = entry.session.ticketTitle?.trim();
-
-  if (customName) return customName;
-  if (ticketTitle) return ticketTitle;
-  if (label && label !== agentName && label !== entry.session.agentId) return label;
-  return agentName || "Session";
+  return sessionDisplayTitle(entry.session);
 }
 
 function sessionCreatedAt(entry: SessionEntry): number {

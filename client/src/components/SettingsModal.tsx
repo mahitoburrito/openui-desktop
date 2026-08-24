@@ -778,7 +778,7 @@ function IntegrationsTab({
             >
               <Sparkles className="w-3.5 h-3.5" style={{ color: "#E5A264" }} />
             </div>
-            <span className="text-sm text-zinc-200">Gemini title generation</span>
+            <span className="text-sm text-zinc-200">Gemini title enhancement</span>
           </div>
 
           {hasGeminiKey ? (
@@ -796,14 +796,14 @@ function IntegrationsTab({
                 </button>
               </div>
               <p className="text-xs text-zinc-500">
-                Session titles keep updating from submitted prompts while the name is still auto-generated.
-                Sort can also use Gemini to cluster titles by blast radius.
+                Automatic titles keep following the durable task until you set a custom name.
+                Gemini enriches those titles and can cluster them by blast radius.
               </p>
             </>
           ) : (
             <>
               <p className="text-xs text-zinc-500">
-                Add a Gemini API key to generate richer session titles over time and sort title clusters by blast radius.
+                OpenUI generates private local titles automatically. Add a Gemini API key for richer titles and blast-radius clustering.
               </p>
               <div className="flex gap-2">
                 <div className="relative flex-1">

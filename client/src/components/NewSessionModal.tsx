@@ -20,6 +20,7 @@ import {
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
+import { normalizeSessionTitle, sessionDisplayTitle } from "../utils/sessionTitle";
 
 interface LinearTicket {
   id: string;
@@ -433,6 +434,7 @@ export function NewSessionModal({
       ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
       : commandArgs;
     const starterPrompt = initialPrompt.trim();
+    const manualName = normalizeSessionTitle(customName);
 
     const selectedReposList = detectedRepos.filter(r => selectedRepoPaths.has(r.path));
     const isMultiRepo = createWorktree && selectedReposList.length > 1;
@@ -467,7 +469,10 @@ export function NewSessionModal({
               command: fullCommand,
               cwd: effectiveWorkingDir,
               nodeId: existingNodeId,
-              customName: customName || existingSession.customName,
+              customName: existingSession.customName,
+              generatedTitle: starterPrompt ? undefined : existingSession.generatedTitle,
+              sessionOrdinal: existingSession.sessionOrdinal,
+              sessionGroupSize: existingSession.sessionGroupSize,
               customColor: existingSession.customColor,
               initialPrompt: starterPrompt || undefined,
               ...(selectedAgent.profileId && {
@@ -505,6 +510,8 @@ export function NewSessionModal({
               cwd: newCwd || effectiveWorkingDir,
               status: "idle",
               isRestored: false,
+              customName: existingSession.customName,
+              generatedTitle: starterPrompt ? undefined : existingSession.generatedTitle,
               ticketId: selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined),
               ticketTitle: selectedTicket?.title || selectedGithubIssue?.title,
               gitBranch: gitBranch || branchName || undefined,
@@ -532,9 +539,14 @@ export function NewSessionModal({
       for (let i = 0; i < count; i++) {
         const nodeId = `node-${Date.now()}-${i}`;
         const selectedColor = getAgentAccentColor(selectedAgent.id, selectedAgent.color);
-        const agentName = count > 1
-          ? `${customName || selectedAgent.name} ${i + 1}`
-          : customName || selectedAgent.name;
+        const groupFields = count > 1
+          ? { sessionOrdinal: i + 1, sessionGroupSize: count }
+          : {};
+        const displayName = sessionDisplayTitle({
+          agentName: selectedAgent.name,
+          customName: manualName,
+          ...groupFields,
+        });
         const placeholderSessionId = `pending-${nodeId}`;
 
         const { x, y } = freePositions[i];
@@ -545,7 +557,7 @@ export function NewSessionModal({
           type: "agent",
           position: { x, y },
           data: {
-            label: agentName,
+            label: displayName,
             agentId: selectedAgent.id,
             color: selectedColor,
             icon: selectedAgent.icon,
@@ -564,7 +576,8 @@ export function NewSessionModal({
           cwd: effectiveWorkingDir || "",
           gitBranch: branchName || undefined,
           status: "creating",
-          customName: count > 1 ? agentName : customName || undefined,
+          customName: manualName,
+          ...groupFields,
           ticketId: i === 0 ? (selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined)) : undefined,
           ticketTitle: i === 0 ? (selectedTicket?.title || selectedGithubIssue?.title) : undefined,
         });
@@ -579,10 +592,11 @@ export function NewSessionModal({
               body: JSON.stringify({
                 agentId: selectedAgent.id,
                 agentName: selectedAgent.name,
-              command: fullCommand,
-              cwd: effectiveWorkingDir,
-              nodeId,
-              customName: count > 1 ? agentName : customName || undefined,
+                command: fullCommand,
+                cwd: effectiveWorkingDir,
+                nodeId,
+                customName: manualName,
+                ...groupFields,
                 initialPrompt: starterPrompt || undefined,
                 ...(selectedAgent.profileId && {
                   agentProfile: {
@@ -1254,11 +1268,12 @@ export function NewSessionModal({
                   {!isReplacing && (
                     <div className="flex gap-3">
                       <div className="flex-1 space-y-2">
-                        <label className="text-xs text-zinc-500">Name (auto-named from first prompt)</label>
+                        <label className="text-xs text-zinc-500">Name (optional — overrides automatic titles)</label>
                         <input
                           type="text"
                           value={customName}
                           onChange={(e) => setCustomName(e.target.value)}
+                          maxLength={120}
                           placeholder={selectedAgent?.name || "My Agent"}
                           className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors"
                         />

@@ -108,6 +108,11 @@ import { terminalFiles, TerminalFilesError } from "../services/terminalFiles";
 import { codeWorkspace, CodeWorkspaceError } from "../services/codeWorkspace";
 import { terminalGit, TerminalGitError } from "../services/terminalGit";
 import { terminalOsc52ClipboardAccess } from "../services/terminalOutputPolicy";
+import {
+  baseSessionTitle,
+  normalizeSessionTitle,
+  sessionDisplayTitle,
+} from "../../shared/sessionTitle";
 
 function getLaunchCwd(): string {
   return process.env.LAUNCH_CWD || homedir();
@@ -156,7 +161,7 @@ function terminalShareSession(sessionId: string, session: any): TerminalShareSes
   return {
     sessionId,
     nodeId: session.nodeId,
-    name: session.customName || session.agentName,
+    name: sessionDisplayTitle(session),
     agentName: session.agentName,
     cwd: session.cwd,
     createdAt: session.createdAt,
@@ -337,6 +342,12 @@ async function startSessionFromApiInput(
     command = adaptedCommand;
   }
   const workingDir = input.cwd || getLaunchCwd();
+  const customName = normalizeSessionTitle(input.customName);
+  const generatedTitle = normalizeSessionTitle(input.generatedTitle);
+  const requestedGroupSize = Number(input.sessionGroupSize);
+  const requestedOrdinal = Number(input.sessionOrdinal);
+  const hasValidGroup = Number.isSafeInteger(requestedGroupSize) && requestedGroupSize > 1 &&
+    Number.isSafeInteger(requestedOrdinal) && requestedOrdinal >= 1 && requestedOrdinal <= requestedGroupSize;
   const starterTitlePrompt = buildTitlePrompt(input.initialPrompt);
   const linearConfig = loadConfig();
   let launchCheckpoint: CheckpointSummary | undefined;
@@ -348,7 +359,8 @@ async function startSessionFromApiInput(
     command,
     cwd: workingDir,
     nodeId,
-    customName: input.customName,
+    customName,
+    generatedTitle,
     customColor,
     ticketId: input.ticketId,
     ticketTitle: input.ticketTitle,
@@ -368,6 +380,8 @@ async function startSessionFromApiInput(
     agentRuntimeManifestPath,
     agentModel: resolvedProfileConfig?.model,
     agentFallbackCommands,
+    sessionOrdinal: hasValidGroup ? requestedOrdinal : undefined,
+    sessionGroupSize: hasValidGroup ? requestedGroupSize : undefined,
     registerWorkspace: options.workspace !== "defer",
     beforeStart: async (finalCwd) => {
       try {
@@ -375,7 +389,14 @@ async function startSessionFromApiInput(
         if (!root) return;
         const checkpoint = await createGitCheckpoint(
           root,
-          `Before ${input.customName || agentName} session`,
+          `Before ${sessionDisplayTitle({
+            customName,
+            generatedTitle,
+            ticketTitle: input.ticketTitle,
+            agentName,
+            sessionOrdinal: hasValidGroup ? requestedOrdinal : undefined,
+            sessionGroupSize: hasValidGroup ? requestedGroupSize : undefined,
+          })} session`,
           { source: "session-launch", sessionId, nodeId },
         );
         launchCheckpoint = summarizeCheckpoint(checkpoint);
@@ -1938,6 +1959,9 @@ apiRoutes.get("/sessions", (c) => {
     status: session.status,
     statusChangedAt: session.statusChangedAt,
     customName: session.customName,
+    generatedTitle: session.generatedTitle,
+    sessionOrdinal: session.sessionOrdinal,
+    sessionGroupSize: session.sessionGroupSize,
     customColor: session.customColor,
     notes: session.notes,
     isRestored: session.isRestored,
@@ -2013,14 +2037,9 @@ apiRoutes.post("/layout/title-clusters", async (c) => {
       const nodeId = typeof node?.id === "string" ? node.id : "";
       const session = nodeId ? Array.from(sessions.values()).find((item) => item.nodeId === nodeId) : null;
       if (!nodeId || !session || session.pendingDelete) return null;
-      const label = typeof node?.label === "string" ? node.label.trim() : "";
       return {
         nodeId,
-        title:
-          session.customName ||
-          session.ticketTitle ||
-          (label && label !== session.agentName && label !== session.agentId ? label : "") ||
-          session.agentName,
+        title: sessionDisplayTitle(session),
         agentName: session.agentName,
         status: session.status,
         repo: session.originalCwd || session.cwd,
@@ -2084,7 +2103,7 @@ apiRoutes.get("/terminal/suggestions", async (c) => {
     if (!snapshot) return [];
     return snapshot.blocks.map((block) => ({
       sessionId,
-      sessionName: session.customName || session.agentName,
+      sessionName: sessionDisplayTitle(session),
       block,
     }));
   });
@@ -2200,7 +2219,7 @@ apiRoutes.get("/terminal/history", (c) => {
           block.command,
           block.cwd,
           block.note || "",
-          session.customName || "",
+          sessionDisplayTitle(session),
           session.agentName,
           searchOutput ? block.output : "",
         ].join("\n").toLowerCase();
@@ -2211,7 +2230,7 @@ apiRoutes.get("/terminal/history", (c) => {
         ...summary,
         sessionId,
         nodeId: session.nodeId,
-        sessionName: session.customName || session.agentName,
+        sessionName: sessionDisplayTitle(session),
         agentName: session.agentName,
       }];
     });
@@ -2235,7 +2254,7 @@ apiRoutes.get("/terminal/history/export", (c) => {
     return [{
       sessionId,
       nodeId: session.nodeId,
-      name: session.customName || session.agentName,
+      name: sessionDisplayTitle(session),
       agentName: session.agentName,
       cwd: session.cwd,
       createdAt: session.createdAt,
@@ -2621,8 +2640,10 @@ apiRoutes.post("/terminal/workspace/tabs", async (c) => {
     const sessionId = textValue(body.sessionId);
     const session = sessions.get(sessionId);
     if (!session || session.pendingDelete) return c.json({ error: "Session not found" }, 404);
+    const customTitle = normalizeSessionTitle(body.title);
     const workspace = terminalWorkspace.addTab(sessionId, {
-      title: body.title,
+      title: customTitle || sessionDisplayTitle(session),
+      titleSource: customTitle ? "custom" : "session",
       activate: body.activate !== false,
       expectedRevision: expectedWorkspaceRevision(body.expectedRevision),
     });
@@ -2709,7 +2730,7 @@ apiRoutes.post("/terminal/workspace/panes/:sessionId/split", async (c) => {
       agentProfileId: source.agentProfileId,
       agentProfileVersion: source.agentProfileVersion,
       customColor: source.customColor,
-      customName: `${source.customName || source.agentName} Split`.slice(0, 120),
+      generatedTitle: `${baseSessionTitle(source)} Split`,
       ...requestedSession,
       cwd: cwd.cwd,
     };
@@ -3149,18 +3170,25 @@ apiRoutes.patch("/sessions/:sessionId", async (c) => {
   if (!session) return c.json({ error: "Session not found" }, 404);
 
   const updates = await c.req.json();
-  if (updates.customName !== undefined) {
-    session.customName = updates.customName;
-    if (!updates.customName) {
-      session.generatedTitle = undefined;
-      session.nameGenerated = false;
+  if (Object.prototype.hasOwnProperty.call(updates, "customName")) {
+    session.customName = normalizeSessionTitle(updates.customName);
+    session.titleGenerationRevision = (session.titleGenerationRevision || 0) + 1;
+    terminalWorkspace.updateInheritedSessionTitle(sessionId, sessionDisplayTitle(session));
+    const latestTitlePrompt = session.titlePromptHistory?.[session.titlePromptHistory.length - 1];
+    if (!session.customName && latestTitlePrompt) {
+      scheduleSessionTitleGeneration(sessionId, latestTitlePrompt);
     }
   }
   if (updates.customColor !== undefined) session.customColor = updates.customColor;
   if (updates.notes !== undefined) session.notes = updates.notes;
 
   saveState(sessions);
-  return c.json({ success: true });
+  return c.json({
+    success: true,
+    customName: session.customName,
+    generatedTitle: session.generatedTitle,
+    displayName: sessionDisplayTitle(session),
+  });
 });
 
 apiRoutes.delete("/sessions/:sessionId", (c) => {

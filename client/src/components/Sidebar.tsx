@@ -27,6 +27,11 @@ import { AGENT_STATUS, agentStatusStyle } from "../theme/agentStatus";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { Terminal } from "./Terminal";
 import { InPaneMarkdown } from "./InPaneMarkdown";
+import {
+  baseSessionTitle,
+  normalizeSessionTitle,
+  sessionDisplayTitle,
+} from "../utils/sessionTitle";
 
 const presetColors = [
   "#D97652", "#22C55E", "#3B82F6", "#8B5CF6", "#EC4899", "#EF4444", "#FBBF24", "#14B8A6"
@@ -72,6 +77,7 @@ export function Sidebar() {
 
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
+  const [nameDirty, setNameDirty] = useState(false);
   const [editNotes, setEditNotes] = useState("");
   const [editColor, setEditColor] = useState("");
   const [editIcon, setEditIcon] = useState("");
@@ -89,6 +95,7 @@ export function Sidebar() {
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const sendInputRef = useRef<((text: string) => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const nameMutationRevisionsRef = useRef(new Map<string, number>());
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {
@@ -131,7 +138,8 @@ export function Sidebar() {
   // Reset edit state when session changes (but NOT when nodes change)
   useEffect(() => {
     if (session) {
-      setEditName(session.customName || session.agentName);
+      setEditName(baseSessionTitle(session));
+      setNameDirty(false);
       setEditNotes(session.notes || "");
       setEditColor(session.customColor || session.color);
       const currentNode = nodes.find(n => n.id === selectedNodeId);
@@ -158,6 +166,55 @@ export function Sidebar() {
       setNewSessionModalOpen(true);
     }
   };
+
+  const persistSessionName = useCallback(async (value: string | null) => {
+    if (!selectedNodeId || !session) return;
+    const targetNodeId = selectedNodeId;
+    const targetSessionId = session.sessionId;
+    const requestRevision = (nameMutationRevisionsRef.current.get(targetSessionId) || 0) + 1;
+    nameMutationRevisionsRef.current.set(targetSessionId, requestRevision);
+    const isLatestRequest = () => nameMutationRevisionsRef.current.get(targetSessionId) === requestRevision;
+    const isTargetSelected = () => useStore.getState().selectedNodeId === targetNodeId;
+    const customName = value === null ? undefined : normalizeSessionTitle(value);
+    const previousName = session.customName;
+    const nextSession = { ...session, customName };
+    updateSession(targetNodeId, { customName });
+    if (node) {
+      updateNode(targetNodeId, {
+        data: { ...node.data, label: sessionDisplayTitle(nextSession) },
+      });
+    }
+    setEditName(baseSessionTitle(nextSession));
+    setNameDirty(false);
+
+    try {
+      const response = await fetch(`/api/sessions/${targetSessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customName: customName ?? null }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json().catch(() => ({}));
+      if (!isLatestRequest()) return;
+      updateSession(targetNodeId, {
+        customName: result.customName || undefined,
+        generatedTitle: result.generatedTitle || session.generatedTitle,
+      });
+      if (isTargetSelected()) {
+        setEditName(baseSessionTitle({ ...nextSession, generatedTitle: result.generatedTitle }));
+      }
+    } catch (error) {
+      console.error("Failed to rename session:", error);
+      if (!isLatestRequest()) return;
+      updateSession(targetNodeId, { customName: previousName });
+      if (isTargetSelected()) setEditName(baseSessionTitle(session));
+      if (node) {
+        updateNode(targetNodeId, {
+          data: { ...node.data, label: sessionDisplayTitle(session) },
+        });
+      }
+    }
+  }, [node, selectedNodeId, session, updateNode, updateSession]);
 
   const handleTerminalReady = useCallback((sendInput: (text: string) => void) => {
     sendInputRef.current = sendInput;
@@ -275,7 +332,7 @@ export function Sidebar() {
               </div>
               <div className="flex-1 min-w-0">
                 <h2 className="text-sm font-medium text-white truncate">
-                  {session.customName || session.agentName}
+                  {sessionDisplayTitle(session)}
                 </h2>
                 <div className="flex items-center gap-2 mt-0.5">
                   <div
@@ -293,7 +350,13 @@ export function Sidebar() {
               
               <div className="flex items-center gap-1 flex-shrink-0">
                 <button
-                  onClick={() => setIsEditing(!isEditing)}
+                  onClick={() => {
+                    if (!isEditing) {
+                      setEditName(baseSessionTitle(session));
+                      setNameDirty(false);
+                    }
+                    setIsEditing(!isEditing);
+                  }}
                   className={`w-7 h-7 rounded flex items-center justify-center transition-colors ${
                     isEditing 
                       ? "text-white bg-surface-active" 
@@ -367,32 +430,43 @@ export function Sidebar() {
               >
                 <div className="p-4 space-y-4">
                   <div>
-                    <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Name</label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Name</label>
+                      <span className="text-[9px] text-zinc-600">
+                        {session.customName ? "Custom" : "Automatic"}
+                      </span>
+                    </div>
                     <input
                       type="text"
                       value={editName}
                       onChange={(e) => {
-                        const newName = e.target.value;
-                        setEditName(newName);
-                        // Instant update
-                        if (selectedNodeId && session) {
-                          const customName = newName !== session.agentName ? newName : undefined;
-                          updateSession(selectedNodeId, { customName });
-                          if (node) {
-                            updateNode(selectedNodeId, {
-                              data: { ...node.data, label: newName },
-                            });
-                          }
-                          // Persist to API
-                          fetch(`/api/sessions/${session.sessionId}`, {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ customName }),
-                          }).catch(console.error);
+                        setEditName(e.target.value);
+                        setNameDirty(true);
+                      }}
+                      onBlur={() => {
+                        if (nameDirty) void persistSessionName(editName);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                        if (event.key === "Escape") {
+                          setEditName(baseSessionTitle(session));
+                          setNameDirty(false);
+                          event.currentTarget.blur();
                         }
                       }}
+                      maxLength={120}
                       className="mt-1 w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm focus:outline-none focus:border-zinc-500 transition-colors"
                     />
+                    {session.customName && (
+                      <button
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => void persistSessionName(null)}
+                        className="mt-2 text-[10px] text-zinc-500 transition-colors hover:text-zinc-200"
+                      >
+                        Reset to automatic title
+                      </button>
+                    )}
                   </div>
                   
                   <div>

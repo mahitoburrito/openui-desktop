@@ -189,6 +189,8 @@ export type TerminalWorkspacePaneNode =
 export interface TerminalWorkspaceTab {
   id: string;
   title?: string;
+  /** Session titles follow the only pane until the user explicitly renames the tab. */
+  titleSource?: "session" | "custom";
   root: TerminalWorkspacePaneNode;
   activeSessionId: string;
   zoomedSessionId?: string;
@@ -211,6 +213,7 @@ export interface TerminalLaunchSession {
   command: string;
   cwd: string;
   customName?: string;
+  generatedTitle?: string;
   customColor?: string;
   initialPrompt?: string;
   workflowId?: string;
@@ -378,6 +381,7 @@ export interface Session {
   lastOutputTime: number;
   lastInputTime: number;
   recentOutputSize: number;
+  /** Explicit user override. Generated titles live in `generatedTitle`. */
   customName?: string;
   customColor?: string;
   notes?: string;
@@ -401,11 +405,15 @@ export interface Session {
   preToolTime?: number;
   // State tracker PTY (for output parsing fallback)
   stateTrackerPty?: IPty | null;
-  // Auto-naming from first query
+  // Auto-naming from submitted prompts
   firstInputBuffer?: string;
-  nameGenerated?: boolean;
   generatedTitle?: string;
   titlePromptHistory?: string[];
+  /** Invalidates an older title request when a newer prompt arrives. */
+  titleGenerationRevision?: number;
+  /** Visual-only identity for sessions created together. */
+  sessionOrdinal?: number;
+  sessionGroupSize?: number;
   // Soft delete
   pendingDelete?: boolean;
   deleteTimeout?: ReturnType<typeof setTimeout>;
@@ -464,6 +472,8 @@ export interface PersistedNode {
   customName?: string;
   generatedTitle?: string;
   titlePromptHistory?: string[];
+  sessionOrdinal?: number;
+  sessionGroupSize?: number;
   customColor?: string;
   notes?: string;
   icon?: string;
@@ -489,7 +499,7 @@ export interface PersistedCategory {
 }
 
 export interface PersistedState {
-  version?: 2;
+  version?: 3;
   savedAt?: number;
   nodes: PersistedNode[];
   categories?: PersistedCategory[];

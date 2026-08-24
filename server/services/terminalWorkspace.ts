@@ -181,6 +181,9 @@ function validateState(raw: any): TerminalWorkspaceState {
     return {
       id,
       title: cleanTitle(rawTab.title),
+      // Existing persisted tabs predate provenance. Preserve their titles as
+      // user-owned rather than unexpectedly overwriting them after an upgrade.
+      titleSource: rawTab.titleSource === "session" ? "session" : rawTab.title ? "custom" : undefined,
       root,
       activeSessionId,
       zoomedSessionId,
@@ -397,7 +400,12 @@ export class TerminalWorkspaceService {
 
   addTab(
     sessionIdValue: unknown,
-    options: { title?: unknown; activate?: boolean; expectedRevision?: number } = {},
+    options: {
+      title?: unknown;
+      titleSource?: "session" | "custom";
+      activate?: boolean;
+      expectedRevision?: number;
+    } = {},
   ): TerminalWorkspaceSnapshot {
     const sessionId = cleanId(sessionIdValue, "Session ID");
     return this.update(options.expectedRevision, (state) => {
@@ -405,6 +413,7 @@ export class TerminalWorkspaceService {
       const tab: TerminalWorkspaceTab = {
         id: newTabId(),
         title: cleanTitle(options.title),
+        titleSource: options.titleSource,
         root: { id: newNodeId("pane"), type: "pane", sessionId },
         activeSessionId: sessionId,
       };
@@ -458,6 +467,7 @@ export class TerminalWorkspaceService {
       const tab: TerminalWorkspaceTab = {
         id: newTabId(),
         title: cleanTitle(input.title),
+        titleSource: input.title ? "custom" : undefined,
         root,
         activeSessionId,
       };
@@ -492,6 +502,7 @@ export class TerminalWorkspaceService {
       } else if (!insertAdjacent(tab.root, targetSessionId, newPane, direction)) {
         throw new TerminalWorkspaceError("Target pane was not found", 404);
       }
+      if (tab.titleSource === "session") tab.titleSource = tab.title ? "custom" : undefined;
       tab.activeSessionId = newSessionId;
       tab.zoomedSessionId = undefined;
       state.activeTabId = tab.id;
@@ -538,6 +549,9 @@ export class TerminalWorkspaceService {
         };
       } else if (!insertAdjacent(currentTargetTab.root, targetSessionId, removed.removed, direction)) {
         throw new TerminalWorkspaceError("Target pane was not found", 404);
+      }
+      if (currentTargetTab.titleSource === "session") {
+        currentTargetTab.titleSource = currentTargetTab.title ? "custom" : undefined;
       }
       currentTargetTab.activeSessionId = sessionId;
       currentTargetTab.zoomedSessionId = undefined;
@@ -719,10 +733,23 @@ export class TerminalWorkspaceService {
     return this.update(expectedRevision, (state) => {
       const tab = state.tabs.find((item) => item.id === tabId);
       if (!tab) throw new TerminalWorkspaceError("Tab was not found", 404);
+      if (tab.title === clean && tab.titleSource === "custom") return false;
+      tab.title = clean;
+      tab.titleSource = clean ? "custom" : undefined;
+      return true;
+    });
+  }
+
+  updateInheritedSessionTitle(sessionIdValue: unknown, title: unknown): TerminalWorkspaceSnapshot {
+    const sessionId = cleanId(sessionIdValue, "Session ID");
+    const clean = cleanTitle(title);
+    return this.update(undefined, (state) => {
+      const tab = state.tabs.find((item) => collectSessionIds(item.root).includes(sessionId));
+      if (!tab || tab.titleSource !== "session" || tab.root.type !== "pane") return false;
       if (tab.title === clean) return false;
       tab.title = clean;
       return true;
-    });
+    }, { preserveRevision: true, preserveUndo: true });
   }
 
   closePane(sessionIdValue: unknown, expectedRevision?: number): TerminalWorkspaceSnapshot {
@@ -915,13 +942,13 @@ export class TerminalWorkspaceService {
   private update(
     expectedRevision: number | undefined,
     mutate: (state: TerminalWorkspaceState) => boolean,
-    options: { saveUndo?: boolean } = {},
+    options: { preserveRevision?: boolean; saveUndo?: boolean; preserveUndo?: boolean } = {},
   ): TerminalWorkspaceSnapshot {
     this.assertRevision(expectedRevision);
     const previous = copy(this.state);
     const next = copy(this.state);
     if (!mutate(next)) return this.snapshot();
-    next.revision = this.state.revision + 1;
+    next.revision = options.preserveRevision ? this.state.revision : this.state.revision + 1;
     next.updatedAt = Date.now();
     const validated = validateState(next);
     this.persist(validated);
@@ -929,6 +956,8 @@ export class TerminalWorkspaceService {
     if (options.saveUndo) {
       this.undoCloseStack.push(previous);
       if (this.undoCloseStack.length > MAX_UNDO_CLOSE) this.undoCloseStack.shift();
+    } else if (options.preserveUndo) {
+      for (const undoState of this.undoCloseStack) mutate(undoState);
     } else {
       this.undoCloseStack.length = 0;
     }

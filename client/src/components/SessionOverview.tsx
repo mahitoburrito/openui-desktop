@@ -19,6 +19,7 @@ import { getTerminalTheme } from "../theme/appearance";
 import { agentStatusStyle } from "../theme/agentStatus";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
 import { Terminal } from "./Terminal";
+import { sessionDisplayTitle } from "../utils/sessionTitle";
 
 const PAGE_SIZE = 9;
 const ACTIVE_STATUSES = new Set<AgentStatus>(["creating", "running", "tool_calling"]);
@@ -83,7 +84,7 @@ function OverviewCard({
     session.agentId,
     session.customColor || session.color,
   );
-  const displayName = session.customName || session.agentName;
+  const displayName = sessionDisplayTitle(session);
   const iconId = (node?.data?.icon as string) || "cpu";
   const status = agentStatusStyle(session.status);
   const needsAttention = session.status === "waiting_input" || session.status === "error";
@@ -307,6 +308,8 @@ export function SessionOverview() {
       if (!needle) return true;
       return [
         session.customName,
+        session.generatedTitle,
+        session.ticketTitle,
         session.agentName,
         session.agentId,
         session.cwd,

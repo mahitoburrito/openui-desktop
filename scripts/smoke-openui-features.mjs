@@ -7197,7 +7197,7 @@ async function runPersistenceRestorationUnitTests() {
     const migratedLegacyStateFile = JSON.parse(await readFile(statePath, "utf8"));
     await assert(
       migratedLegacyState.nodes[0]?.customName === "legacy-unversioned" &&
-        migratedLegacyStateFile.version === 2 && Number.isFinite(migratedLegacyStateFile.savedAt),
+        migratedLegacyStateFile.version === 3 && Number.isFinite(migratedLegacyStateFile.savedAt),
       "unversioned application state did not migrate to the current envelope",
     );
 
@@ -7207,21 +7207,21 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(statePath, JSON.stringify(v1State), "utf8");
     await assert(
       persistence.loadState().nodes[0]?.customName === "legacy-version-one" &&
-        JSON.parse(await readFile(statePath, "utf8")).version === 2,
+        JSON.parse(await readFile(statePath, "utf8")).version === 3,
       "version-1 application state did not migrate forward",
     );
 
     const fallbackState = JSON.parse(await readFile(statePath, "utf8"));
     fallbackState.nodes[0].customName = "compatible-state-backup";
     const futureState = JSON.parse(JSON.stringify(fallbackState));
-    futureState.version = 3;
+    futureState.version = 4;
     futureState.nodes[0].customName = "unsupported-future-state";
     await writeFile(stateBackupPath, JSON.stringify(fallbackState), "utf8");
     await writeFile(statePath, JSON.stringify(futureState), "utf8");
     const futureStateFallback = persistence.loadState();
     await assert(
       futureStateFallback.nodes[0]?.customName === "compatible-state-backup" &&
-        JSON.parse(await readFile(statePath, "utf8")).version === 3,
+        JSON.parse(await readFile(statePath, "utf8")).version === 4,
       "future application state was accepted or destructively rewritten instead of using its compatible backup",
     );
     let futureStateWriteRejected = false;
@@ -7231,14 +7231,14 @@ async function runPersistenceRestorationUnitTests() {
       futureStateWriteRejected = true;
     }
     await assert(
-      futureStateWriteRejected && JSON.parse(await readFile(statePath, "utf8")).version === 3 &&
+      futureStateWriteRejected && JSON.parse(await readFile(statePath, "utf8")).version === 4 &&
         JSON.parse(await readFile(stateBackupPath, "utf8")).nodes[0]?.customName === "compatible-state-backup",
       "autosave could overwrite unsupported future state or its last compatible backup",
     );
     await rm(statePath, { force: true });
     persistence.savePersistedState(futureStateFallback);
     await assert(
-      JSON.parse(await readFile(statePath, "utf8")).version === 2,
+      JSON.parse(await readFile(statePath, "utf8")).version === 3,
       "explicit removal of incompatible state did not release the version write guard",
     );
 
@@ -7348,17 +7348,17 @@ async function runPersistenceRestorationUnitTests() {
       blocks: [{ ...versionBlock, command: "printf compatible-block-backup" }],
     }), "utf8");
     await writeFile(versionBlocksPath, JSON.stringify({
-      version: 3,
+      version: 4,
       blocks: [{ ...versionBlock, command: "printf unsupported-future-block" }],
     }), "utf8");
     await assert(
       persistence.loadTerminalBlocks(versionBlocksId)[0]?.command === "printf compatible-block-backup" &&
-        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3,
+        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 4,
       "future terminal-block state was accepted or destructively rewritten instead of using its compatible backup",
     );
     persistence.saveTerminalBlocks(versionBlocksId, [{ ...versionBlock, command: "printf older-build-overwrite" }]);
     await assert(
-      JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3 &&
+      JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 4 &&
         JSON.parse(await readFile(versionBlocksPath, "utf8")).blocks[0]?.command ===
           "printf unsupported-future-block",
       "periodic terminal-block save overwrote an unsupported future envelope",
@@ -9980,6 +9980,7 @@ async function main() {
           agentName: "First shell",
           command: "sh -lc 'printf one > launch-one.txt'",
           cwd: automationRepo,
+          generatedTitle: "Preserved Automatic Title",
           position: { x: 20, y: 30 },
         },
         {
@@ -10013,7 +10014,8 @@ async function main() {
     await assert(
       nativeLaunchYamlResponse.ok &&
         nativeLaunchYaml.includes("openui_version: 1") &&
-        nativeLaunchYaml.includes("activeSessionRef: first"),
+        nativeLaunchYaml.includes("activeSessionRef: first") &&
+        nativeLaunchYaml.includes("generatedTitle: Preserved Automatic Title"),
       "native launch YAML export lost OpenUI layout metadata",
     );
     const importedWarpLaunchResult = await api("/api/terminal/launch-configurations/import", {
@@ -10073,6 +10075,15 @@ async function main() {
       { method: "POST" },
     );
     await assert(launchResult.started.length === 2, "launch configuration did not start both sessions");
+    const launchedSessions = await api("/api/sessions");
+    const launchedAutomaticSession = launchedSessions.find(
+      (session) => session.sessionId === launchResult.started.find((item) => item.ref === "first").sessionId,
+    );
+    await assert(
+      launchedAutomaticSession?.generatedTitle === "Preserved Automatic Title" &&
+        !launchedAutomaticSession.customName,
+      "launch configuration lost the automatic title or converted it into a manual lock",
+    );
     await assert(
       launchResult.activeSessionId === launchResult.started.find((item) => item.ref === "first").sessionId &&
         launchResult.workspace.tabs.some((tab) =>

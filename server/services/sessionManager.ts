@@ -33,7 +33,8 @@ import {
   saveState,
   saveTerminalBlocks,
 } from "./persistence";
-import { generateSessionTitle } from "./titleGenerator";
+import { generateSessionTitle, sanitizeTitlePrompt } from "./titleGenerator";
+import { sessionDisplayTitle } from "../../shared/sessionTitle";
 import { reapProcessTreeDetached } from "./processTree";
 import { TerminalLifecycle } from "./terminalLifecycle";
 import { terminalFind, type TerminalFindBlockIndexEntry } from "./terminalFind";
@@ -1797,18 +1798,20 @@ function broadcastSessionName(sessionId: string, name: string) {
 
 export function scheduleSessionTitleGeneration(sessionId: string, prompt: string) {
   const session = sessions.get(sessionId);
-  const titlePrompt = prompt.trim();
+  const titlePrompt = sanitizeTitlePrompt(prompt);
   if (!session || !titlePrompt) return;
-
-  // A user-edited name lives in the same field as generated titles. Only keep
-  // ripening while the visible name is still the title OpenUI generated.
-  if (session.customName && session.customName !== session.generatedTitle) return;
 
   const history = session.titlePromptHistory ?? [];
   if (history[history.length - 1] !== titlePrompt) {
     session.titlePromptHistory = [...history, titlePrompt].slice(-TITLE_PROMPT_HISTORY_LIMIT);
   }
-  session.nameGenerated = true;
+
+  // Keep learning the durable work thread while a manual name is active so
+  // reset-to-automatic can immediately resume from current context.
+  if (session.customName) return;
+
+  const generationRevision = (session.titleGenerationRevision || 0) + 1;
+  session.titleGenerationRevision = generationRevision;
 
   const existingTimer = titleGenerationTimers.get(sessionId);
   if (existingTimer) clearTimeout(existingTimer);
@@ -1828,12 +1831,14 @@ export function scheduleSessionTitleGeneration(sessionId: string, prompt: string
     }).then((name) => {
       const current = sessions.get(sessionId);
       if (!current) return;
-      if (current.customName && current.customName !== current.generatedTitle) return;
+      if (current.customName || current.titleGenerationRevision !== generationRevision) return;
       if (!name || name === current.generatedTitle) return;
 
-      current.customName = name;
+      terminalWorkspace.updateInheritedSessionTitle(
+        sessionId,
+        sessionDisplayTitle({ ...current, generatedTitle: name }),
+      );
       current.generatedTitle = name;
-      current.nameGenerated = true;
       saveState(sessions);
       broadcastSessionName(sessionId, name);
     }).catch((error: any) => {
@@ -1860,6 +1865,7 @@ export async function createSession(params: {
   cwd: string;
   nodeId: string;
   customName?: string;
+  generatedTitle?: string;
   customColor?: string;
   ticketId?: string;
   ticketTitle?: string;
@@ -1879,6 +1885,8 @@ export async function createSession(params: {
   agentRuntimeManifestPath?: string;
   agentModel?: string;
   agentFallbackCommands?: string[];
+  sessionOrdinal?: number;
+  sessionGroupSize?: number;
   registerWorkspace?: boolean;
   beforeStart?: (cwd: string) => Promise<void>;
 }): Promise<{ session: Session; cwd: string; gitBranch?: string }> {
@@ -1890,6 +1898,7 @@ export async function createSession(params: {
     cwd: originalCwd,
     nodeId,
     customName,
+    generatedTitle,
     customColor,
     ticketId,
     ticketTitle,
@@ -1909,6 +1918,8 @@ export async function createSession(params: {
     agentRuntimeManifestPath,
     agentModel,
     agentFallbackCommands,
+    sessionOrdinal,
+    sessionGroupSize,
     registerWorkspace = true,
     beforeStart,
   } = params;
@@ -2026,6 +2037,7 @@ export async function createSession(params: {
     lastInputTime: 0,
     recentOutputSize: 0,
     customName,
+    generatedTitle,
     customColor,
     nodeId,
     isRestored: false,
@@ -2042,11 +2054,18 @@ export async function createSession(params: {
     agentPermissionEvents: [],
     agentFallbackCommands,
     agentFallbackIndex: 0,
+    sessionOrdinal,
+    sessionGroupSize,
   };
 
   sessions.set(sessionId, session);
   try {
-    if (registerWorkspace) terminalWorkspace.addTab(sessionId, { title: customName || agentName });
+    if (registerWorkspace) {
+      terminalWorkspace.addTab(sessionId, {
+        title: sessionDisplayTitle(session),
+        titleSource: "session",
+      });
+    }
   } catch (error) {
     sessions.delete(sessionId);
     ptyProcess.kill();
@@ -2161,6 +2180,9 @@ export function deleteSession(sessionId: string) {
   disposeAgentStatus(session);
   if (session.deleteTimeout) clearTimeout(session.deleteTimeout);
   session.deleteTimeout = undefined;
+  const titleTimer = titleGenerationTimers.get(sessionId);
+  if (titleTimer) clearTimeout(titleTimer);
+  titleGenerationTimers.delete(sessionId);
 
   const activePty = session.pty;
   const stateTrackerPty = session.stateTrackerPty;
@@ -2249,6 +2271,8 @@ export async function restoreSessions() {
       customName: node.customName,
       generatedTitle: node.generatedTitle,
       titlePromptHistory: node.titlePromptHistory,
+      sessionOrdinal: node.sessionOrdinal,
+      sessionGroupSize: node.sessionGroupSize,
       customColor: node.customColor,
       notes: node.notes,
       nodeId: node.nodeId,

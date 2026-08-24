@@ -13,6 +13,7 @@ export type TerminalWorkspacePaneNode =
 export interface TerminalWorkspaceTab {
   id: string;
   title?: string;
+  titleSource?: "session" | "custom";
   root: TerminalWorkspacePaneNode;
   activeSessionId: string;
   zoomedSessionId?: string;
@@ -57,6 +58,7 @@ export interface TerminalLaunchSession {
   command: string;
   cwd: string;
   customName?: string;
+  generatedTitle?: string;
   customColor?: string;
   initialPrompt?: string;
   workflowId?: string;
