@@ -95,6 +95,7 @@ export function Sidebar() {
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const sendInputRef = useRef<((text: string) => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const nameMutationRevisionsRef = useRef(new Map<string, number>());
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {
@@ -168,12 +169,18 @@ export function Sidebar() {
 
   const persistSessionName = useCallback(async (value: string | null) => {
     if (!selectedNodeId || !session) return;
+    const targetNodeId = selectedNodeId;
+    const targetSessionId = session.sessionId;
+    const requestRevision = (nameMutationRevisionsRef.current.get(targetSessionId) || 0) + 1;
+    nameMutationRevisionsRef.current.set(targetSessionId, requestRevision);
+    const isLatestRequest = () => nameMutationRevisionsRef.current.get(targetSessionId) === requestRevision;
+    const isTargetSelected = () => useStore.getState().selectedNodeId === targetNodeId;
     const customName = value === null ? undefined : normalizeSessionTitle(value);
     const previousName = session.customName;
     const nextSession = { ...session, customName };
-    updateSession(selectedNodeId, { customName });
+    updateSession(targetNodeId, { customName });
     if (node) {
-      updateNode(selectedNodeId, {
+      updateNode(targetNodeId, {
         data: { ...node.data, label: sessionDisplayTitle(nextSession) },
       });
     }
@@ -181,24 +188,28 @@ export function Sidebar() {
     setNameDirty(false);
 
     try {
-      const response = await fetch(`/api/sessions/${session.sessionId}`, {
+      const response = await fetch(`/api/sessions/${targetSessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ customName: customName ?? null }),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const result = await response.json().catch(() => ({}));
-      updateSession(selectedNodeId, {
+      if (!isLatestRequest()) return;
+      updateSession(targetNodeId, {
         customName: result.customName || undefined,
         generatedTitle: result.generatedTitle || session.generatedTitle,
       });
-      setEditName(baseSessionTitle({ ...nextSession, generatedTitle: result.generatedTitle }));
+      if (isTargetSelected()) {
+        setEditName(baseSessionTitle({ ...nextSession, generatedTitle: result.generatedTitle }));
+      }
     } catch (error) {
       console.error("Failed to rename session:", error);
-      updateSession(selectedNodeId, { customName: previousName });
-      setEditName(baseSessionTitle(session));
+      if (!isLatestRequest()) return;
+      updateSession(targetNodeId, { customName: previousName });
+      if (isTargetSelected()) setEditName(baseSessionTitle(session));
       if (node) {
-        updateNode(selectedNodeId, {
+        updateNode(targetNodeId, {
           data: { ...node.data, label: sessionDisplayTitle(session) },
         });
       }

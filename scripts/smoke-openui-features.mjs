@@ -7268,13 +7268,13 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(versionBufferPath, JSON.stringify({ data: "legacy-json-buffer", truncated: false }), "utf8");
     await assert(
       persistence.loadBuffer(versionBufferId).chunks.join("") === "legacy-json-buffer" &&
-        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 3,
+        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 2,
       "unversioned scrollback did not migrate to the current envelope",
     );
     await writeFile(versionBufferPath, JSON.stringify({ version: 1, data: "version-one-buffer", truncated: false }), "utf8");
     await assert(
       persistence.loadBuffer(versionBufferId).chunks.join("") === "version-one-buffer" &&
-        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 3,
+        JSON.parse(await readFile(versionBufferPath, "utf8")).version === 2,
       "version-1 scrollback did not migrate forward",
     );
     await writeFile(`${versionBufferPath}.bak`, JSON.stringify({
@@ -7306,7 +7306,7 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(legacyTextPath, "legacy-text-buffer", "utf8");
     await assert(
       persistence.loadBuffer(legacyTextBufferId).chunks.join("") === "legacy-text-buffer" &&
-        JSON.parse(await readFile(migratedTextPath, "utf8")).version === 3 &&
+        JSON.parse(await readFile(migratedTextPath, "utf8")).version === 2 &&
         !(await access(legacyTextPath).then(() => true).catch(() => false)),
       "legacy text scrollback did not migrate atomically to JSON",
     );
@@ -7330,7 +7330,7 @@ async function runPersistenceRestorationUnitTests() {
     await writeFile(versionBlocksPath, JSON.stringify([versionBlock]), "utf8");
     await assert(
       persistence.loadTerminalBlocks(versionBlocksId)[0]?.command === "printf legacy-block" &&
-        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3,
+        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 2,
       "legacy block array did not migrate to the current envelope",
     );
     await writeFile(versionBlocksPath, JSON.stringify({
@@ -7339,7 +7339,7 @@ async function runPersistenceRestorationUnitTests() {
     }), "utf8");
     await assert(
       persistence.loadTerminalBlocks(versionBlocksId)[0]?.command === "printf version-one-block" &&
-        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 3,
+        JSON.parse(await readFile(versionBlocksPath, "utf8")).version === 2,
       "version-1 terminal blocks did not migrate forward",
     );
     await writeFile(`${versionBlocksPath}.bak`, JSON.stringify({
@@ -9980,6 +9980,7 @@ async function main() {
           agentName: "First shell",
           command: "sh -lc 'printf one > launch-one.txt'",
           cwd: automationRepo,
+          generatedTitle: "Preserved Automatic Title",
           position: { x: 20, y: 30 },
         },
         {
@@ -10013,7 +10014,8 @@ async function main() {
     await assert(
       nativeLaunchYamlResponse.ok &&
         nativeLaunchYaml.includes("openui_version: 1") &&
-        nativeLaunchYaml.includes("activeSessionRef: first"),
+        nativeLaunchYaml.includes("activeSessionRef: first") &&
+        nativeLaunchYaml.includes("generatedTitle: Preserved Automatic Title"),
       "native launch YAML export lost OpenUI layout metadata",
     );
     const importedWarpLaunchResult = await api("/api/terminal/launch-configurations/import", {
@@ -10073,6 +10075,15 @@ async function main() {
       { method: "POST" },
     );
     await assert(launchResult.started.length === 2, "launch configuration did not start both sessions");
+    const launchedSessions = await api("/api/sessions");
+    const launchedAutomaticSession = launchedSessions.find(
+      (session) => session.sessionId === launchResult.started.find((item) => item.ref === "first").sessionId,
+    );
+    await assert(
+      launchedAutomaticSession?.generatedTitle === "Preserved Automatic Title" &&
+        !launchedAutomaticSession.customName,
+      "launch configuration lost the automatic title or converted it into a manual lock",
+    );
     await assert(
       launchResult.activeSessionId === launchResult.started.find((item) => item.ref === "first").sessionId &&
         launchResult.workspace.tabs.some((tab) =>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -46,6 +46,9 @@ check("grouped sessions get visual disambiguators without custom names", () => {
     "Session Naming · #2",
   );
   assert.equal(sessionDisplayTitle({ agentName: "Codex", sessionOrdinal: 1, sessionGroupSize: 1 }), "Codex");
+  const bounded = sessionDisplayTitle({ generatedTitle: "😀".repeat(120), sessionOrdinal: 12, sessionGroupSize: 20 });
+  assert.equal(Array.from(bounded).length, 120);
+  assert.match(bounded, / · #12$/);
 });
 
 check("workspace tabs follow session titles only until manually renamed", () => {
@@ -57,6 +60,17 @@ check("workspace tabs follow session titles only until manually renamed", () => 
     snapshot = workspace.updateInheritedSessionTitle("session-a", "Session Naming");
     assert.equal(snapshot.tabs[0].title, "Session Naming");
     assert.equal(snapshot.tabs[0].titleSource, "session");
+
+    snapshot = workspace.addTab("session-b", { title: "Other Task", titleSource: "session", expectedRevision: snapshot.revision });
+    const otherTabId = snapshot.tabs.find((tab) => tab.root.type === "pane" && tab.root.sessionId === "session-b").id;
+    snapshot = workspace.closeTab(otherTabId, snapshot.revision);
+    const revisionBeforeInheritedTitle = snapshot.revision;
+    snapshot = workspace.updateInheritedSessionTitle("session-a", "Session Naming Model");
+    assert.equal(snapshot.revision, revisionBeforeInheritedTitle);
+    assert.equal(snapshot.closedPaneCount, 1);
+    snapshot = workspace.undoClose(["session-a", "session-b"], snapshot.revision);
+    assert.equal(snapshot.tabs.length, 2);
+    assert.equal(snapshot.tabs.find((tab) => tab.id === tabId).title, "Session Naming Model");
 
     snapshot = workspace.renameTab(tabId, "Pinned Workspace");
     assert.equal(snapshot.tabs[0].titleSource, "custom");
@@ -105,6 +119,8 @@ check("the schema boundary preserves an exact-name manual lock after migration",
     const reloaded = loadState();
     assert.equal(reloaded.nodes[0].customName, "Session Naming");
     assert.equal(reloaded.nodes[0].generatedTitle, "Session Naming");
+    savePersistedState(reloaded);
+    assert.equal(JSON.parse(readFileSync(join(root, "state.json.bak"), "utf8")).version, 2);
   } finally {
     if (previousDataDir === undefined) delete process.env.OPENUI_DATA_DIR;
     else process.env.OPENUI_DATA_DIR = previousDataDir;
@@ -114,6 +130,7 @@ check("the schema boundary preserves an exact-name manual lock after migration",
 
 check("names are normalized and bounded", () => {
   assert.equal(normalizeSessionTitle("  A   useful\nname  "), "A useful name");
+  assert.equal(normalizeSessionTitle("A\u0000 useful\u001f name"), "A useful name");
   assert.equal(Array.from(normalizeSessionTitle("x".repeat(200))).length, 120);
   assert.equal(normalizeSessionTitle("   "), undefined);
 });

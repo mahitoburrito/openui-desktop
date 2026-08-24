@@ -211,6 +211,7 @@ function validateLaunchSession(raw: any): TerminalLaunchSession {
     command,
     cwd,
     customName: cleanText(raw?.customName, 120) || undefined,
+    generatedTitle: cleanText(raw?.generatedTitle, 120) || undefined,
     customColor: cleanText(raw?.customColor, 80) || undefined,
     initialPrompt: typeof raw?.initialPrompt === "string" ? raw.initialPrompt.slice(0, 12_000) : undefined,
     workflowId: cleanText(raw?.workflowId, 200) || undefined,

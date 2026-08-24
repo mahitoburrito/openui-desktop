@@ -657,6 +657,7 @@ export function FocusMode() {
         command: session.command,
         cwd: session.cwd,
         customName: session.customName,
+        generatedTitle: session.generatedTitle,
         customColor: session.customColor || session.color,
       }));
     return await terminalWorkspace.createLaunchConfiguration({

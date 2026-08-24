@@ -25,6 +25,7 @@ import { sanitizeTitlePrompt } from "./titleGenerator";
 import { migrateLegacySessionTitles, normalizeSessionTitle } from "../../shared/sessionTitle";
 
 const PERSISTENCE_VERSION = 3 as const;
+const AUXILIARY_PERSISTENCE_VERSION = 2 as const;
 const MAX_PERSISTED_SESSIONS = 100;
 const MAX_PERSISTED_CATEGORIES = 100;
 const MAX_REPLAY_CHARS = 2_000_000;
@@ -208,7 +209,8 @@ function migrateCurrentEnvelope(path: string, value: unknown, label: string) {
     atomicWriteFile(path, JSON.stringify(value, null, 2));
     incompatibleVersionFiles.delete(path);
     warnedIncompatibleVersionFiles.delete(path);
-    console.log(`[persistence] Migrated ${label} to version ${PERSISTENCE_VERSION}`);
+    const targetVersion = value && typeof value === "object" ? (value as any).version : PERSISTENCE_VERSION;
+    console.log(`[persistence] Migrated ${label} to version ${targetVersion}`);
   } catch (error) {
     // Returning the in-memory migrated value is safe; a later periodic save can
     // retry without making startup depend on a writable filesystem.
@@ -221,6 +223,15 @@ function atomicWriteFile(path: string, content: string) {
   const displaced = `${path}.old-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const backup = `${path}.bak`;
   const rotateValidatedCurrent = validatedFileIsUnchanged(path);
+  let preserveCompatibilityBackup = false;
+  if (path === getStateFile() && existsSync(backup)) {
+    try {
+      const backupVersion = persistenceEnvelopeVersion(JSON.parse(readFileSync(backup, "utf8")));
+      preserveCompatibilityBackup = backupVersion !== null && backupVersion < PERSISTENCE_VERSION;
+    } catch {
+      // An invalid backup should be replaced by the next validated generation.
+    }
+  }
   let descriptor: number | undefined;
   let currentWasDisplaced = false;
   let committed = false;
@@ -241,7 +252,9 @@ function atomicWriteFile(path: string, content: string) {
     recordValidatedFile(path);
 
     if (currentWasDisplaced) {
-      if (rotateValidatedCurrent) {
+      if (rotateValidatedCurrent && preserveCompatibilityBackup) {
+        try { rmSync(displaced, { force: true }); } catch {}
+      } else if (rotateValidatedCurrent) {
         try {
           rmSync(backup, { force: true });
           renameSync(displaced, backup);
@@ -715,7 +728,7 @@ export function saveBuffer(
     assertVersionWritable(bufferFile);
     const replay = terminalReplayText(buffer, alreadyTruncated);
     atomicWriteFile(bufferFile, JSON.stringify({
-      version: PERSISTENCE_VERSION,
+      version: AUXILIARY_PERSISTENCE_VERSION,
       savedAt: Date.now(),
       truncated: replay.truncated,
       data: replay.data,
@@ -748,9 +761,9 @@ export function loadBuffer(sessionId: string): LoadedTerminalBuffer {
     }
     const replay = boundedReplay((candidate.value as any).data, (candidate.value as any).truncated === true);
     if (candidate.path === bufferFile) {
-      if (sourceVersion < PERSISTENCE_VERSION) {
+      if (sourceVersion < AUXILIARY_PERSISTENCE_VERSION) {
         migrateCurrentEnvelope(bufferFile, {
-          version: PERSISTENCE_VERSION,
+          version: AUXILIARY_PERSISTENCE_VERSION,
           savedAt: Date.now(),
           truncated: replay.truncated,
           data: replay.data,
@@ -860,7 +873,7 @@ export function saveTerminalBlocks(sessionId: string, blocks: TerminalCommandBlo
     assertVersionWritable(blocksFile);
     const safeBlocks = normalizedBlocks(blocks, false);
     atomicWriteFile(blocksFile, JSON.stringify({
-      version: PERSISTENCE_VERSION,
+      version: AUXILIARY_PERSISTENCE_VERSION,
       savedAt: Date.now(),
       blocks: safeBlocks,
     }));
@@ -895,9 +908,9 @@ export function loadTerminalBlocks(sessionId: string): TerminalCommandBlock[] {
     }
     const blocks = normalizedBlocks(rawBlocks, true);
     if (candidate.path === blocksFile) {
-      if (sourceVersion < PERSISTENCE_VERSION) {
+      if (sourceVersion < AUXILIARY_PERSISTENCE_VERSION) {
         migrateCurrentEnvelope(blocksFile, {
-          version: PERSISTENCE_VERSION,
+          version: AUXILIARY_PERSISTENCE_VERSION,
           savedAt: Date.now(),
           blocks,
         }, `terminal blocks for ${sessionId}`);

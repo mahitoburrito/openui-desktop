@@ -3174,6 +3174,10 @@ apiRoutes.patch("/sessions/:sessionId", async (c) => {
     session.customName = normalizeSessionTitle(updates.customName);
     session.titleGenerationRevision = (session.titleGenerationRevision || 0) + 1;
     terminalWorkspace.updateInheritedSessionTitle(sessionId, sessionDisplayTitle(session));
+    const latestTitlePrompt = session.titlePromptHistory?.[session.titlePromptHistory.length - 1];
+    if (!session.customName && latestTitlePrompt) {
+      scheduleSessionTitleGeneration(sessionId, latestTitlePrompt);
+    }
   }
   if (updates.customColor !== undefined) session.customColor = updates.customColor;
   if (updates.notes !== undefined) session.notes = updates.notes;

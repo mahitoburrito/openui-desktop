@@ -58,6 +58,7 @@ export interface TerminalLaunchSession {
   command: string;
   cwd: string;
   customName?: string;
+  generatedTitle?: string;
   customColor?: string;
   initialPrompt?: string;
   workflowId?: string;

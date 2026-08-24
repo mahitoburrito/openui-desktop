@@ -11,7 +11,10 @@ export interface SessionTitleFields {
 
 export function normalizeSessionTitle(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const normalized = value.replace(/\s+/g, " ").trim();
+  const normalized = value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!normalized) return undefined;
   return Array.from(normalized).slice(0, SESSION_TITLE_MAX_CHARS).join("").trim() || undefined;
 }
@@ -55,5 +58,9 @@ export function sessionTitleDisambiguator(session: SessionTitleFields): string |
 export function sessionDisplayTitle(session: SessionTitleFields, fallback = "Session"): string {
   const title = baseSessionTitle(session, fallback);
   const disambiguator = sessionTitleDisambiguator(session);
-  return disambiguator ? `${title} · ${disambiguator}` : title;
+  if (!disambiguator) return title;
+  const suffix = ` · ${disambiguator}`;
+  const availableTitleChars = SESSION_TITLE_MAX_CHARS - Array.from(suffix).length;
+  const boundedTitle = Array.from(title).slice(0, availableTitleChars).join("").trimEnd();
+  return `${boundedTitle}${suffix}`;
 }

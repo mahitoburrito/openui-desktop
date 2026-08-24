@@ -7,6 +7,7 @@ const DEFAULT_MODEL = "gemini-2.5-flash";
 const TITLE_MAX_INPUT_CHARS = 5000;
 const TITLE_MAX_WORDS = 8;
 const TITLE_MAX_CHARS = 80;
+const inFlightSessionTitleRequests = new Map<string, Promise<string>>();
 const GEMINI_TITLE_SYSTEM_PROMPT = [
   "Name an OpenUI desktop agent session from the user's prompt history over time.",
   "Return only a useful descriptive session title, ideally 4-8 words and always under 80 characters.",
@@ -545,6 +546,13 @@ export async function generateSessionTitle({
   const model = getGeminiModel();
   if (safePromptHistory.length === 0) return fallback;
 
+  // Multi-session launches intentionally share a durable task title and use
+  // ordinal suffixes for disambiguation. Collapse equivalent concurrent model
+  // requests so a 20-pane launch does not become 20 identical paid calls.
+  const requestKey = JSON.stringify({ model, safePromptHistory, agentName, ticketTitle, gitBranch });
+  const inFlight = inFlightSessionTitleRequests.get(requestKey);
+  if (inFlight) return inFlight;
+
   const context = [
     agentName ? `Agent: ${agentName}` : "",
     ticketTitle ? `Ticket title: ${cleanPrompt(ticketTitle)}` : "",
@@ -554,58 +562,68 @@ export async function generateSessionTitle({
     .filter(Boolean)
     .join("\n");
 
-  try {
-    const bearer = isBearerCredential(apiKey);
-    const res = await fetch(
-      `${GEMINI_API}/models/${encodeURIComponent(model)}:generateContent${bearer ? "" : `?key=${encodeURIComponent(apiKey)}`}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(bearer ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [
-              {
-                text: GEMINI_TITLE_SYSTEM_PROMPT,
-              },
-            ],
+  const request = (async () => {
+    try {
+      const bearer = isBearerCredential(apiKey);
+      const res = await fetch(
+        `${GEMINI_API}/models/${encodeURIComponent(model)}:generateContent${bearer ? "" : `?key=${encodeURIComponent(apiKey)}`}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(bearer ? { Authorization: `Bearer ${apiKey}` } : {}),
           },
-          contents: [
-            {
-              role: "user",
+          body: JSON.stringify({
+            systemInstruction: {
               parts: [
                 {
-                  text: [
-                    context,
-                    "User prompts, oldest to newest:",
-                    ...safePromptHistory.map((item, index) => `${index + 1}. ${item}`),
-                  ].filter(Boolean).join("\n"),
+                  text: GEMINI_TITLE_SYSTEM_PROMPT,
                 },
               ],
             },
-          ],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 48,
-          },
-        }),
-      },
-    );
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    text: [
+                      context,
+                      "User prompts, oldest to newest:",
+                      ...safePromptHistory.map((item, index) => `${index + 1}. ${item}`),
+                    ].filter(Boolean).join("\n"),
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 48,
+            },
+          }),
+        },
+      );
 
-    if (!res.ok) return fallback;
-    const data = (await res.json()) as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[];
-    };
-    const raw =
-      data?.candidates?.[0]?.content?.parts
-        ?.map((part: { text?: string }) => part.text || "")
-        .join(" ") || "";
-    const title = normalizeTitle(raw);
-    return isUsefulGeneratedTitle(title) ? title : fallback;
-  } catch {
-    return fallback;
+      if (!res.ok) return fallback;
+      const data = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
+      const raw =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((part: { text?: string }) => part.text || "")
+          .join(" ") || "";
+      const title = normalizeTitle(raw);
+      return isUsefulGeneratedTitle(title) ? title : fallback;
+    } catch {
+      return fallback;
+    }
+  })();
+  inFlightSessionTitleRequests.set(requestKey, request);
+  try {
+    return await request;
+  } finally {
+    if (inFlightSessionTitleRequests.get(requestKey) === request) {
+      inFlightSessionTitleRequests.delete(requestKey);
+    }
   }
 }
 

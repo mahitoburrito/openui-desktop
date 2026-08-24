@@ -749,7 +749,7 @@ export class TerminalWorkspaceService {
       if (tab.title === clean) return false;
       tab.title = clean;
       return true;
-    });
+    }, { preserveRevision: true, preserveUndo: true });
   }
 
   closePane(sessionIdValue: unknown, expectedRevision?: number): TerminalWorkspaceSnapshot {
@@ -942,13 +942,13 @@ export class TerminalWorkspaceService {
   private update(
     expectedRevision: number | undefined,
     mutate: (state: TerminalWorkspaceState) => boolean,
-    options: { saveUndo?: boolean } = {},
+    options: { preserveRevision?: boolean; saveUndo?: boolean; preserveUndo?: boolean } = {},
   ): TerminalWorkspaceSnapshot {
     this.assertRevision(expectedRevision);
     const previous = copy(this.state);
     const next = copy(this.state);
     if (!mutate(next)) return this.snapshot();
-    next.revision = this.state.revision + 1;
+    next.revision = options.preserveRevision ? this.state.revision : this.state.revision + 1;
     next.updatedAt = Date.now();
     const validated = validateState(next);
     this.persist(validated);
@@ -956,6 +956,8 @@ export class TerminalWorkspaceService {
     if (options.saveUndo) {
       this.undoCloseStack.push(previous);
       if (this.undoCloseStack.length > MAX_UNDO_CLOSE) this.undoCloseStack.shift();
+    } else if (options.preserveUndo) {
+      for (const undoState of this.undoCloseStack) mutate(undoState);
     } else {
       this.undoCloseStack.length = 0;
     }

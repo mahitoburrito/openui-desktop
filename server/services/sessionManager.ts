@@ -1801,14 +1801,15 @@ export function scheduleSessionTitleGeneration(sessionId: string, prompt: string
   const titlePrompt = sanitizeTitlePrompt(prompt);
   if (!session || !titlePrompt) return;
 
-  // `customName` is exclusively a user override. Automatic titles never write
-  // into it, so a manual lock cannot be confused with a generated value.
-  if (session.customName) return;
-
   const history = session.titlePromptHistory ?? [];
   if (history[history.length - 1] !== titlePrompt) {
     session.titlePromptHistory = [...history, titlePrompt].slice(-TITLE_PROMPT_HISTORY_LIMIT);
   }
+
+  // Keep learning the durable work thread while a manual name is active so
+  // reset-to-automatic can immediately resume from current context.
+  if (session.customName) return;
+
   const generationRevision = (session.titleGenerationRevision || 0) + 1;
   session.titleGenerationRevision = generationRevision;
 
@@ -1833,8 +1834,11 @@ export function scheduleSessionTitleGeneration(sessionId: string, prompt: string
       if (current.customName || current.titleGenerationRevision !== generationRevision) return;
       if (!name || name === current.generatedTitle) return;
 
+      terminalWorkspace.updateInheritedSessionTitle(
+        sessionId,
+        sessionDisplayTitle({ ...current, generatedTitle: name }),
+      );
       current.generatedTitle = name;
-      terminalWorkspace.updateInheritedSessionTitle(sessionId, sessionDisplayTitle(current));
       saveState(sessions);
       broadcastSessionName(sessionId, name);
     }).catch((error: any) => {
