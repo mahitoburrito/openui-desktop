@@ -29,6 +29,13 @@ import {
   type TerminalViewportAnchor,
 } from "../../../resources/terminal-protocol/terminalViewport.mjs";
 import {
+  normalizeTerminalGrid,
+  observerTerminalGridSync,
+  planTerminalPresentation,
+  terminalMountCanResize,
+  type TerminalResizeMode,
+} from "../../../resources/terminal-protocol/terminalPresentation.mjs";
+import {
   applyTerminalSuggestion,
   inlineSuggestionKinds,
   nextTerminalSuggestionComponent,
@@ -51,6 +58,9 @@ interface TerminalProps {
   };
   workbench?: boolean;
   compact?: boolean;
+  resizeMode?: TerminalResizeMode;
+  initialCols?: number;
+  initialRows?: number;
 }
 
 export interface TerminalInputSyncState extends InlineTerminalInputSnapshot {
@@ -289,6 +299,8 @@ interface CachedTerminal {
   onUserInput?: (sessionId: string, data: string) => boolean;
   inlineKeyHandler?: (event: KeyboardEvent) => boolean;
   onCursorUpdate?: () => void;
+  fittedWidth?: number;
+  fittedHeight?: number;
 }
 
 const cache = new Map<string, CachedTerminal>();
@@ -396,15 +408,73 @@ function writeWithViewport(
   });
 }
 
+function activeResizeMode(entry: CachedTerminal): TerminalResizeMode {
+  return entry.wrapperDiv.parentElement?.dataset.terminalResizeMode === "observe"
+    ? "observe"
+    : "fit";
+}
+
+function resetTerminalPresentation(entry: CachedTerminal) {
+  const wrapper = entry.wrapperDiv;
+  wrapper.style.position = "static";
+  wrapper.style.left = "";
+  wrapper.style.bottom = "";
+  wrapper.style.width = "100%";
+  wrapper.style.height = "100%";
+  wrapper.style.transform = "none";
+  wrapper.style.transformOrigin = "";
+}
+
+function terminalContainerContentSize(container: HTMLElement) {
+  const styles = window.getComputedStyle(container);
+  const pixels = (value: string) => Number.parseFloat(value) || 0;
+  const paddingLeft = pixels(styles.paddingLeft);
+  const paddingRight = pixels(styles.paddingRight);
+  const paddingTop = pixels(styles.paddingTop);
+  const paddingBottom = pixels(styles.paddingBottom);
+  return {
+    width: Math.max(0, container.clientWidth - paddingLeft - paddingRight),
+    height: Math.max(0, container.clientHeight - paddingTop - paddingBottom),
+    left: paddingLeft,
+    bottom: paddingBottom,
+  };
+}
+
 function safeFit(entry: CachedTerminal) {
   const wrapper = entry.wrapperDiv;
   if (!entry.alive || !wrapper.isConnected || !wrapper.parentElement) return;
-  const rect = wrapper.getBoundingClientRect();
-  if (rect.width < MIN_FITTABLE_PX || rect.height < MIN_FITTABLE_PX) return;
+  const container = wrapper.parentElement;
+  const available = terminalContainerContentSize(container);
+  if (available.width < MIN_FITTABLE_PX || available.height < MIN_FITTABLE_PX) return;
+
+  const screen = wrapper.querySelector<HTMLElement>(".xterm-screen");
+  const plan = planTerminalPresentation({
+    resizeMode: activeResizeMode(entry),
+    containerWidth: available.width,
+    containerHeight: available.height,
+    contentWidth: entry.fittedWidth || screen?.offsetWidth || wrapper.clientWidth,
+    contentHeight: entry.fittedHeight || screen?.offsetHeight || wrapper.clientHeight,
+  });
+  if (plan.kind === "none") return;
+  if (plan.kind === "scale") {
+    wrapper.style.position = "absolute";
+    wrapper.style.left = `${available.left}px`;
+    wrapper.style.bottom = `${available.bottom}px`;
+    wrapper.style.width = `${plan.width}px`;
+    wrapper.style.height = `${plan.height}px`;
+    wrapper.style.transform = `scale(${plan.scale})`;
+    wrapper.style.transformOrigin = "left bottom";
+    scheduleViewportRestore(entry);
+    return;
+  }
+
+  resetTerminalPresentation(entry);
   try {
     rememberActiveViewport(entry);
     entry.viewportRestorePending = true;
     entry.fitAddon.fit();
+    entry.fittedWidth = wrapper.clientWidth;
+    entry.fittedHeight = wrapper.clientHeight;
     restoreTerminalViewport(entry);
     scheduleViewportRestore(entry);
   } catch {
@@ -422,6 +492,7 @@ function scheduleFit(entry: CachedTerminal) {
 }
 
 function sendResize(entry: CachedTerminal, cols: number, rows: number) {
+  if (!terminalMountCanResize(activeResizeMode(entry))) return;
   if (entry.ws?.readyState !== WebSocket.OPEN) return;
   entry.ws.send(JSON.stringify({ type: "resize", cols, rows }));
 }
@@ -931,6 +1002,9 @@ export function Terminal({
   synchronizedPreview,
   workbench = false,
   compact = false,
+  resizeMode = "fit",
+  initialCols,
+  initialRows,
 }: TerminalProps) {
   const updateSession = useStore((state) => state.updateSession);
   const terminalThemeId = useStore((state) => state.terminalTheme);
@@ -957,6 +1031,7 @@ export function Terminal({
   const terminalTheme = getTerminalTheme(terminalThemeId);
   const terminalFont = getTerminalFontFamily(terminalFontFamilyId);
   const clampedFontSize = clampTerminalFontSize(terminalFontSize);
+  const initialGrid = normalizeTerminalGrid(initialCols, initialRows);
 
   // Keep mutable bindings current on every render
   useEffect(() => {
@@ -981,9 +1056,11 @@ export function Terminal({
       entry.term.options.fontSize = clampedFontSize;
       entry.term.options.lineHeight = 1.42;
       entry.wrapperDiv.style.backgroundColor = terminalTheme.background;
+      entry.fittedWidth = undefined;
+      entry.fittedHeight = undefined;
       entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
-      // A font change moves the cell size, so the column count moves with it —
-      // term.onResize forwards the new geometry to the PTY.
+      // A font change moves the cell size. Interactive panes refit and forward
+      // the new grid; observer panes only recompute their visual scale.
       const fitTimer = setTimeout(() => safeFit(entry), 0);
       return () => clearTimeout(fitTimer);
     }
@@ -994,7 +1071,36 @@ export function Terminal({
     terminalTheme.background,
     terminalFont.stack,
     clampedFontSize,
+    resizeMode,
   ]);
+
+  // Observer panes follow the server's grid locally without claiming PTY resize
+  // authority. This also rolls back a fit that happened while a reconnect was
+  // still pending if the pane collapses before that resize could be delivered.
+  useEffect(() => {
+    if (resizeMode !== "observe") return;
+    const syncFrame = window.requestAnimationFrame(() => {
+      const entry = cache.get(sessionId);
+      // Mount effects run after this effect is queued. Recheck ownership in the
+      // frame so a newly attached overview card is the terminal's actual host.
+      if (!entry || activeResizeMode(entry) !== "observe") return;
+      const grid = observerTerminalGridSync(
+        resizeMode,
+        entry.term.cols,
+        entry.term.rows,
+        initialCols,
+        initialRows,
+      );
+      if (!grid) return;
+      rememberActiveViewport(entry);
+      entry.viewportRestorePending = true;
+      entry.fittedWidth = undefined;
+      entry.fittedHeight = undefined;
+      entry.term.resize(grid.cols, grid.rows);
+      scheduleFit(entry);
+    });
+    return () => window.cancelAnimationFrame(syncFrame);
+  }, [sessionId, resizeMode, initialCols, initialRows]);
 
   useEffect(() => {
     if (!containerRef.current || !sessionId) return;
@@ -1055,6 +1161,8 @@ export function Terminal({
     wrapperDiv.style.backgroundColor = terminalTheme.background;
 
     const term = new XTerm({
+      cols: initialGrid.cols,
+      rows: initialGrid.rows,
       cursorBlink: true,
       cursorStyle: "bar",
       fontSize: clampedFontSize,
@@ -1651,7 +1759,8 @@ export function Terminal({
     >
       <div
         ref={containerRef}
-        className="w-full h-full"
+        className="relative w-full h-full"
+        data-terminal-resize-mode={resizeMode}
         style={{
           padding: workbench ? "16px 18px 20px" : compact ? "8px 10px 10px" : "14px",
           backgroundColor: terminalTheme.background,

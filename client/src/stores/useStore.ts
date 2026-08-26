@@ -109,6 +109,8 @@ export interface AgentSession {
   agentProfileVersion?: number;
   agentPermissionPolicy?: "ask" | "allow-edits" | "read-only";
   agentModel?: string;
+  terminalCols?: number;
+  terminalRows?: number;
 }
 
 export interface DeleteToast {

@@ -398,6 +398,8 @@ async function startSessionFromApiInput(
     cwd: result.cwd,
     gitBranch: result.gitBranch,
     launchCheckpoint,
+    terminalCols: result.session.terminalCols,
+    terminalRows: result.session.terminalRows,
   };
 }
 

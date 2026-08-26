@@ -128,6 +128,8 @@ function restoreServerSessionToCanvas(sessionData: any) {
     agentProfileVersion: sessionData.agentProfileVersion,
     agentPermissionPolicy: sessionData.agentPermissionPolicy,
     agentModel: sessionData.agentModel,
+    terminalCols: sessionData.terminalCols,
+    terminalRows: sessionData.terminalRows,
   };
 
   addSession(sessionData.nodeId, restoredSession);
@@ -313,6 +315,12 @@ function AppContent() {
                 if (existing.isRestored !== sessionData.isRestored) {
                   sessionUpdates.isRestored = sessionData.isRestored;
                 }
+                if (existing.terminalCols !== sessionData.terminalCols) {
+                  sessionUpdates.terminalCols = sessionData.terminalCols;
+                }
+                if (existing.terminalRows !== sessionData.terminalRows) {
+                  sessionUpdates.terminalRows = sessionData.terminalRows;
+                }
                 if (existing.customName !== sessionData.customName) {
                   sessionUpdates.customName = sessionData.customName;
                   const title = sessionData.customName || existing.agentName;
@@ -458,6 +466,8 @@ function AppContent() {
             worktreePaths: session.worktreePaths,
             launchCheckpoint: session.launchCheckpoint,
             changeSummary: session.changeSummary,
+            terminalCols: session.terminalCols,
+            terminalRows: session.terminalRows,
           });
 
           restoredNodes.push({

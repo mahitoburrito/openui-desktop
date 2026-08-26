@@ -2922,6 +2922,68 @@ async function runPreferredTerminalSizeUnitTests() {
 
 async function runTerminalOwnershipSourceTests() {
   const terminalSource = await readFile(join(ROOT, "client", "src", "components", "Terminal.tsx"), "utf8");
+  const sidebarSource = await readFile(join(ROOT, "client", "src", "components", "Sidebar.tsx"), "utf8");
+  const focusSource = await readFile(join(ROOT, "client", "src", "components", "FocusMode.tsx"), "utf8");
+
+  const presentationUtilityPath = join(ROOT, "resources", "terminal-protocol", "terminalPresentation.mjs");
+  const presentation = await import(pathToFileURL(presentationUtilityPath));
+  await assert(
+    !presentation.terminalMountCanResize("observe") && presentation.terminalMountCanResize("fit"),
+    "an overview observer can resize the PTY, or an interactive terminal cannot",
+  );
+  const overviewPlan = presentation.planTerminalPresentation({
+    resizeMode: "observe",
+    containerWidth: 420,
+    containerHeight: 210,
+    contentWidth: 1280,
+    contentHeight: 720,
+  });
+  await assert(
+    overviewPlan.kind === "scale" &&
+      overviewPlan.width === 1280 &&
+      overviewPlan.height === 720 &&
+      Math.abs(overviewPlan.scale - (420 / 1280)) < 0.000001,
+    "an overview thumbnail no longer preserves the terminal grid while keeping its bottom rows readable",
+  );
+  await assert(
+    presentation.planTerminalPresentation({
+      resizeMode: "fit",
+      containerWidth: 420,
+      containerHeight: 210,
+      contentWidth: 1280,
+      contentHeight: 720,
+    }).kind === "fit",
+    "an interactive terminal no longer owns its fitted PTY geometry",
+  );
+  await assert(
+    JSON.stringify(presentation.normalizeTerminalGrid(172, 37)) === JSON.stringify({ cols: 172, rows: 37 }) &&
+      JSON.stringify(presentation.normalizeTerminalGrid(undefined, -4)) === JSON.stringify({ cols: 80, rows: 24 }),
+    "a newly observed terminal cannot initialize from the server's current grid",
+  );
+  await assert(
+    JSON.stringify(presentation.observerTerminalGridSync("observe", 80, 24, 172, 37)) ===
+      JSON.stringify({ cols: 172, rows: 37 }) &&
+      presentation.observerTerminalGridSync("observe", 172, 37, 172, 37) === null &&
+      presentation.observerTerminalGridSync("fit", 80, 24, 172, 37) === null,
+    "an observer cannot locally resync to the authoritative PTY grid without taking resize ownership",
+  );
+  await assert(
+    sidebarSource.includes("initialCols={session.terminalCols}") &&
+      sidebarSource.includes("initialRows={session.terminalRows}") &&
+      focusSource.includes("initialCols={session.terminalCols}") &&
+      focusSource.includes("initialRows={session.terminalRows}"),
+    "an interactive terminal mount falls back to 80x24 before its first fit",
+  );
+  await assert(
+    presentation.planTerminalPresentation({
+      resizeMode: "observe",
+      containerWidth: 0,
+      containerHeight: 210,
+      contentWidth: 1280,
+      contentHeight: 720,
+    }).kind === "none",
+    "a hidden overview card applies an invalid terminal scale",
+  );
 
   // Chromium can reset a detached scroll container's scrollTop to zero. xterm
   // interprets the delayed native scroll event as an intentional jump to line 0,
@@ -9426,6 +9488,15 @@ async function main() {
     });
     await assert(autoCheckpointSession.launchCheckpoint?.id, "session should return launch checkpoint");
     await assert(autoCheckpointSession.launchCheckpoint.source === "session-launch", "launch checkpoint source missing");
+    const launchedSessionSnapshot = (await api("/api/sessions"))
+      .find((session) => session.sessionId === autoCheckpointSession.sessionId);
+    await assert(
+      Number.isInteger(autoCheckpointSession.terminalCols) &&
+        Number.isInteger(autoCheckpointSession.terminalRows) &&
+        autoCheckpointSession.terminalCols === launchedSessionSnapshot?.terminalCols &&
+        autoCheckpointSession.terminalRows === launchedSessionSnapshot?.terminalRows,
+      "session launch response did not include the authoritative PTY grid",
+    );
     await waitForFileIncludes(join(autoCheckpointRepo, "tracked.txt"), "agent");
     const commandBlock = await waitForTerminalBlock(
       autoCheckpointSession.sessionId,
