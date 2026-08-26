@@ -22,6 +22,13 @@ import {
   type InlineTerminalInputSnapshot,
 } from "../../../resources/terminal-protocol/inlineInput.mjs";
 import {
+  captureTerminalViewport,
+  terminalViewportRestoreAction,
+  terminalViewportScrollTop,
+  type TerminalBufferType,
+  type TerminalViewportAnchor,
+} from "../../../resources/terminal-protocol/terminalViewport.mjs";
+import {
   applyTerminalSuggestion,
   inlineSuggestionKinds,
   nextTerminalSuggestionComponent,
@@ -250,6 +257,13 @@ interface CachedTerminal {
   // DOM drift apart, which is what leaves a pane permanently black.
   mounts: HTMLDivElement[];
   fitFrame?: number;
+  viewportRestoreFrame?: number;
+  viewportReplayTimer?: ReturnType<typeof setTimeout>;
+  viewportElement?: HTMLElement;
+  viewportScrollCleanup?: () => void;
+  viewportRestorePending: boolean;
+  viewportAnchors: Partial<Record<TerminalBufferType, TerminalViewportAnchor>>;
+  hasRenderedOutput: boolean;
   gpuReleaseTimer?: ReturnType<typeof setTimeout>;
   webgl: WebglAddon | null;
   webglRetries: number;
@@ -294,15 +308,108 @@ const IMAGE_STORAGE_LIMIT_MB = 8;
 const IMAGE_PIXEL_LIMIT = 2048 * 2048;
 const IMAGE_SEQUENCE_LIMIT_BYTES = 4_000_000;
 
+function activeViewportAnchor(entry: CachedTerminal): TerminalViewportAnchor {
+  const buffer = entry.term.buffer.active;
+  return entry.viewportAnchors[buffer.type] || captureTerminalViewport(buffer);
+}
+
+function rememberActiveViewport(entry: CachedTerminal) {
+  if (entry.viewportRestorePending) return;
+  const anchor = captureTerminalViewport(entry.term.buffer.active);
+  entry.viewportAnchors[anchor.bufferType] = anchor;
+}
+
+function restoreTerminalViewport(entry: CachedTerminal) {
+  if (!entry.alive || !entry.wrapperDiv.isConnected) return;
+  const buffer = entry.term.buffer.active;
+  const action = terminalViewportRestoreAction(activeViewportAnchor(entry), buffer);
+  if (action.kind === "bottom") entry.term.scrollToBottom();
+  else if (action.kind === "line") entry.term.scrollToLine(action.target);
+  // xterm can no-op when its logical viewport already equals the target even
+  // though Chromium reset the reparented scroll element. Keep both layers in
+  // sync; the pending guard prevents this corrective scroll from replacing the
+  // user's saved anchor.
+  if (entry.viewportElement) {
+    const scrollTop = terminalViewportScrollTop(
+      action.target,
+      buffer.baseY,
+      entry.viewportElement.scrollHeight,
+      entry.viewportElement.clientHeight,
+    );
+    if (Math.abs(entry.viewportElement.scrollTop - scrollTop) > 0.5) {
+      entry.viewportElement.scrollTop = scrollTop;
+    }
+  }
+}
+
+// Reparenting a scroll container can queue a native scroll event with scrollTop=0.
+// xterm ignores that event while hidden, but if it lands just after the terminal
+// becomes visible it looks like a real request to jump to line zero. Restore on two
+// frames so both the DOM move and xterm's visibility observer settle first.
+function scheduleViewportRestore(entry: CachedTerminal) {
+  if (!entry.alive) return;
+  entry.viewportRestorePending = true;
+  if (entry.viewportRestoreFrame !== undefined) {
+    window.cancelAnimationFrame(entry.viewportRestoreFrame);
+  }
+  entry.viewportRestoreFrame = window.requestAnimationFrame(() => {
+    if (!entry.alive) {
+      entry.viewportRestoreFrame = undefined;
+      entry.viewportRestorePending = false;
+      return;
+    }
+    restoreTerminalViewport(entry);
+    entry.viewportRestoreFrame = window.requestAnimationFrame(() => {
+      entry.viewportRestoreFrame = undefined;
+      restoreTerminalViewport(entry);
+      entry.viewportRestorePending = false;
+      if (entry.alive && entry.wrapperDiv.isConnected) {
+        entry.term.refresh(0, Math.max(0, entry.term.rows - 1));
+      }
+    });
+  });
+}
+
+function writeWithViewport(
+  entry: CachedTerminal,
+  data: string,
+  callback?: () => void,
+  marksRenderedOutput = false,
+) {
+  rememberActiveViewport(entry);
+  const firstRenderedOutput = marksRenderedOutput && !entry.hasRenderedOutput;
+  if (firstRenderedOutput) {
+    entry.hasRenderedOutput = true;
+    if (entry.viewportReplayTimer !== undefined) {
+      clearTimeout(entry.viewportReplayTimer);
+      entry.viewportReplayTimer = undefined;
+    }
+  }
+  entry.term.write(data, () => {
+    if (!entry.alive) return;
+    // Ordinary writes should follow xterm's live viewport state. Restoring the
+    // anchor captured when the write was queued can override a wheel/scrollbar
+    // move that happened before this asynchronous callback ran.
+    if (entry.viewportRestorePending) restoreTerminalViewport(entry);
+    if (firstRenderedOutput) scheduleViewportRestore(entry);
+    callback?.();
+  });
+}
+
 function safeFit(entry: CachedTerminal) {
   const wrapper = entry.wrapperDiv;
   if (!entry.alive || !wrapper.isConnected || !wrapper.parentElement) return;
   const rect = wrapper.getBoundingClientRect();
   if (rect.width < MIN_FITTABLE_PX || rect.height < MIN_FITTABLE_PX) return;
   try {
+    rememberActiveViewport(entry);
+    entry.viewportRestorePending = true;
     entry.fitAddon.fit();
+    restoreTerminalViewport(entry);
+    scheduleViewportRestore(entry);
   } catch {
     // The renderer can be torn down between the schedule and the callback.
+    entry.viewportRestorePending = false;
   }
 }
 
@@ -330,8 +437,11 @@ function reclaimTerminal(entry: CachedTerminal) {
       continue;
     }
     if (entry.wrapperDiv.parentNode !== next) {
+      rememberActiveViewport(entry);
+      entry.viewportRestorePending = true;
       next.appendChild(entry.wrapperDiv);
       scheduleFit(entry);
+      scheduleViewportRestore(entry);
     }
     return;
   }
@@ -341,7 +451,12 @@ function attachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
   const index = entry.mounts.indexOf(container);
   if (index !== -1) entry.mounts.splice(index, 1);
   entry.mounts.push(container);
-  if (entry.wrapperDiv.parentNode !== container) container.appendChild(entry.wrapperDiv);
+  if (entry.wrapperDiv.parentNode !== container) {
+    rememberActiveViewport(entry);
+    entry.viewportRestorePending = true;
+    container.appendChild(entry.wrapperDiv);
+    scheduleViewportRestore(entry);
+  }
   cancelGpuRelease(entry);
   enableGpuRenderer(entry);
 }
@@ -349,7 +464,10 @@ function attachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
 function detachTerminal(entry: CachedTerminal, container: HTMLDivElement) {
   const index = entry.mounts.indexOf(container);
   if (index !== -1) entry.mounts.splice(index, 1);
-  if (entry.wrapperDiv.parentNode === container) container.removeChild(entry.wrapperDiv);
+  if (entry.wrapperDiv.parentNode === container) {
+    rememberActiveViewport(entry);
+    container.removeChild(entry.wrapperDiv);
+  }
   reclaimTerminal(entry);
   if (entry.mounts.length === 0) scheduleGpuRelease(entry);
 }
@@ -571,6 +689,9 @@ export function destroyCachedTerminal(sessionId: string) {
   entry.alive = false;
   if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
   if (entry.fitFrame !== undefined) window.cancelAnimationFrame(entry.fitFrame);
+  if (entry.viewportRestoreFrame !== undefined) window.cancelAnimationFrame(entry.viewportRestoreFrame);
+  if (entry.viewportReplayTimer !== undefined) clearTimeout(entry.viewportReplayTimer);
+  entry.viewportScrollCleanup?.();
   cancelGpuRelease(entry);
   entry.mounts.length = 0;
   entry.webgl = null;
@@ -723,8 +844,16 @@ function connectWs(
     // application cursor keys — and a replay cannot put them back. Doing it on
     // open rather than on the first output frame also stops a late clear from
     // wiping the first live frame of a session with an empty buffer.
+    rememberActiveViewport(entry);
     entry.kittyKeyboard.reset();
-    entry.term.write("\x1b[H\x1b[2J\x1b[3J\x1b[0m");
+    entry.hasRenderedOutput = false;
+    entry.viewportRestorePending = true;
+    writeWithViewport(entry, "\x1b[H\x1b[2J\x1b[3J\x1b[0m");
+    if (entry.viewportReplayTimer !== undefined) clearTimeout(entry.viewportReplayTimer);
+    entry.viewportReplayTimer = setTimeout(() => {
+      entry.viewportReplayTimer = undefined;
+      if (!entry.hasRenderedOutput) scheduleViewportRestore(entry);
+    }, 500);
     sendResize(entry, entry.term.cols, entry.term.rows);
     entry.onPromptInputChange?.(sessionId, terminalInputSyncState(entry));
     onReady?.(sendInput);
@@ -736,7 +865,7 @@ function connectWs(
       if (msg.type === "output") {
         const output = processOutput(msg.data);
         capturePendingLocalPreview(entry, output);
-        entry.term.write(output, () => entry.onCursorUpdate?.());
+        writeWithViewport(entry, output, () => entry.onCursorUpdate?.(), true);
       } else if (msg.type === "status") {
         entry.updateSession(entry.nodeId, {
           status: msg.status as AgentStatus,
@@ -766,7 +895,7 @@ function connectWs(
       if (typeof event.data === "string") {
         capturePendingLocalPreview(entry, event.data);
       }
-      entry.term.write(event.data, () => entry.onCursorUpdate?.());
+      writeWithViewport(entry, event.data, () => entry.onCursorUpdate?.(), true);
     }
   };
 
@@ -954,7 +1083,6 @@ export function Terminal({
     // element that is measured while detached spends its first frames paused.
     container.appendChild(wrapperDiv);
     term.open(wrapperDiv);
-    term.write("\x1b[0m\x1b[?25h");
 
     const entry: CachedTerminal = {
       sessionId,
@@ -962,6 +1090,9 @@ export function Terminal({
       fitAddon,
       wrapperDiv,
       mounts: [],
+      viewportRestorePending: false,
+      viewportAnchors: {},
+      hasRenderedOutput: false,
       webgl: null,
       webglRetries: 0,
       userInputTracked: false,
@@ -983,6 +1114,21 @@ export function Terminal({
       onUserInput,
     };
     cache.set(sessionId, entry);
+    const initialViewport = captureTerminalViewport(term.buffer.active);
+    entry.viewportAnchors[initialViewport.bufferType] = initialViewport;
+    // xterm intentionally suppresses its public onScroll event for native
+    // wheel/scrollbar movement. Observe the actual viewport node as well so a
+    // user's last manual position survives pane moves and reconnect replay.
+    const viewportElement = wrapperDiv.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewportElement) {
+      entry.viewportElement = viewportElement;
+      const handleViewportScroll = () => rememberActiveViewport(entry);
+      viewportElement.addEventListener("scroll", handleViewportScroll);
+      entry.viewportScrollCleanup = () => {
+        viewportElement.removeEventListener("scroll", handleViewportScroll);
+      };
+    }
+    writeWithViewport(entry, "\x1b[0m\x1b[?25h");
     entry.userInputTracked = watchUserInput(entry);
     // wrapperDiv is already inside `container` (open() needs it attached), so this
     // only registers the ownership claim — but it keeps every mount path on one
@@ -994,6 +1140,7 @@ export function Terminal({
     // so the terminal and the PTY cannot drift. ws.onopen additionally re-sends the
     // current geometry on each (re)connect, since a new socket knows nothing.
     term.onResize(({ cols, rows }) => sendResize(entry, cols, rows));
+    term.onScroll(() => rememberActiveViewport(entry));
 
     const sendTerminalResponse = (data: string) => {
       const current = cache.get(sessionId);

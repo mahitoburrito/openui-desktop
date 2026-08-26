@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile, readFile, access, chmod, mkdir, readdir, realpa
 import { spawn, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { request as createHttpRequest } from "node:http";
 import { connect as connectNetSocket, createServer as createNetServer } from "node:net";
@@ -2922,6 +2922,95 @@ async function runPreferredTerminalSizeUnitTests() {
 
 async function runTerminalOwnershipSourceTests() {
   const terminalSource = await readFile(join(ROOT, "client", "src", "components", "Terminal.tsx"), "utf8");
+
+  // Chromium can reset a detached scroll container's scrollTop to zero. xterm
+  // interprets the delayed native scroll event as an intentional jump to line 0,
+  // which strands overview cards at the beginning of otherwise healthy scrollback.
+  // Terminal moves and replay writes must therefore restore an explicit viewport
+  // anchor instead of trusting the DOM scroll position to survive reparenting.
+  await assert(
+    terminalSource.includes("captureTerminalViewport") &&
+      terminalSource.includes("restoreTerminalViewport"),
+    "cached terminals no longer preserve their xterm viewport across first attach and pane moves",
+  );
+
+  const viewportUtilityPath = join(ROOT, "resources", "terminal-protocol", "terminalViewport.mjs");
+  const viewport = await import(pathToFileURL(viewportUtilityPath));
+  const bottomAnchor = viewport.captureTerminalViewport({ viewportY: 320, baseY: 320, type: "normal" });
+  await assert(bottomAnchor.atBottom, "a viewport at baseY was not recorded as bottom-pinned");
+  await assert(
+    viewport.terminalViewportTarget(bottomAnchor, { viewportY: 0, baseY: 480, type: "normal" }) === 480,
+    "a bottom-pinned terminal did not follow newly appended output",
+  );
+
+  const manualAnchor = viewport.captureTerminalViewport({ viewportY: 120, baseY: 320, type: "normal" });
+  await assert(!manualAnchor.atBottom, "a manually scrolled viewport was mistaken for bottom-pinned");
+  await assert(
+    viewport.terminalViewportTarget(manualAnchor, { viewportY: 0, baseY: 480, type: "normal" }) === 120,
+    "a manually scrolled terminal did not preserve its absolute viewport line",
+  );
+  await assert(
+    viewport.terminalViewportTarget(manualAnchor, { viewportY: 0, baseY: 80, type: "normal" }) === 80,
+    "a preserved viewport was not clamped after scrollback truncation",
+  );
+  await assert(
+    viewport.terminalViewportTarget(manualAnchor, { viewportY: 0, baseY: 0, type: "alternate" }) === 0,
+    "a normal-buffer anchor leaked into the alternate screen",
+  );
+  const lineRestore = viewport.terminalViewportRestoreAction(manualAnchor, {
+    viewportY: 0,
+    baseY: 320,
+    type: "normal",
+  });
+  await assert(
+    lineRestore.kind === "line" && lineRestore.target === 120,
+    "a displaced manual viewport did not request an exact line restore",
+  );
+  await assert(
+    viewport.terminalViewportRestoreAction(manualAnchor, {
+      viewportY: 120,
+      baseY: 320,
+      type: "normal",
+    }).kind === "none",
+    "an already-restored manual viewport still mutates xterm's global user-scroll state",
+  );
+  await assert(
+    viewport.terminalViewportRestoreAction(null, {
+      viewportY: 0,
+      baseY: 0,
+      type: "alternate",
+    }).kind === "none",
+    "an alternate-screen no-op restore still clears xterm's normal-buffer user-scroll state",
+  );
+  await assert(
+    viewport.terminalViewportRestoreAction(bottomAnchor, {
+      viewportY: 480,
+      baseY: 480,
+      type: "normal",
+    }).kind === "bottom",
+    "a moved bottom-pinned terminal no longer resynchronizes its DOM viewport",
+  );
+  await assert(
+    viewport.terminalViewportScrollTop(480, 480, 4800, 240) === 4560 &&
+      viewport.terminalViewportScrollTop(120, 480, 4800, 240) === 1140,
+    "logical viewport lines no longer map to the reparented DOM scroll position",
+  );
+
+  const directWrites = terminalSource.match(/\.term\.write\(/g) || [];
+  await assert(
+    directWrites.length === 1 &&
+      terminalSource.includes("term.onScroll") &&
+      terminalSource.includes('querySelector<HTMLElement>(".xterm-viewport")') &&
+      terminalSource.includes('addEventListener("scroll"') &&
+      terminalSource.includes("entry.viewportElement.scrollTop = scrollTop") &&
+      terminalSource.includes("term.refresh"),
+    "terminal output bypasses viewport preservation, or the scroll/refresh lifecycle hooks were removed",
+  );
+  await assert(
+    terminalSource.includes("if (entry.viewportRestorePending) restoreTerminalViewport(entry)") &&
+      terminalSource.includes("if (!entry.alive) return;"),
+    "queued terminal writes can restore stale scroll state or schedule work after teardown",
+  );
 
   // The cached xterm node is shared between panes. Any direct appendChild/removeChild
   // desynchronizes the ownership stack from the DOM and leaves a pane black forever,
