@@ -496,7 +496,13 @@ export function NewSessionModal({
           });
 
           if (res.ok) {
-            const { sessionId: newSessionId, gitBranch, cwd: newCwd } = await res.json();
+            const {
+              sessionId: newSessionId,
+              gitBranch,
+              cwd: newCwd,
+              terminalCols,
+              terminalRows,
+            } = await res.json();
             updateSession(existingNodeId, {
               sessionId: newSessionId,
               agentId: selectedAgent.id,
@@ -508,6 +514,8 @@ export function NewSessionModal({
               ticketId: selectedTicket?.identifier || (selectedGithubIssue ? `#${selectedGithubIssue.number}` : undefined),
               ticketTitle: selectedTicket?.title || selectedGithubIssue?.title,
               gitBranch: gitBranch || branchName || undefined,
+              terminalCols,
+              terminalRows,
             });
           } else {
             updateSession(existingNodeId, { status: "error" });
@@ -610,12 +618,21 @@ export function NewSessionModal({
             });
 
             if (res.ok) {
-              const { sessionId, gitBranch, cwd: newCwd, launchCheckpoint } = await res.json();
+              const {
+                sessionId,
+                gitBranch,
+                cwd: newCwd,
+                launchCheckpoint,
+                terminalCols,
+                terminalRows,
+              } = await res.json();
               updateSession(nodeId, {
                 sessionId,
                 cwd: newCwd || effectiveWorkingDir,
                 gitBranch: gitBranch || branchName || undefined,
                 launchCheckpoint,
+                terminalCols,
+                terminalRows,
                 status: "idle",
               });
             } else {

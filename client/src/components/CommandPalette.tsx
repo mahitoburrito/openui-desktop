@@ -338,6 +338,8 @@ export function CommandPalette() {
           cwd: data.cwd || root,
           gitBranch: data.gitBranch,
           launchCheckpoint: data.launchCheckpoint,
+          terminalCols: data.terminalCols,
+          terminalRows: data.terminalRows,
           status: "idle",
         });
       } catch (error) {

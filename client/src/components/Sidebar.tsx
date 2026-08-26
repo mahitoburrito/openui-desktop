@@ -676,6 +676,8 @@ export function Sidebar() {
                   color={displayColor}
                   nodeId={selectedNodeId!}
                   cwd={session.cwd}
+                  initialCols={session.terminalCols}
+                  initialRows={session.terminalRows}
                   onOpenFile={(p) => setOpenedFile(p)}
                   onReady={handleTerminalReady}
                 />

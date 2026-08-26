@@ -989,6 +989,8 @@ export function FocusMode() {
             color={displayColor}
             nodeId={nodeId}
             cwd={session.cwd}
+            initialCols={session.terminalCols}
+            initialRows={session.terminalRows}
             workbench
             onReady={(sendInput) => terminalInputs.current.set(session.sessionId, sendInput)}
             onPromptInputChange={handlePromptInputChange}

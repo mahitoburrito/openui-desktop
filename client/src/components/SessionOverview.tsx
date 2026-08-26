@@ -233,6 +233,9 @@ function OverviewCard({
                 cwd={session.cwd}
                 compact={!expanded}
                 workbench={expanded}
+                resizeMode={expanded ? "fit" : "observe"}
+                initialCols={session.terminalCols}
+                initialRows={session.terminalRows}
                 onReady={onTerminalReady}
               />
             </motion.div>
