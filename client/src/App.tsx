@@ -33,6 +33,7 @@ import { SelectionActionBar } from "./components/SelectionActionBar";
 import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { AgentActivityCenter } from "./components/AgentActivityCenter";
 import { CommandPalette } from "./components/CommandPalette";
+import { SettingsModal } from "./components/SettingsModal";
 import { getAgentAccentColor } from "./components/AgentIcon";
 import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
@@ -179,6 +180,8 @@ function AppContent() {
     agentProfilesOpen,
     setAgentProfilesOpen,
     selectionModeActive,
+    settingsOpen,
+    setSettingsOpen,
   } = useStore();
 
   const [nodes, setNodes, onNodesChange] = useNodesState(storeNodes);
@@ -801,6 +804,7 @@ function AppContent() {
       <UndoDeleteToast />
       <AgentActivityCenter />
       <CommandPalette />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <PRBEInteractionDialog />
     </div>
   );

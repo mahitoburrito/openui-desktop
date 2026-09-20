@@ -61,6 +61,13 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Cmd+, — settings, the platform-standard shortcut
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        useStore.getState().setSettingsOpen(true);
+        return;
+      }
+
       // Cmd+Shift+A — agent activity center
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "a" || e.key === "A")) {
         e.preventDefault();

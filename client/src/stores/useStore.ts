@@ -219,6 +219,8 @@ interface AppState {
   setTodosPanelOpen: (open: boolean) => void;
   commandPaletteOpen: boolean;
   setCommandPaletteOpen: (open: boolean) => void;
+  settingsOpen: boolean;
+  setSettingsOpen: (open: boolean) => void;
   activityCenterOpen: boolean;
   setActivityCenterOpen: (open: boolean) => void;
   agentProfilesOpen: boolean;
@@ -498,6 +500,8 @@ export const useStore = create<AppState>((set) => ({
   setTodosPanelOpen: (open) => set({ todosPanelOpen: open }),
   commandPaletteOpen: false,
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  settingsOpen: false,
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
   activityCenterOpen: false,
   setActivityCenterOpen: (open) =>
     set(

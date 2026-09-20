@@ -48,9 +48,9 @@ export function SessionsTab({
         <div className="px-4">
           <SettingRow
             title="Default starting directory"
-            description={`Where a new session opens. Empty means the launch directory${launchCwd ? ` (${launchCwd})` : ""}.`}
+            description="Where a new session opens. Empty means the directory the app was launched from."
           >
-            <div className="flex w-[280px] gap-2">
+            <div className="flex w-[260px] gap-2">
               <input
                 type="text"
                 value={defaultStartingDirectory}
