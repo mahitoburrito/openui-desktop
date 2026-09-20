@@ -102,7 +102,10 @@ function OverviewCard({
         opacity: { duration: 0.18 },
         scale: { duration: 0.22, ease: [0.16, 1, 0.3, 1] },
       }}
-      className={`${expanded ? "absolute inset-0 z-30" : "relative min-h-0"} flex overflow-hidden rounded-xl border`}
+      // Inset while expanded so the backdrop behind it is reachable: a
+      // full-bleed card would cover the grid entirely and leave nowhere
+      // to click "outside".
+      className={`${expanded ? "absolute inset-6 z-30" : "relative min-h-0"} flex overflow-hidden rounded-xl border`}
       style={{
         backgroundColor: palette.background,
         borderColor: needsAttention ? status.borderStrong : expanded ? displayColor : palette.border,
