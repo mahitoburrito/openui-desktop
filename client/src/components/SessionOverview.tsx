@@ -516,6 +516,16 @@ export function SessionOverview() {
               gridTemplateRows: `repeat(${shape.rows}, minmax(0, 1fr))`,
             }}
           >
+            {/* Clicking anywhere outside the expanded card collapses it, the same
+                transition the card's back button and Esc perform. Sits above the
+                dimmed grid (unstyled z-index) and below the expanded card (z-30). */}
+            {overviewExpandedNodeId && (
+              <div
+                className="absolute inset-0 z-20 cursor-zoom-out"
+                onClick={() => setOverviewExpandedNodeId(null)}
+                aria-hidden
+              />
+            )}
             {visibleEntries.map(([nodeId, session], index) => (
               <OverviewCard
                 key={nodeId}
