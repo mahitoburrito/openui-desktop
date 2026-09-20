@@ -93,7 +93,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [defaultBaseBranch, setDefaultBaseBranch] = useState("main");
   const [createWorktree, setCreateWorktree] = useState(false);
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
-  const [autoCareful, setAutoCareful] = useState(true);
+  const [autoCareful, setAutoCareful] = useState(false);
   const [agentRules, setAgentRules] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -133,7 +133,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           setHasExistingKey(config.hasApiKey);
           setDefaultBaseBranch(config.defaultBaseBranch || "main");
           setCreateWorktree(config.createWorktree ?? false);
-          setAutoCareful(config.autoCareful ?? true);
+          setAutoCareful(config.autoCareful ?? false);
           setTicketPromptTemplate(config.ticketPromptTemplate || "");
         })
         .catch(console.error);

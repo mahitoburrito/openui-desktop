@@ -2085,8 +2085,8 @@ export async function createSession(params: {
     }
     if (!startTrackedCommand(sessionId, session, ptyProcess, finalCommand)) return;
 
-    // Enable /careful for Claude Code sessions on startup (if enabled in settings)
-    if (isClaudeCommand && autoCareful !== false) {
+    // Enable /careful for Claude Code sessions on startup (opt-in; off by default)
+    if (isClaudeCommand && autoCareful === true) {
       setTimeout(() => {
         if (!ownsCurrentPty()) return;
         writeTerminalData(sessionId, "/careful", {

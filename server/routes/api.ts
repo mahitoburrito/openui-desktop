@@ -3583,7 +3583,7 @@ apiRoutes.get("/linear/config", (c) => {
     defaultTeamId: config.defaultTeamId,
     defaultBaseBranch: config.defaultBaseBranch || "main",
     createWorktree: config.createWorktree ?? false,
-    autoCareful: config.autoCareful ?? true,
+    autoCareful: config.autoCareful ?? false,
     ticketPromptTemplate: config.ticketPromptTemplate || DEFAULT_TICKET_PROMPT,
   });
 });
