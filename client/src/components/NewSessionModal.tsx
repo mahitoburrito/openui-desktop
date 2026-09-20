@@ -196,6 +196,20 @@ export function NewSessionModal({
   const [dirBrowseLoading, setDirBrowseLoading] = useState(false);
   const [dirBrowseError, setDirBrowseError] = useState<string | null>(null);
 
+  // Session launch defaults, loaded from Settings -> Sessions
+  const [defaultStartingDirectory, setDefaultStartingDirectory] = useState("");
+  const [rememberLastDirectory, setRememberLastDirectory] = useState(true);
+
+  // Where a session starts when the user has not typed a directory: the session
+  // being replaced, then the last one picked (only while remembering is on, since
+  // that is the more recent signal of intent), then the configured default, then
+  // the directory the app was launched from.
+  const effectiveDefaultDirectory =
+    (isReplacing ? existingSession?.originalCwd || existingSession?.cwd : "") ||
+    (rememberLastDirectory ? lastPickedDirectory : "") ||
+    defaultStartingDirectory ||
+    launchCwd;
+
   // GitHub state
   const [githubRepoUrl, setGithubRepoUrl] = useState("");
   const [githubIssues, setGithubIssues] = useState<GitHubIssue[]>([]);
@@ -261,6 +275,29 @@ export function NewSessionModal({
           setLinearConfigured(config.hasApiKey);
           setBaseBranch(config.defaultBaseBranch || "main");
           setCreateWorktree(config.createWorktree ?? false);
+
+          const remember = config.rememberLastDirectory ?? true;
+          setRememberLastDirectory(remember);
+          setDefaultStartingDirectory(config.defaultStartingDirectory || "");
+
+          // Launch defaults seed brand-new sessions only. Replacing a session
+          // keeps that session's own agent, directory and prompt.
+          if (existingSession) return;
+
+          const startingDir =
+            (remember ? lastPickedDirectory : "") || config.defaultStartingDirectory || "";
+          if (startingDir) {
+            setCwd(startingDir);
+            scanForRepos(startingDir);
+          }
+          if (config.defaultAgentId) {
+            const preselected = agents.find((a) => a.id === config.defaultAgentId);
+            if (preselected) setSelectedAgent(preselected);
+          }
+          // An explicit prompt handed to the modal outranks the configured one.
+          if (config.initialPrompt && !newSessionInitialPrompt) {
+            setInitialPrompt(config.initialPrompt);
+          }
         })
         .catch(() => setLinearConfigured(false));
     } else if (!open) {
@@ -319,7 +356,7 @@ export function NewSessionModal({
   };
 
   const openDirPicker = async () => {
-    const startingPath = cwd || lastPickedDirectory || launchCwd;
+    const startingPath = cwd || effectiveDefaultDirectory;
     // Under Electron, hand off to the macOS folder panel. The in-app browser
     // below stays for the browser-served client, where no native dialog exists.
     if (canUseNativeDirectoryPicker()) {
@@ -437,7 +474,7 @@ export function NewSessionModal({
   const handleCreate = () => {
     if (!selectedAgent) return;
 
-    const workingDir = cwd || (isReplacing ? existingSession?.cwd : null) || launchCwd;
+    const workingDir = cwd || effectiveDefaultDirectory;
     const fullCommand = selectedAgent.command
       ? (commandArgs ? `${selectedAgent.command} ${commandArgs}` : selectedAgent.command)
       : commandArgs;
@@ -1363,7 +1400,7 @@ export function NewSessionModal({
                         value={cwd}
                         onChange={(e) => setCwd(e.target.value)}
                         onBlur={() => { if (cwd) scanForRepos(cwd); }}
-                        placeholder={existingSession?.cwd || launchCwd || "~/"}
+                        placeholder={effectiveDefaultDirectory || "~/"}
                         className="flex-1 px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors font-mono"
                       />
                       <button
@@ -1376,7 +1413,7 @@ export function NewSessionModal({
                       </button>
                     </div>
 
-                    {lastPickedDirectory && (
+                    {rememberLastDirectory && lastPickedDirectory && (
                       <button
                         type="button"
                         onClick={() => selectDirectory(lastPickedDirectory)}
