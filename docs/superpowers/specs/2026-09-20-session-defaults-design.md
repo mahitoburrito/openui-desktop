@@ -53,24 +53,29 @@ correct — that is a real preference, not an inherited default.
 
 ### Main process
 
-`electron/main.ts` registers the app's first `ipcMain.handle`:
+New `electron/nativeDialog.ts` registers the app's first `ipcMain.handle`, on
+channel `dialog:open-directory`, following the `registerClipboardIpc` /
+`registerBrowserViewIpc` module pattern (a `register…`/`destroy…` pair wired
+into `main.ts` alongside the others):
 
 ```ts
-ipcMain.handle("dialog:openDirectory", async (_event, defaultPath?: string) => {
-  const result = await dialog.showOpenDialog(mainWindow!, {
-    properties: ["openDirectory", "createDirectory"],
-    defaultPath: defaultPath || undefined,
-  });
-  return result.canceled ? null : (result.filePaths[0] ?? null);
+const result = await dialog.showOpenDialog(window, {
+  properties: ["openDirectory", "createDirectory"],
+  defaultPath: defaultPath || undefined,
 });
+return result.canceled ? null : (result.filePaths[0] ?? null);
 ```
+
+It takes `getWindow: () => BrowserWindow | null` so the dialog is sheet-attached
+to the app window when one exists.
 
 `preload.ts` needs no change — it already exposes a generic
 `invoke(channel, ...args)` bridge, added for exactly this purpose.
 
 ### Renderer
 
-New `client/src/lib/nativeDialog.ts`, deliberately tiny:
+New `client/src/utils/nativeDirectoryPicker.ts` (alongside the existing
+`client/src/utils/` helpers), deliberately tiny:
 
 - `canUseNativeDirectoryPicker(): boolean` — true when
   `window.electronAPI?.isElectron` and `invoke` is a function.
@@ -98,8 +103,10 @@ array in `SettingsModal.tsx`. Its body lives in a new file,
 `client/src/components/settings/SessionsTab.tsx`, rather than as a fifth
 in-file tab component: `SettingsModal.tsx` is already 1024 lines and holds
 three tab bodies plus the shared `SettingRow` / `Toggle` / `SectionHeader`
-primitives. Those primitives are exported from `SettingsModal.tsx` and imported
-by the new file, so the visual language stays identical.
+primitives. Those primitives move to `client/src/components/settings/primitives.tsx`
+so both files import them from one place rather than the tab importing back from
+`SettingsModal` — which would be an import cycle. The visual language is
+unchanged.
 
 ### Settings in the tab
 
@@ -131,7 +138,9 @@ its entire `Git` `SectionHeader` block; its `autoCareful`, `createWorktree`, and
 
 ### Server
 
-`LinearConfig` in `server/types/index.ts` gains the three new optional fields.
+`LinearConfig` in `server/types/index.ts` gains the three new optional fields
+(`initialPrompt` already existed). `loadConfig`/`saveConfig` in
+`server/services/linear.ts` read and write all four.
 `GET /linear/config` returns them with the defaults above; `POST /linear/config`
 persists them with the same `if (body.x !== undefined)` guard the existing
 fields use.
@@ -161,7 +170,7 @@ mapped cards, render a backdrop only while a card is expanded:
 ```tsx
 {overviewExpandedNodeId && (
   <div
-    className="absolute inset-0 z-20"
+    className="absolute inset-0 z-20 cursor-zoom-out"
     onClick={() => setOverviewExpandedNodeId(null)}
     aria-hidden
   />
@@ -172,12 +181,29 @@ This reuses the exact state transition the back button performs
 (`onCollapse={() => setOverviewExpandedNodeId(null)}`), so click-off, the back
 button, and Esc are one behaviour.
 
-The z-ordering already works: the expanded card is `absolute inset-0 z-30`, so
-it sits above the backdrop and keeps receiving clicks, including into its
-terminal. Non-expanded cards are `relative` with no z-index and sit below.
-Dimmed cards are already `pointerEvents: "none"`, so they cannot swallow the
-click. The backdrop covers the grid region only; the toolbar above it keeps its
-own hit targets, and its filter controls are already hidden while expanded.
+**The expanded card must also be inset.** It was `absolute inset-0`, which
+covers the grid exactly — measured at 16,120 1408x764 for both card and
+backdrop, so the backdrop was completely occluded and could never receive a
+click. There was no "outside" to click. Changing the card to `absolute inset-6`
+leaves a 24px frame of backdrop on all four sides, which both makes the gesture
+possible and reads as the lightbox it now is. Non-expanded cards are
+`relative` with no z-index and sit below; dimmed cards are already
+`pointerEvents: "none"`.
+
+## Work item 5 — make the Settings modal reachable
+
+Discovered while verifying work item 3: `SettingsModal` is exported and
+imported by **nothing**. On `origin/main` the entire settings UI is dead code
+with no way to open it, so a new tab inside it would be invisible. Adding the
+tab is pointless without this.
+
+- `useStore` gains `settingsOpen` / `setSettingsOpen`, mirroring
+  `commandPaletteOpen`.
+- `App.tsx` mounts `<SettingsModal open={settingsOpen} …/>` next to
+  `<CommandPalette />`.
+- `Header.tsx` gains a gear button after the focus-mode button, matching the
+  other `commandButton` controls.
+- `useKeyboardShortcuts` binds Cmd+, the way it binds Cmd+K for the palette.
 
 ## Decisions
 
@@ -196,9 +222,11 @@ browser client and the isolated smoke-server recipe used for testing.
 
 ## Testing
 
-- `npm run typecheck` and `npm run build:client` clean.
-- `npm run test:status` still green (21 cases) — untouched, run as a regression
-  guard since `sessionManager.ts` is edited.
+- `tsc --noEmit` on the client and `npm run build:electron` clean, apart from a
+  pre-existing `PRBEPanel.tsx` `replaceAll` error introduced by `fc3b045`
+  (an ES2021 `lib` target issue, in a file this work does not touch).
+- `npm run test:status` green at 28 passed, 0 failed — untouched, run as a
+  regression guard since `sessionManager.ts` is edited.
 - Manual, in the isolated smoke instance (`PORT=7968 LAUNCH_CWD=<scratch>`), not
   against the real app on 6968:
   - a Claude session launches with no `/careful` typed into it;
