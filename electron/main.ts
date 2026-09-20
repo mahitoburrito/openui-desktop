@@ -9,6 +9,7 @@ import { destroyBrowserView, registerBrowserViewIpc } from "./browserView";
 import { startMacAutoUpdater, installPendingUpdateOnQuit } from "./macUpdater";
 import { safeWebNavigationUrl } from "./externalNavigation";
 import { destroyClipboardIpc, registerClipboardIpc } from "./clipboard";
+import { destroyNativeDialogIpc, registerNativeDialogIpc } from "./nativeDialog";
 
 // Load built-in default config (bundled API keys for production)
 function loadDefaultConfig() {
@@ -96,6 +97,7 @@ function createWindow() {
   mainWindow.webContents.on("will-redirect", preventUnsafeAppNavigation);
   registerBrowserViewIpc(mainWindow);
   registerClipboardIpc();
+  registerNativeDialogIpc(() => mainWindow);
 
   if (isDev) {
     // In dev mode, load from Vite dev server
@@ -202,6 +204,7 @@ app.on("window-all-closed", () => {
 app.on("will-quit", () => {
   destroyBrowserView();
   destroyClipboardIpc();
+  destroyNativeDialogIpc();
   cleanupPRBE();
   installPendingUpdateOnQuit();
   process.emit("SIGINT" as any);

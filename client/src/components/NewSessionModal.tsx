@@ -20,6 +20,7 @@ import {
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
 import { AgentIcon, getAgentAccentColor } from "./AgentIcon";
+import { canUseNativeDirectoryPicker, pickDirectoryNative } from "../utils/nativeDirectoryPicker";
 
 interface LinearTicket {
   id: string;
@@ -317,9 +318,17 @@ export function NewSessionModal({
     }
   };
 
-  const openDirPicker = () => {
+  const openDirPicker = async () => {
+    const startingPath = cwd || lastPickedDirectory || launchCwd;
+    // Under Electron, hand off to the macOS folder panel. The in-app browser
+    // below stays for the browser-served client, where no native dialog exists.
+    if (canUseNativeDirectoryPicker()) {
+      const picked = await pickDirectoryNative(startingPath);
+      if (picked) selectDirectory(picked);
+      return;
+    }
     setShowDirPicker(true);
-    browsePath(cwd || lastPickedDirectory || launchCwd);
+    browsePath(startingPath);
   };
 
   const scanForRepos = async (path: string) => {
