@@ -3583,8 +3583,12 @@ apiRoutes.get("/linear/config", (c) => {
     defaultTeamId: config.defaultTeamId,
     defaultBaseBranch: config.defaultBaseBranch || "main",
     createWorktree: config.createWorktree ?? false,
-    autoCareful: config.autoCareful ?? true,
+    autoCareful: config.autoCareful ?? false,
     ticketPromptTemplate: config.ticketPromptTemplate || DEFAULT_TICKET_PROMPT,
+    initialPrompt: config.initialPrompt || "",
+    defaultStartingDirectory: config.defaultStartingDirectory || "",
+    rememberLastDirectory: config.rememberLastDirectory ?? true,
+    defaultAgentId: config.defaultAgentId || "",
   });
 });
 
@@ -3598,6 +3602,10 @@ apiRoutes.post("/linear/config", async (c) => {
   if (body.createWorktree !== undefined) config.createWorktree = body.createWorktree;
   if (body.autoCareful !== undefined) config.autoCareful = body.autoCareful;
   if (body.ticketPromptTemplate !== undefined) config.ticketPromptTemplate = body.ticketPromptTemplate;
+  if (body.initialPrompt !== undefined) config.initialPrompt = body.initialPrompt;
+  if (body.defaultStartingDirectory !== undefined) config.defaultStartingDirectory = body.defaultStartingDirectory;
+  if (body.rememberLastDirectory !== undefined) config.rememberLastDirectory = body.rememberLastDirectory;
+  if (body.defaultAgentId !== undefined) config.defaultAgentId = body.defaultAgentId;
 
   saveConfig(config);
   return c.json({ success: true });

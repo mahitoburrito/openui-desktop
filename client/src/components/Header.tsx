@@ -1,4 +1,4 @@
-import { Folder, Grid3X3, Maximize2, MousePointer2, Network, Search } from "lucide-react";
+import { Folder, Grid3X3, Maximize2, MousePointer2, Network, Search, Settings } from "lucide-react";
 import { useStore } from "../stores/useStore";
 import { usePRBEStore } from "../stores/usePRBEStore";
 
@@ -16,6 +16,7 @@ export function Header() {
     viewMode,
     selectionModeActive,
     setSelectionModeActive,
+    setSettingsOpen,
   } = useStore();
 
   const selectedSession = selectedNodeId ? sessions.get(selectedNodeId) : null;
@@ -106,6 +107,15 @@ export function Header() {
           aria-label="Open focused session"
         >
           <Maximize2 className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className={commandButton}
+          title="Settings (Cmd+,)"
+          aria-label="Open settings"
+        >
+          <Settings className="h-4 w-4" />
         </button>
       </div>
     </header>

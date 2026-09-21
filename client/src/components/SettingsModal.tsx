@@ -4,10 +4,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 import {
   X, Key, Check, AlertCircle, Loader2, ExternalLink, Bug,
-  SlidersHorizontal, Puzzle, Palette, Type, Monitor, Minus, Plus, Bell, FileText, Sparkles,
+  SlidersHorizontal, Puzzle, Palette, Type, Monitor, Minus, Plus, Bell, FileText, Sparkles, Terminal,
 } from "lucide-react";
 import { usePRBEStore } from "../stores/usePRBEStore";
 import { useStore } from "../stores/useStore";
+import { SectionHeader, SettingRow } from "./settings/primitives";
+import { SessionsTab } from "./settings/SessionsTab";
 import {
   TERMINAL_FONT_FAMILIES,
   TERMINAL_THEMES,
@@ -17,65 +19,16 @@ import {
   type WorkspaceBackgroundId,
 } from "../theme/appearance";
 
-type SettingsTab = "general" | "appearance" | "integrations";
+type SettingsTab = "general" | "sessions" | "appearance" | "integrations";
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-[22px] w-[40px] flex-shrink-0 items-center rounded-full transition-colors duration-200 ${
-        checked ? "bg-indigo-600" : "bg-zinc-600"
-      }`}
-    >
-      <span
-        className={`inline-block h-[16px] w-[16px] rounded-full bg-white shadow transition-transform duration-200 ${
-          checked ? "translate-x-[20px]" : "translate-x-[3px]"
-        }`}
-      />
-    </button>
-  );
-}
-
-function SettingRow({
-  title,
-  description,
-  children,
-  last,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-  last?: boolean;
-}) {
-  return (
-    <div className={`flex items-center justify-between gap-4 py-3.5 ${last ? "" : "border-b border-border"}`}>
-      <div className="min-w-0">
-        <div className="text-sm text-zinc-200">{title}</div>
-        {description && <div className="text-xs text-zinc-500 mt-0.5">{description}</div>}
-      </div>
-      <div className="flex-shrink-0">{children}</div>
-    </div>
-  );
-}
-
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <div className="text-[11px] font-medium uppercase tracking-wider text-zinc-500 mb-1 mt-5 first:mt-0">
-      {title}
-    </div>
-  );
-}
-
 const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "sessions", label: "Sessions", icon: Terminal },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "integrations", label: "Integrations", icon: Puzzle },
 ];
@@ -93,7 +46,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [defaultBaseBranch, setDefaultBaseBranch] = useState("main");
   const [createWorktree, setCreateWorktree] = useState(false);
   const [ticketPromptTemplate, setTicketPromptTemplate] = useState("");
-  const [autoCareful, setAutoCareful] = useState(true);
+  const [autoCareful, setAutoCareful] = useState(false);
+  const [defaultStartingDirectory, setDefaultStartingDirectory] = useState("");
+  const [rememberLastDirectory, setRememberLastDirectory] = useState(true);
+  const [defaultAgentId, setDefaultAgentId] = useState("");
+  const [defaultInitialPrompt, setDefaultInitialPrompt] = useState("");
   const [agentRules, setAgentRules] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
@@ -133,8 +90,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           setHasExistingKey(config.hasApiKey);
           setDefaultBaseBranch(config.defaultBaseBranch || "main");
           setCreateWorktree(config.createWorktree ?? false);
-          setAutoCareful(config.autoCareful ?? true);
+          setAutoCareful(config.autoCareful ?? false);
           setTicketPromptTemplate(config.ticketPromptTemplate || "");
+          setDefaultStartingDirectory(config.defaultStartingDirectory || "");
+          setRememberLastDirectory(config.rememberLastDirectory ?? true);
+          setDefaultAgentId(config.defaultAgentId || "");
+          setDefaultInitialPrompt(config.initialPrompt || "");
         })
         .catch(console.error);
 
@@ -185,6 +146,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           createWorktree,
           autoCareful,
           ticketPromptTemplate: ticketPromptTemplate || undefined,
+          defaultStartingDirectory,
+          rememberLastDirectory,
+          defaultAgentId,
+          initialPrompt: defaultInitialPrompt,
         }),
       });
       await fetch("/api/agent-rules", {
@@ -347,14 +312,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   {/* Content */}
                   <div className="flex-1 overflow-y-auto p-5">
                     {tab === "general" && <GeneralTab
+                      agentRules={agentRules}
+                      setAgentRules={setAgentRules}
+                    />}
+                    {tab === "sessions" && <SessionsTab
+                      defaultStartingDirectory={defaultStartingDirectory}
+                      setDefaultStartingDirectory={setDefaultStartingDirectory}
+                      rememberLastDirectory={rememberLastDirectory}
+                      setRememberLastDirectory={setRememberLastDirectory}
+                      defaultAgentId={defaultAgentId}
+                      setDefaultAgentId={setDefaultAgentId}
+                      defaultInitialPrompt={defaultInitialPrompt}
+                      setDefaultInitialPrompt={setDefaultInitialPrompt}
                       defaultBaseBranch={defaultBaseBranch}
                       setDefaultBaseBranch={setDefaultBaseBranch}
                       createWorktree={createWorktree}
                       setCreateWorktree={setCreateWorktree}
                       autoCareful={autoCareful}
                       setAutoCareful={setAutoCareful}
-                      agentRules={agentRules}
-                      setAgentRules={setAgentRules}
                     />}
                     {tab === "appearance" && <AppearanceTab
                       workspaceBackground={workspaceBackground}
@@ -629,21 +604,9 @@ function AppearanceTab({
 }
 
 function GeneralTab({
-  defaultBaseBranch,
-  setDefaultBaseBranch,
-  createWorktree,
-  setCreateWorktree,
-  autoCareful,
-  setAutoCareful,
   agentRules,
   setAgentRules,
 }: {
-  defaultBaseBranch: string;
-  setDefaultBaseBranch: (v: string) => void;
-  createWorktree: boolean;
-  setCreateWorktree: (v: boolean) => void;
-  autoCareful: boolean;
-  setAutoCareful: (v: boolean) => void;
   agentRules: string;
   setAgentRules: (v: string) => void;
 }) {
@@ -690,26 +653,6 @@ function GeneralTab({
         </div>
       </div>
 
-      <SectionHeader title="Git" />
-      <div className="rounded-lg border border-border bg-canvas/40">
-        <div className="px-4">
-          <SettingRow title="Default base branch" description="Branch used when creating ticket branches">
-            <input
-              type="text"
-              value={defaultBaseBranch}
-              onChange={(e) => setDefaultBaseBranch(e.target.value)}
-              placeholder="main"
-              className="w-[120px] px-2.5 py-1.5 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors text-right"
-            />
-          </SettingRow>
-          <SettingRow title="Git worktree" description="Create an isolated working directory for each session branch">
-            <Toggle checked={createWorktree} onChange={setCreateWorktree} />
-          </SettingRow>
-          <SettingRow title="Auto /careful mode" description="Warn before destructive commands (rm -rf, force push)" last>
-            <Toggle checked={autoCareful} onChange={setAutoCareful} />
-          </SettingRow>
-        </div>
-      </div>
     </>
   );
 }

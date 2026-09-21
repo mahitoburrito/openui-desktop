@@ -446,6 +446,10 @@ export interface LinearConfig {
   ticketPromptTemplate?: string;
   initialPrompt?: string;
   autoCareful?: boolean;
+  /* Session launch defaults (Settings -> Sessions) */
+  defaultStartingDirectory?: string;
+  rememberLastDirectory?: boolean;
+  defaultAgentId?: string;
 }
 
 export interface PersistedNode {

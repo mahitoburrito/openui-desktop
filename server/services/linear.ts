@@ -84,6 +84,10 @@ export function loadConfig(): LinearConfig {
       config.createWorktree = fileConfig.createWorktree;
       config.ticketPromptTemplate = fileConfig.ticketPromptTemplate;
       config.autoCareful = fileConfig.autoCareful;
+      config.initialPrompt = fileConfig.initialPrompt;
+      config.defaultStartingDirectory = fileConfig.defaultStartingDirectory;
+      config.rememberLastDirectory = fileConfig.rememberLastDirectory;
+      config.defaultAgentId = fileConfig.defaultAgentId;
     }
   } catch (e) {
     // Probe Agent Error Log Trigger
@@ -109,6 +113,10 @@ export function saveConfig(config: LinearConfig): void {
       createWorktree: config.createWorktree,
       ticketPromptTemplate: config.ticketPromptTemplate,
       autoCareful: config.autoCareful,
+      initialPrompt: config.initialPrompt,
+      defaultStartingDirectory: config.defaultStartingDirectory,
+      rememberLastDirectory: config.rememberLastDirectory,
+      defaultAgentId: config.defaultAgentId,
     };
     writeFileSync(getConfigFile(), JSON.stringify(fileConfig, null, 2));
   } catch (e) {
