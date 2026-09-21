@@ -599,6 +599,8 @@ export function saveState(sessions: Map<string, Session>) {
       terminalRows: session.terminalRows,
       terminalFrameRedrawsInPlace: session.terminalFrameRedrawsInPlace,
       originalCwd: session.originalCwd,
+      devboxId: session.devboxId,
+      remotePath: session.remotePath,
       createdAt: session.createdAt,
       customName: session.customName,
       generatedTitle: session.generatedTitle,

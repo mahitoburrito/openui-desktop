@@ -103,6 +103,8 @@ import {
 import { readPackageScriptManifest } from "../services/terminalManifests";
 import { execGit, execGitWithInput } from "../services/gitRuntime";
 import { terminalRemoteManager } from "../services/terminalRemote";
+import { buildDevboxLaunchCommand, getDevbox } from "../services/devboxes";
+import type { DevboxConfig } from "../types";
 import { terminalWorkspace, TerminalWorkspaceError } from "../services/terminalWorkspace";
 import { terminalFiles, TerminalFilesError } from "../services/terminalFiles";
 import { codeWorkspace, CodeWorkspaceError } from "../services/codeWorkspace";
@@ -337,6 +339,18 @@ async function startSessionFromApiInput(
     command = adaptedCommand;
   }
   const workingDir = input.cwd || getLaunchCwd();
+
+  // Running on a devbox wraps the agent command in ssh. The wrapping happens
+  // here rather than in the client so the quoting stays in one tested place,
+  // and so the local cwd stays a real local directory — pty.spawn needs one,
+  // and the ssh client has to run somewhere.
+  let devbox: DevboxConfig | null = null;
+  if (input.devboxId) {
+    devbox = getDevbox(input.devboxId);
+    if (!devbox) throw new Error("Devbox not found.");
+    command = buildDevboxLaunchCommand(devbox, command, input.remotePath);
+  }
+
   const starterTitlePrompt = buildTitlePrompt(input.initialPrompt);
   const linearConfig = loadConfig();
   let launchCheckpoint: CheckpointSummary | undefined;
@@ -348,6 +362,8 @@ async function startSessionFromApiInput(
     command,
     cwd: workingDir,
     nodeId,
+    devboxId: devbox?.id,
+    remotePath: devbox ? (input.remotePath || devbox.defaultPath) : undefined,
     customName: input.customName,
     customColor,
     ticketId: input.ticketId,
@@ -1936,6 +1952,8 @@ apiRoutes.get("/sessions", (c) => {
     createdAt: session.createdAt,
     cwd: session.cwd,
     originalCwd: session.originalCwd,
+    devboxId: session.devboxId,
+    remotePath: session.remotePath,
     gitBranch: session.gitBranch,
     status: session.status,
     statusChangedAt: session.statusChangedAt,

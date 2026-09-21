@@ -1880,9 +1880,14 @@ export async function createSession(params: {
   agentModel?: string;
   agentFallbackCommands?: string[];
   registerWorkspace?: boolean;
+  /** Set when the session runs on a remote devbox rather than this machine. */
+  devboxId?: string;
+  remotePath?: string;
   beforeStart?: (cwd: string) => Promise<void>;
 }): Promise<{ session: Session; cwd: string; gitBranch?: string }> {
   const {
+    devboxId,
+    remotePath,
     sessionId,
     agentId,
     agentName,
@@ -2011,6 +2016,8 @@ export async function createSession(params: {
     worktreePaths,
     worktreeMode,
     stashRefs,
+    devboxId,
+    remotePath,
     createdAt: new Date().toISOString(),
     clients: new Set(),
     outputBuffer: [],
