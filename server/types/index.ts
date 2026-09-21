@@ -348,6 +348,9 @@ export interface Session {
   worktreePaths?: Record<string, string>;   // repo name → worktree path (multi-repo)
   worktreeMode?: 'current' | 'main';
   stashRefs?: Record<string, string>;       // repo name → stash ref
+  /** Set when this session runs on a remote devbox rather than this machine. */
+  devboxId?: string;
+  remotePath?: string;
   createdAt: string;
   clients: Set<WebSocket>;
   /** True after a renderer has received this live PTY epoch's initial output. */
@@ -450,6 +453,22 @@ export interface LinearConfig {
   defaultStartingDirectory?: string;
   rememberLastDirectory?: boolean;
   defaultAgentId?: string;
+  /* Remote devboxes (Settings -> Devboxes) */
+  devboxes?: DevboxConfig[];
+}
+
+export interface DevboxConfig {
+  id: string;
+  name: string;
+  source: "manual" | "ssh-config";
+  /** True when `ssh <name>` resolves through the user's own ssh config. */
+  inSshConfig: boolean;
+  host?: string;
+  user?: string;
+  port?: number;
+  identityFile?: string;
+  /** Remote working directory a session starts in. */
+  defaultPath?: string;
 }
 
 export interface PersistedNode {
@@ -464,6 +483,8 @@ export interface PersistedNode {
   terminalRows?: number;
   terminalFrameRedrawsInPlace?: boolean;
   originalCwd?: string;
+  devboxId?: string;
+  remotePath?: string;
   createdAt: string;
   customName?: string;
   generatedTitle?: string;

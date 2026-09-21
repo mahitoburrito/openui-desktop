@@ -16,6 +16,7 @@ import {
   ArrowUp,
   Github,
   RefreshCw,
+  Server,
 } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useStore, Agent, AgentSession } from "../stores/useStore";
@@ -196,6 +197,11 @@ export function NewSessionModal({
   const [dirBrowseLoading, setDirBrowseLoading] = useState(false);
   const [dirBrowseError, setDirBrowseError] = useState<string | null>(null);
 
+  // Devboxes: an empty devboxId means this session runs locally.
+  const [devboxes, setDevboxes] = useState<{ id: string; name: string; defaultPath?: string }[]>([]);
+  const [devboxId, setDevboxId] = useState("");
+  const [remotePath, setRemotePath] = useState("");
+
   // Session launch defaults, loaded from Settings -> Sessions
   const [defaultStartingDirectory, setDefaultStartingDirectory] = useState("");
   const [rememberLastDirectory, setRememberLastDirectory] = useState(true);
@@ -241,6 +247,8 @@ export function NewSessionModal({
         setCount(1);
       } else {
         setSelectedAgent(null);
+        setDevboxId("");
+        setRemotePath("");
         setCwd("");
         setCustomName("");
         setCommandArgs("");
@@ -267,6 +275,11 @@ export function NewSessionModal({
       if (effectiveCwd) {
         scanForRepos(effectiveCwd);
       }
+
+      fetch("/api/devboxes")
+        .then((res) => res.json())
+        .then((data) => setDevboxes(data.devboxes || []))
+        .catch(() => setDevboxes([]));
 
       // Check Linear config
       fetch("/api/linear/config")
@@ -512,6 +525,7 @@ export function NewSessionModal({
               agentName: selectedAgent.name,
               command: fullCommand,
               cwd: effectiveWorkingDir,
+              ...(devboxId && { devboxId, remotePath: remotePath.trim() || undefined }),
               nodeId: existingNodeId,
               customName: customName || existingSession.customName,
               customColor: existingSession.customColor,
@@ -635,6 +649,7 @@ export function NewSessionModal({
                 agentName: selectedAgent.name,
               command: fullCommand,
               cwd: effectiveWorkingDir,
+              ...(devboxId && { devboxId, remotePath: remotePath.trim() || undefined }),
               nodeId,
               customName: count > 1 ? agentName : customName || undefined,
                 initialPrompt: starterPrompt || undefined,
@@ -1388,8 +1403,43 @@ export function NewSessionModal({
                     )}
                   </div>}
 
-                  {/* Working directory */}
-                  <div className="space-y-2">
+                  {/* Run on: local, or one of the configured devboxes */}
+                  {devboxes.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-xs text-zinc-500 flex items-center gap-1.5">
+                        <Server className="w-3 h-3" />
+                        Run on
+                      </label>
+                      <select
+                        value={devboxId}
+                        onChange={(e) => {
+                          setDevboxId(e.target.value);
+                          const box = devboxes.find((item) => item.id === e.target.value);
+                          setRemotePath(box?.defaultPath || "");
+                        }}
+                        className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm focus:outline-none focus:border-zinc-500 transition-colors"
+                      >
+                        <option value="">This Mac</option>
+                        {devboxes.map((box) => (
+                          <option key={box.id} value={box.id}>{box.name}</option>
+                        ))}
+                      </select>
+                      {devboxId && (
+                        <input
+                          type="text"
+                          value={remotePath}
+                          onChange={(e) => setRemotePath(e.target.value)}
+                          placeholder="Remote directory (optional)"
+                          className="w-full px-3 py-2 rounded-md bg-canvas border border-border text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition-colors font-mono"
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  {/* Working directory — local only; a devbox session runs from
+                      the remote directory above, and this just anchors the ssh
+                      client on this machine. */}
+                  {!devboxId && <div className="space-y-2">
                     <label className="text-xs text-zinc-500 flex items-center gap-1.5">
                       <FolderOpen className="w-3 h-3" />
                       Working Directory
@@ -1512,7 +1562,7 @@ export function NewSessionModal({
                         </div>
                       </div>
                     )}
-                  </div>
+                  </div>}
 
                   {/* Worktree options (blank tab) */}
                   {activeTab === "blank" && detectedRepos.length > 0 && (

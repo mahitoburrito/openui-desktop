@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "fs";
 import { apiRoutes } from "./routes/api";
 import { prbeRoutes } from "./routes/prbe";
 import { coordinatorRoutes } from "./routes/coordinator";
+import { devboxRoutes } from "./routes/devboxes";
 import {
   sessions,
   restoreSessions,
@@ -69,6 +70,7 @@ app.use("*", async (c, next) => {
 app.route("/api", apiRoutes);
 app.route("/api/prbe", prbeRoutes);
 app.route("/api/coordinator", coordinatorRoutes);
+app.route("/api/devboxes", devboxRoutes);
 
 // Serve static files from client/dist in standalone (non-Electron) mode
 const CLIENT_DIST = join(__dirname, "..", "..", "..", "client", "dist");

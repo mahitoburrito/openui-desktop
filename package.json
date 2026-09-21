@@ -49,7 +49,8 @@
     "dist": "npm run build && electron-builder",
     "prepublishOnly": "npm run build",
     "postinstall": "npm ci --prefix client && node scripts/fix-node-pty-permissions.mjs",
-    "test:teardown": "npm run build:electron && node scripts/smoke-session-teardown.mjs"
+    "test:teardown": "npm run build:electron && node scripts/smoke-session-teardown.mjs",
+    "test:devboxes": "npm run build:electron && node scripts/test-devboxes.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.8",

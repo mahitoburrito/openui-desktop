@@ -88,6 +88,7 @@ export function loadConfig(): LinearConfig {
       config.defaultStartingDirectory = fileConfig.defaultStartingDirectory;
       config.rememberLastDirectory = fileConfig.rememberLastDirectory;
       config.defaultAgentId = fileConfig.defaultAgentId;
+      config.devboxes = Array.isArray(fileConfig.devboxes) ? fileConfig.devboxes : undefined;
     }
   } catch (e) {
     // Probe Agent Error Log Trigger
@@ -117,6 +118,7 @@ export function saveConfig(config: LinearConfig): void {
       defaultStartingDirectory: config.defaultStartingDirectory,
       rememberLastDirectory: config.rememberLastDirectory,
       defaultAgentId: config.defaultAgentId,
+      devboxes: config.devboxes,
     };
     writeFileSync(getConfigFile(), JSON.stringify(fileConfig, null, 2));
   } catch (e) {
