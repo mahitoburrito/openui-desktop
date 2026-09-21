@@ -34,6 +34,7 @@ import { UndoDeleteToast } from "./components/UndoDeleteToast";
 import { AgentActivityCenter } from "./components/AgentActivityCenter";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsModal } from "./components/SettingsModal";
+import { installRightDockExclusion } from "./stores/rightDock";
 import { getAgentAccentColor } from "./components/AgentIcon";
 import { PRBEPanel } from "./components/PRBEPanel";
 import { PRBEInteractionDialog } from "./components/PRBEInteractionDialog";
@@ -205,6 +206,10 @@ function AppContent() {
     if (!response.ok) throw new Error("Failed to refresh agent profiles");
     setAgents(await response.json());
   }, [setAgents]);
+
+  // The sidebar and the coordinator share the inner right dock; keep exactly
+  // one of them open. See stores/rightDock.ts.
+  useEffect(() => installRightDockExclusion(), []);
 
   // Sync nodes with store
   useEffect(() => {

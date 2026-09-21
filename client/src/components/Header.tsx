@@ -4,6 +4,7 @@ import { usePRBEStore } from "../stores/usePRBEStore";
 
 export function Header() {
   const setCoordinatorOpen = usePRBEStore((state) => state.setPanelOpen);
+  const coordinatorOpen = usePRBEStore((state) => state.panelOpen);
   const {
     sessions,
     launchCwd,
@@ -51,10 +52,13 @@ export function Header() {
       <div className="titlebar-no-drag flex items-center gap-1.5">
         <button
           type="button"
-          onClick={() => setCoordinatorOpen(true)}
-          className={commandButton}
-          title="Open workspace coordinator"
+          onClick={() => setCoordinatorOpen(!coordinatorOpen)}
+          className={`${commandButton} ${
+            coordinatorOpen ? "bg-surface-active text-zinc-100" : ""
+          }`}
+          title={coordinatorOpen ? "Close workspace coordinator" : "Open workspace coordinator"}
           aria-label="Open workspace coordinator"
+          aria-pressed={coordinatorOpen}
         >
           <Network className="h-4 w-4" />
         </button>
