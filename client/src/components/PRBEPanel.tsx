@@ -52,7 +52,9 @@ function CoordinatorOverview() {
         >
           <option value="observe">Observe</option>
           <option value="coordinate">Coordinate</option>
-          <option value="control">Control (reserved)</option>
+          {/* Accepted and persisted by the server, but no runtime honours it
+              yet — selectable only once something does. */}
+          <option value="control" disabled>Control (not implemented)</option>
         </select>
         <button onClick={refresh} className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-300">Refresh</button>
       </div>
@@ -90,7 +92,7 @@ function CoordinatorOverview() {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-zinc-300" title={directive.text}>{target?.displayName || directive.sessionId}: {directive.text}</div>
                   <div className="flex items-center gap-2 text-[10px] text-zinc-600">
-                    <span>{directive.state.replaceAll("_", " ")}</span>
+                    <span>{directive.state.replace(/_/g, " ")}</span>
                     {canAcknowledge && (
                       <button onClick={() => acknowledgeDirective(directive.id)} className="hover:text-emerald-400">acknowledge</button>
                     )}
