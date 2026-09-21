@@ -240,6 +240,36 @@ browser client and the isolated smoke-server recipe used for testing.
   - expanding an overview card and clicking the grid collapses it, while
     clicking inside the card's terminal does not.
 
+## Validation in the real Electron app (2026-09-20)
+
+Run against an isolated instance (`PORT=7969`, `VITE_PORT=5273`, scratch
+`LAUNCH_CWD`), driven over the Chromium debugging protocol with the native
+panel driven by System Events. The packaged app on 6968 was never touched and
+`~/.openui-desktop/config.json` was never written.
+
+- **Native panel is real and sheet-attached.** `dialog:open-directory` opens a
+  sheet on the OpenUI window whose buttons are `[New Folder] [Cancel] [Open]` —
+  an NSOpenPanel with `openDirectory` + `createDirectory`. Selecting a folder
+  resolved to that exact path; Cancel resolved to `null`.
+- **Both call sites work.** From Settings the picked path lands in the input and
+  survives Save into `config.json`; from the new-session modal it lands in the
+  working-directory field, the "Last picked" shortcut appears, and the homegrown
+  inline panel does not render.
+- **Defaults flow through.** With a default starting directory saved, the
+  new-session modal opens pre-filled with it.
+- **`Cmd+,` opens Settings** with all four tabs; the Sessions tab shows all
+  seven rows.
+- **`/careful`, instrumented A/B.** With `autoCareful` true the guard is entered
+  and the write executes; with it false (the shipped default) the guard is not
+  entered and nothing is written. `isClaudeCommand` is `true` in both arms, so
+  the negative result is the guard doing its job, not a mis-detected command.
+  Note that grepping the terminal stream for `/careful` is **not** a valid
+  detector — Claude Code's TUI does not echo bracketed-paste input literally,
+  so that check reads false in both arms.
+- **Click-off collapses.** Card `[40,144,1320,700]` inside backdrop
+  `[16,120,1368,748]`, a 24px gutter; the backdrop is the topmost element there,
+  and clicking it returns to the grid while clicking inside the card does not.
+
 ## Risks
 
 - `sessionManager.ts` is the file the status engine and terminal lifecycle both
